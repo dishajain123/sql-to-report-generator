@@ -9,8 +9,8 @@ produces a structured, intermediate JSON extraction of:
 
     - conditions / branches (IF / CASE / WHEN)
     - loops / cursors and what they iterate over
-    - tables read (with columns + filter conditions)
-    - tables written (with operation type + trigger condition)
+    - tables read (with columns + filter conditions + confidence)
+    - tables written (with operation type + trigger condition + confidence)
     - calculations / formulas
     - exception handling behavior
     - anything the model could not confidently determine (ambiguities)
@@ -21,7 +21,16 @@ of the downstream Rule Synthesizer Agent. Keeping these two concerns
 separate keeps each prompt focused and each agent independently
 testable.
 
-Calls the Groq API directly via the official `groq` SDK - there is no
+All prompt content is loaded from prompts/logic_extraction.yaml via the
+centralized `prompts.prompt_loader` - nothing here is a hardcoded prompt
+string. The prompt is selected per SQL dialect (Oracle vs T-SQL).
+
+Every LLM response is passed through the output guardrails in
+`guardrails.py`: the JSON shape is validated/repaired, and every
+table/column name the model claims is cross-checked against the actual
+source code chunk (anti-hallucination grounding) before being trusted.
+
+Calls an OpenAI-compatible chat completion API directly - there is no
 orchestration framework in this module; a "chain" here is just one
 Python method calling `client.chat.completions.create(...)`.
 """
@@ -33,87 +42,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
-# --------------------------------------------------------------------------
-# Prompt content
-# --------------------------------------------------------------------------
-
-LOGIC_EXTRACTION_SYSTEM_PROMPT = """You are a senior database engineer performing a precise, \
-technical reverse-engineering pass over a fragment of a banking PL/SQL object. \
-You are NOT writing business documentation yet - that happens in a later stage. \
-Your only job here is accurate, structured technical extraction.
-
-You will be given:
-1. A chunk of PL/SQL / SQL code (this may be a declaration section, a cursor, \
-the main executable body, a nested block, or the exception section).
-2. Retrieved reference context describing common SQL/PLSQL construct semantics \
-and relevant banking/regulatory domain rules (e.g. RBI IRAC norms). Use this \
-context to correctly interpret constructs, but only extract what is actually \
-present in the code chunk.
-
-Return STRICT JSON ONLY (no markdown fences, no commentary) matching exactly
-this schema:
-
-{
-  "conditions": [
-    {"condition": "<the literal condition/expression>", "true_branch": "<what happens>", "false_branch": "<what happens, or null>"}
-  ],
-  "loops": [
-    {"loop_type": "cursor|for|while|basic", "iterates_over": "<table/cursor/collection>", "purpose": "<what it processes>"}
-  ],
-  "tables_read": [
-    {"table": "<TABLE_NAME>", "columns": ["COL1","COL2"], "filter_condition": "<WHERE clause / condition, or null>"}
-  ],
-  "tables_written": [
-    {"table": "<TABLE_NAME>", "operation": "INSERT|UPDATE|DELETE|MERGE", "columns": ["COL1","COL2"], "trigger_condition": "<condition under which the write happens, or null>"}
-  ],
-  "calculations": [
-    {"result": "<what is being computed>", "formula": "<the literal expression>"}
-  ],
-  "exception_handling": [
-    {"handler": "<exception name or WHEN OTHERS>", "behavior": "<rollback/log/re-raise/silent/etc>"}
-  ],
-  "ambiguities": [
-    "<anything unclear, unresolved dynamic SQL, or logic you could not confidently determine>"
-  ]
-}
-
-Rules:
-- If a category has nothing present in this chunk, return an empty list for it - never fabricate entries.
-- For every entry in "tables_written", list the specific column(s) actually \
-assigned/inserted/affected by that write in "columns" (e.g. for an UPDATE, the \
-columns on the left-hand side of SET; for an INSERT, the columns in the column \
-list or positionally matched to the VALUES/SELECT list; for a MERGE, the columns \
-touched by the matched WHEN clause(s) that apply). List every distinct column \
-touched across all branches that lead to this write, even if only some branches \
-touch a given column.
-- Never guess the meaning of unresolved dynamic SQL (EXECUTE IMMEDIATE with a runtime-built string); \
-add it to "ambiguities" instead. If a write's target columns cannot be determined \
-because the write itself is unresolved dynamic SQL, return an empty list for \
-"columns" on that entry rather than guessing, and add the unresolved part to \
-"ambiguities".
-- Keep field values literal/precise and short (technical detail is fine here).
-"""
-
-
-def _build_user_prompt(
-    object_type: str,
-    object_name: str,
-    chunk_kind: str,
-    rag_context: str,
-    code_chunk: str,
-) -> str:
-    return f"""OBJECT TYPE: {object_type}
-OBJECT NAME: {object_name}
-CHUNK KIND: {chunk_kind}
-
---- RETRIEVED REFERENCE CONTEXT ---
-{rag_context}
-
---- CODE CHUNK ---
-{code_chunk}
-
-Return the JSON extraction now."""
-
+from guardrails import ground_extraction_against_source, validate_extraction_shape
+from prompts.prompt_loader import get_prompt_set, render_user_prompt
 
 _EMPTY_EXTRACTION: Dict[str, Any] = {
     "conditions": [],
@@ -130,21 +60,24 @@ _EMPTY_EXTRACTION: Dict[str, Any] = {
 class ChunkExtraction:
     chunk_id: str
     chunk_kind: str
+    chunk_context: List[str] = field(default_factory=list)
+    embedded_sql: List[str] = field(default_factory=list)
     data: Dict[str, Any] = field(default_factory=lambda: dict(_EMPTY_EXTRACTION))
     raw_response: str = ""
     parse_error: str = ""
+    guardrail_warnings: List[str] = field(default_factory=list)
 
 
 class LogicExtractionAgent:
     """Runs the technical extraction call over a single code chunk using
-    the Groq API directly.
+    the configured chat completion client directly.
     """
 
     def __init__(self, client, model: str, temperature: float = 0.1):
         """
         Args:
-            client: an initialized `groq.Groq` client instance.
-            model: the Groq model name to call (configurable per pipeline run).
+            client: an initialized OpenAI-compatible chat client instance.
+            model: the model name to call (configurable per pipeline run).
             temperature: sampling temperature (kept low for extraction tasks).
         """
         self.client = client
@@ -159,16 +92,28 @@ class LogicExtractionAgent:
         rag_context: str,
         object_type: str,
         object_name: str,
+        chunk_context: List[str] | None = None,
+        embedded_sql: List[str] | None = None,
+        dialect: str = "oracle",
         model: str | None = None,
     ) -> ChunkExtraction:
         """`model`, if given, overrides the agent's configured model for
-        just this call - lets callers (e.g. a UI model-switcher) pick a
-        different Groq model per run without re-constructing the agent.
+        just this call - lets callers pick a different model per run
+        without re-constructing the agent.
         """
-        user_prompt = _build_user_prompt(
+        prompt_set = get_prompt_set("logic_extraction.yaml", dialect=dialect)
+        context_path = chunk_context or []
+        embedded_sql_context = embedded_sql or []
+        user_prompt = render_user_prompt(
+            prompt_set["user_template"],
             object_type=object_type,
             object_name=object_name,
+            dialect=dialect,
             chunk_kind=chunk_kind,
+            chunk_context=" > ".join(context_path) if context_path else "None",
+            embedded_sql_context="\n".join(f"- {stmt}" for stmt in embedded_sql_context)
+            if embedded_sql_context
+            else "None",
             rag_context=rag_context,
             code_chunk=code_chunk,
         )
@@ -177,19 +122,28 @@ class LogicExtractionAgent:
             model=model or self.model,
             temperature=self.temperature,
             messages=[
-                {"role": "system", "content": LOGIC_EXTRACTION_SYSTEM_PROMPT},
+                {"role": "system", "content": prompt_set["system"]},
                 {"role": "user", "content": user_prompt},
             ],
         )
         raw_response = response.choices[0].message.content or ""
 
         data, error = self._parse_json(raw_response)
+
+        guardrail_warnings: List[str] = []
+        data, shape_warnings = validate_extraction_shape(data)
+        guardrail_warnings.extend(shape_warnings)
+        guardrail_warnings.extend(ground_extraction_against_source(data, code_chunk))
+
         return ChunkExtraction(
             chunk_id=chunk_id,
             chunk_kind=chunk_kind,
+            chunk_context=context_path,
+            embedded_sql=embedded_sql_context,
             data=data,
             raw_response=raw_response,
             parse_error=error,
+            guardrail_warnings=guardrail_warnings,
         )
 
     @staticmethod

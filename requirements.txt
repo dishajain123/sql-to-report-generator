@@ -1,5 +1,5 @@
-# LLM provider - direct Groq SDK (no orchestration framework)
-groq>=0.11.0,<1.0.0
+# LLM provider - OpenAI-compatible chat completions API
+openai>=1.0.0,<2.0.0
  
 # Vector DB (RAG layer) - used directly, including its built-in
 # sentence-transformers embedding function
@@ -11,6 +11,9 @@ sqlglot>=25.0.0,<26.0.0
  
 # Config management
 python-dotenv>=1.0.0,<2.0.0
+ 
+# Centralized YAML prompt loading (prompts/*.yaml)
+PyYAML>=6.0,<7.0
  
 # Frontend
 streamlit>=1.38.0,<2.0.0

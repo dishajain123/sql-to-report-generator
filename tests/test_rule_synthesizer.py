@@ -16,7 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
+from agents.report_formatter import ReportFormatterAgent
 from agents.rule_synthesizer import RuleSynthesizerAgent
+from guardrails import ground_business_rules_against_extraction
 
 
 class _FakeMessage:
@@ -179,3 +181,331 @@ def test_synthesize_missing_keys_default_safely():
     assert result.data["purpose_summary"] == "Only a summary provided."
     assert result.data["business_rules"] == []
     assert result.data["ambiguities"] == []
+
+
+def test_business_rule_provenance_fields_are_normalized():
+    payload = json.dumps(
+        {
+            "purpose_summary": "Summary",
+            "step_by_step_flow": [],
+            "business_rules": [
+                {
+                    "condition": "x",
+                    "action": "y",
+                    "fields_affected": "FIELD_A",
+                    "rule_type": "not-valid",
+                    "confidence": "definitely",
+                    "source_evidence": "evidence text",
+                    "dependencies": "dep text",
+                }
+            ],
+            "calculations": [],
+            "exception_handling_summary": "",
+            "ambiguities": [],
+        }
+    )
+    agent = _make_agent(payload)
+    result = agent.synthesize(
+        object_name="obj",
+        object_type="VIEW",
+        parameter_summary="none",
+        merged_extraction={"tables_read": [], "tables_written": []},
+    )
+    rule = result.data["business_rules"][0]
+    assert rule["fields_affected"] == ["FIELD_A"]
+    assert rule["rule_type"] == "inferred"
+    assert rule["confidence"] == "medium"
+    assert rule["validation_status"] in {"verified", "unverified", "ambiguous", "parser_failed", "insufficient_evidence"}
+    assert rule["source_evidence"] == ["evidence text"]
+    assert rule["source_chunks"] == []
+    assert rule["technical_references"] == []
+    assert rule["unresolved_ambiguities"] == []
+    assert rule["dependencies"] == ["dep text"]
+
+
+def test_parser_failed_evidence_stays_uncertain():
+    merged_extraction = {
+        "conditions": [
+            {
+                "condition": "DPD_Max > 90",
+                "true_branch": "Set asset classification to Sub-Standard",
+                "false_branch": None,
+                "source_chunk_id": "00_main_body",
+                "source_chunk_kind": "main_body",
+                "source_parse_error": "Could not fully parse embedded SQL",
+            }
+        ],
+        "loops": [],
+        "tables_read": [],
+        "tables_written": [],
+        "calculations": [],
+        "exception_handling": [],
+        "ambiguities": [],
+        "chunk_provenance": [
+            {
+                "chunk_id": "00_main_body",
+                "chunk_kind": "main_body",
+                "chunk_context": ["main_body"],
+                "embedded_sql": [],
+                "parse_error": "Could not fully parse embedded SQL",
+                "guardrail_warnings": [],
+                "support_confidence": "low",
+            }
+        ],
+    }
+    rules = [
+        {
+            "condition": "DPD Max threshold reached",
+            "action": "Classify the account as higher risk",
+            "fields_affected": ["asset_classification"],
+            "rule_type": "inferred",
+            "confidence": "high",
+            "validation_status": "verified",
+            "source_evidence": ["DPD_Max > 90"],
+            "dependencies": [],
+        }
+    ]
+
+    warnings = ground_business_rules_against_extraction(rules, merged_extraction)
+
+    rule = rules[0]
+    assert rule["validation_status"] == "parser_failed"
+    assert rule["confidence"] == "low"
+    assert rule["source_chunks"] == ["00_main_body:main_body"]
+    assert rule["technical_references"] == ["conditions[0]"]
+    assert rule["unresolved_ambiguities"]
+    assert warnings
+
+
+def test_low_confidence_technical_evidence_is_not_verified():
+    merged_extraction = {
+        "conditions": [],
+        "loops": [],
+        "tables_read": [
+            {
+                "table": "LOAN_ACCOUNT",
+                "columns": ["DPD_MAX"],
+                "filter_condition": "DPD_MAX > 90",
+                "confidence": "low",
+                "source_chunk_id": "01_main_body",
+                "source_chunk_kind": "main_body",
+            }
+        ],
+        "tables_written": [],
+        "calculations": [],
+        "exception_handling": [],
+        "ambiguities": [],
+        "chunk_provenance": [
+            {
+                "chunk_id": "01_main_body",
+                "chunk_kind": "main_body",
+                "chunk_context": ["main_body"],
+                "embedded_sql": [],
+                "parse_error": "",
+                "guardrail_warnings": ["table name could not be matched confidently"],
+                "support_confidence": "medium",
+            }
+        ],
+    }
+    rules = [
+        {
+            "condition": "Account reads the loan master table",
+            "action": "Uses the overdue-days data to decide classification",
+            "fields_affected": [],
+            "rule_type": "inferred",
+            "confidence": "high",
+            "source_evidence": ["LOAN_ACCOUNT"],
+            "dependencies": [],
+        }
+    ]
+
+    ground_business_rules_against_extraction(rules, merged_extraction)
+
+    rule = rules[0]
+    assert rule["validation_status"] == "insufficient_evidence"
+    assert rule["confidence"] == "low"
+    assert rule["source_chunks"] == ["01_main_body:main_body"]
+    assert rule["technical_references"] == ["tables_read[0]"]
+
+
+def test_directly_supported_condition_can_remain_verified():
+    merged_extraction = {
+        "conditions": [
+            {
+                "condition": "overdue_days <= 90",
+                "true_branch": "Stay Standard",
+                "false_branch": "Escalate provisioning",
+                "source_chunk_id": "02_main_body",
+                "source_chunk_kind": "main_body",
+            }
+        ],
+        "loops": [],
+        "tables_read": [],
+        "tables_written": [],
+        "calculations": [],
+        "exception_handling": [],
+        "ambiguities": [],
+        "chunk_provenance": [
+            {
+                "chunk_id": "02_main_body",
+                "chunk_kind": "main_body",
+                "chunk_context": ["main_body"],
+                "embedded_sql": [],
+                "parse_error": "",
+                "guardrail_warnings": [],
+                "support_confidence": "high",
+            }
+        ],
+    }
+    rules = [
+        {
+            "condition": "overdue_days <= 90",
+            "action": "Keeps the account in the standard bucket",
+            "fields_affected": [],
+            "rule_type": "explicit",
+            "confidence": "high",
+            "source_evidence": ["overdue_days <= 90"],
+            "dependencies": [],
+        }
+    ]
+
+    ground_business_rules_against_extraction(rules, merged_extraction)
+
+    rule = rules[0]
+    assert rule["validation_status"] == "verified"
+    assert rule["confidence"] == "high"
+    assert rule["source_chunks"] == ["02_main_body:main_body"]
+    assert rule["technical_references"] == ["conditions[0]"]
+
+
+def test_report_formatter_surfaces_provenance_fields():
+    agent = _make_agent(
+        json.dumps(
+            {
+                "purpose_summary": "Summary",
+                "step_by_step_flow": ["1. Check overdue days"],
+                "business_rules": [
+                    {
+                        "condition": "overdue_days <= 90",
+                        "action": "Keeps the account in the standard bucket",
+                        "fields_affected": [],
+                        "rule_type": "explicit",
+                        "confidence": "high",
+                        "validation_status": "verified",
+                        "source_evidence": ["overdue_days <= 90"],
+                        "source_chunks": ["02_main_body:main_body"],
+                        "technical_references": ["conditions[0]"],
+                        "unresolved_ambiguities": [],
+                        "dependencies": [],
+                    },
+                    {
+                        "condition": "DPD_Max > 90",
+                        "action": "Marks the account for closer monitoring",
+                        "fields_affected": ["FLGSMA"],
+                        "rule_type": "inferred",
+                        "confidence": "low",
+                        "validation_status": "parser_failed",
+                        "source_evidence": ["DPD_Max > 90"],
+                        "source_chunks": ["03_main_body:main_body"],
+                        "technical_references": ["conditions[1]"],
+                        "unresolved_ambiguities": ["Underlying technical chunk could not be parsed cleanly."],
+                        "dependencies": [],
+                    }
+                ],
+                "calculations": [],
+                "exception_handling_summary": "",
+                "ambiguities": [],
+            }
+        )
+    )
+    result = agent.synthesize(
+        object_name="obj",
+        object_type="PROCEDURE",
+        parameter_summary="none",
+        merged_extraction={
+            "conditions": [
+                {
+                    "condition": "overdue_days <= 90",
+                    "true_branch": "Stay Standard",
+                    "false_branch": "Escalate provisioning",
+                    "source_chunk_id": "02_main_body",
+                    "source_chunk_kind": "main_body",
+                },
+                {
+                    "condition": "DPD_Max > 90",
+                    "true_branch": "Mark for closer monitoring",
+                    "false_branch": None,
+                    "source_chunk_id": "03_main_body",
+                    "source_chunk_kind": "main_body",
+                }
+            ],
+            "tables_read": [],
+            "tables_written": [],
+            "loops": [],
+            "calculations": [],
+            "exception_handling": [],
+            "ambiguities": [],
+            "chunk_provenance": [
+                {
+                    "chunk_id": "02_main_body",
+                    "chunk_kind": "main_body",
+                    "chunk_context": ["main_body"],
+                    "embedded_sql": [],
+                    "parse_error": "",
+                    "guardrail_warnings": [],
+                    "support_confidence": "high",
+                },
+                {
+                    "chunk_id": "03_main_body",
+                    "chunk_kind": "main_body",
+                    "chunk_context": ["main_body"],
+                    "embedded_sql": [],
+                    "parse_error": "parse failed",
+                    "guardrail_warnings": ["technical extraction incomplete"],
+                    "support_confidence": "low",
+                }
+            ],
+        },
+    )
+    report = ReportFormatterAgent().format(
+        ingestion=type(
+            "Ingestion",
+            (),
+            {
+                "object_name": "obj",
+                "object_type": "PROCEDURE",
+                "dialect": "oracle",
+                "dialect_confidence": "high",
+                "parameters": [],
+                "parameter_parse_status": "parameterless",
+                "parse_warnings": [],
+            },
+        )(),
+        merged_extraction={
+            "tables_read": [],
+            "tables_written": [],
+            "conditions": [],
+            "loops": [],
+            "calculations": [],
+            "exception_handling": [],
+            "ambiguities": [],
+        },
+        synthesis=result,
+        extraction_guardrail_warnings=[],
+    )
+    assert "# Business Conditions Report — obj" in report
+    assert "## Rule: overdue_days <= 90" in report
+    assert "## Rule: DPD_Max > 90 [Needs Review]" in report
+    assert "**Applies to:**" in report
+    assert "### Decision Logic" in report
+    assert "Business Rule Summary" in report
+    assert "<details>" in report
+    assert "Show rule-to-source mapping" in report
+    assert "02_main_body:main_body" in report
+    assert "03_main_body:main_body" in report
+    assert "conditions[0]" in report
+    assert "conditions[1]" in report
+    assert "## Tables Read" in report
+    assert "1. 1." not in report
+    assert "business rules / validations" not in report.lower()
+    assert "confidence" not in report.lower()

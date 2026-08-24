@@ -7,27 +7,28 @@ CLI entry point for the AI-Powered DB Logic & Business Rules Extractor.
 Usage
 -----
     python main.py samples/npa_classification.sql
-    python main.py samples/npa_classification.sql --model llama-3.1-8b-instant
     python main.py samples/provisioning_view.sql --output samples/output/report.md
     python main.py samples/npa_classification.sql --rebuild-kb
 
 Environment
 -----------
-Reads GROQ_API_KEY (and optional overrides) from a `.env` file in the
-project root (see config/.env.example) via python-dotenv.
+Reads LLM_PROVIDER, LLM_API_KEY, LLM_MODEL_NAME, and LLM_BASE_URL from
+a `.env` file in the project root (see config/.env.example) via
+python-dotenv.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 from pathlib import Path
+from contextlib import contextmanager
+from datetime import datetime
 
 from dotenv import load_dotenv
 
-from pipeline import LogicRulesExtractorPipeline, DEFAULT_MODEL
+from pipeline import LogicRulesExtractorPipeline, PipelineInputError
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -45,16 +46,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Path to the input .sql file containing exactly one DB object.",
     )
     parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("GROQ_MODEL", DEFAULT_MODEL),
-        help=(
-            "Groq model to use for extraction/synthesis "
-            "(e.g. llama-3.3-70b-versatile, llama-3.1-8b-instant). "
-            f"Default: {DEFAULT_MODEL} (or $GROQ_MODEL if set)."
-        ),
-    )
-    parser.add_argument(
         "--temperature",
         type=float,
         default=0.1,
@@ -67,6 +58,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to write the generated Markdown report. Defaults to "
         "samples/output/<object_name>.md",
+    )
+    parser.add_argument(
+        "--dialect",
+        type=str,
+        choices=["auto", "oracle", "tsql"],
+        default="auto",
+        help=(
+            "SQL dialect of the input object. 'auto' (default) detects Oracle "
+            "SQL/PL-SQL vs SQL Server T-SQL from the source; pass 'oracle' or "
+            "'tsql' to override detection explicitly."
+        ),
     )
     parser.add_argument(
         "--kb-dir",
@@ -94,8 +96,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+@contextmanager
+def _capture_run_logs(log_path: Path):
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    root_logger = logging.getLogger()
+    previous_level = root_logger.level
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+    root_logger.addHandler(handler)
+    if previous_level > logging.INFO or previous_level == logging.NOTSET:
+        root_logger.setLevel(logging.INFO)
+    try:
+        yield
+    finally:
+        root_logger.removeHandler(handler)
+        handler.close()
+        root_logger.setLevel(previous_level)
+
+
 def main(argv: list[str] | None = None) -> int:
-    load_dotenv()
+    load_dotenv(override=True)
 
     args = build_arg_parser().parse_args(argv)
 
@@ -111,10 +131,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         pipeline = LogicRulesExtractorPipeline(
-            model_name=args.model,
             temperature=args.temperature,
             persist_directory=args.persist_dir,
             knowledge_base_dir=args.kb_dir,
+            dialect=args.dialect,
         )
         if args.rebuild_kb:
             pipeline.retrieval_agent.build_or_load(force_rebuild=True)
@@ -122,8 +142,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Running pipeline on '{sql_path}' using Groq model '{args.model}'...")
-    report_markdown = pipeline.run(str(sql_path))
+    logs_dir = Path("samples/output/logs")
+    log_path = logs_dir / f"{sql_path.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_pipeline.log"
+
+    print(
+        f"Running pipeline on '{sql_path}' using model '{pipeline.model_name}' "
+        f"(dialect: {args.dialect})..."
+    )
+    try:
+        with _capture_run_logs(log_path):
+            report_markdown = pipeline.run(str(sql_path), dialect=args.dialect)
+    except PipelineInputError as exc:
+        print(f"Error: input rejected by guardrails: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"Error: pipeline failed: {exc}", file=sys.stderr)
+        return 1
 
     if args.output:
         output_path = Path(args.output)
@@ -136,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
     output_path.write_text(report_markdown, encoding="utf-8")
 
     print(f"Report written to: {output_path}")
+    print(f"Run log written to: {log_path}")
     return 0
 
 

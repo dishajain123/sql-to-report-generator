@@ -1,0 +1,26 @@
+2026-08-24 15:48:38,993 | INFO | logic_rules_extractor.pipeline | Stage 1/6: Running input guardrails
+2026-08-24 15:48:38,994 | INFO | logic_rules_extractor.pipeline | Stage 1/6 completed in 0.00s (input guardrails)
+2026-08-24 15:48:38,994 | INFO | logic_rules_extractor.pipeline | Stage 2/6: Detecting dialect
+2026-08-24 15:48:39,000 | INFO | logic_rules_extractor.pipeline | Detected oracle dialect (confidence: high)
+2026-08-24 15:48:39,000 | INFO | logic_rules_extractor.pipeline | Stage 2/6 completed in 0.01s (dialect detection)
+2026-08-24 15:48:39,000 | INFO | logic_rules_extractor.pipeline | Stage 3/6: Preprocessing, parsing, and chunking samples/temp.sql
+2026-08-24 15:48:39,070 | INFO | logic_rules_extractor.pipeline | Detected oracle PROCEDURE 'DPD_Calculation' with 6 chunk(s)
+2026-08-24 15:48:39,070 | INFO | logic_rules_extractor.pipeline | Stage 3/6 completed in 0.07s (preprocessing/parsing/chunking)
+2026-08-24 15:48:39,070 | INFO | logic_rules_extractor.pipeline | Stage 4/6: Retrieving dependencies / pattern context and extracting logic per chunk (model: gpt-4.1)
+2026-08-24 15:48:39,080 | INFO | logic_rules_extractor.pipeline | Persistent knowledge base ready in 0.01s
+2026-08-24 15:48:39,353 | INFO | openai._base_client | Retrying request to /chat/completions in 0.457655 seconds
+2026-08-24 15:48:39,354 | INFO | openai._base_client | Retrying request to /chat/completions in 0.383004 seconds
+2026-08-24 15:48:39,354 | INFO | openai._base_client | Retrying request to /chat/completions in 0.476319 seconds
+2026-08-24 15:48:39,354 | INFO | openai._base_client | Retrying request to /chat/completions in 0.498432 seconds
+2026-08-24 15:48:39,744 | INFO | openai._base_client | Retrying request to /chat/completions in 0.896641 seconds
+2026-08-24 15:48:39,819 | INFO | openai._base_client | Retrying request to /chat/completions in 0.806191 seconds
+2026-08-24 15:48:39,838 | INFO | openai._base_client | Retrying request to /chat/completions in 0.855842 seconds
+2026-08-24 15:48:39,860 | INFO | openai._base_client | Retrying request to /chat/completions in 0.781960 seconds
+2026-08-24 15:48:40,638 | INFO | openai._base_client | Retrying request to /chat/completions in 0.428310 seconds
+2026-08-24 15:48:40,653 | INFO | openai._base_client | Retrying request to /chat/completions in 0.486766 seconds
+2026-08-24 15:48:41,070 | INFO | openai._base_client | Retrying request to /chat/completions in 0.820524 seconds
+2026-08-24 15:48:41,146 | INFO | openai._base_client | Retrying request to /chat/completions in 0.948284 seconds
+2026-08-24 15:48:42,103 | INFO | logic_rules_extractor.pipeline | Stage 4/6 completed in 3.03s total (kb_ready=0.01s, retrieval/KB sum=0.06s, LLM extraction sum=8.97s, workers=4, chunks=6)
+2026-08-24 15:48:42,104 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
+2026-08-24 15:48:42,126 | INFO | openai._base_client | Retrying request to /chat/completions in 0.469509 seconds
+2026-08-24 15:48:42,603 | INFO | openai._base_client | Retrying request to /chat/completions in 0.842279 seconds

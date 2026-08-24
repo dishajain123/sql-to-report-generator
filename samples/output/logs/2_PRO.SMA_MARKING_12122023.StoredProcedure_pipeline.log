@@ -1,0 +1,21 @@
+2026-08-24 15:10:35,449 | INFO | __main__ | Run 2 started for PRO.SMA_MARKING_12122023.StoredProcedure.sql
+2026-08-24 15:10:35,449 | INFO | logic_rules_extractor.pipeline | Stage 1/6: Running input guardrails
+2026-08-24 15:10:35,452 | INFO | logic_rules_extractor.pipeline | Stage 2/6: Detecting dialect
+2026-08-24 15:10:35,477 | INFO | logic_rules_extractor.pipeline | Detected tsql dialect (confidence: high)
+2026-08-24 15:10:35,477 | INFO | logic_rules_extractor.pipeline | Stage 3/6: Preprocessing and chunking /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpq9dmt6a6.sql
+2026-08-24 15:10:35,520 | INFO | logic_rules_extractor.pipeline | Detected tsql PROCEDURE 'UNKNOWN_OBJECT' with 11 chunk(s)
+2026-08-24 15:10:35,520 | INFO | logic_rules_extractor.pipeline | Stage 4/6: Retrieving dependencies / pattern context and extracting logic per chunk (model: gpt-4.1)
+2026-08-24 15:10:37,945 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-24 15:10:39,072 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-24 15:10:40,035 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-24 15:10:41,286 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-24 15:10:52,979 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-24 15:11:33,772 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-24 15:11:35,746 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-24 15:11:56,770 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-24 15:12:06,271 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-24 15:12:15,629 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-24 15:12:17,931 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-24 15:12:17,933 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
+2026-08-24 15:12:59,219 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-24 15:12:59,515 | INFO | logic_rules_extractor.pipeline | Stage 6/6: Applying output guardrails and formatting final report

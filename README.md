@@ -10,8 +10,9 @@ calculation procedures governed by RBI IRAC norms.
 Orchestration is **pure Python** — there is no agent framework. Each
 agent is a plain class; `pipeline.py` calls their methods in order and
 passes data between them as ordinary Python objects/dicts. The two
-LLM-calling agents talk to Groq directly via the official `groq` SDK, and
-the RAG layer talks to `chromadb` directly.
+LLM-calling agents talk to an OpenAI-compatible chat completion API
+configured entirely through environment variables, and the RAG layer
+talks to `chromadb` directly.
 
 The critical design goal: the output explains **what business rule is
 being enforced and why**, not a line-by-line restatement of SQL syntax.
@@ -61,7 +62,7 @@ being enforced and why**, not a line-by-line restatement of SQL syntax.
 Each agent lives in its own module under `agents/` and is orchestrated by
 `pipeline.py` — plain Python method calls, no agent framework. Agents 1
 and 5 are pure/deterministic (no LLM call); agents 3 and 4 call the
-configured Groq model directly via the `groq` SDK; agent 2 is a local,
+configured chat model through the OpenAI SDK; agent 2 is a local,
 file-based `chromadb` collection queried directly (embeddings via
 chromadb's built-in sentence-transformers embedding function).
 
@@ -117,14 +118,13 @@ source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 3. Add your Groq API key
+### 3. Add your LLM settings
 
-Get a free-tier key from [console.groq.com](https://console.groq.com/),
-then:
+Set the provider, API key, model, and base URL in `.env`:
 
 ```bash
 cp config/.env.example .env
-# edit .env and set GROQ_API_KEY=your_key_here
+# edit .env and set LLM_PROVIDER, LLM_API_KEY, LLM_MODEL_NAME, and LLM_BASE_URL
 ```
 
 `main.py` loads `.env` automatically via `python-dotenv`. **Never commit
@@ -142,13 +142,6 @@ python main.py samples/npa_classification.sql
 
 This prints progress and writes the Markdown report to
 `samples/output/npa_classification_report.md`.
-
-### Switch the Groq model at call time
-
-```bash
-python main.py samples/npa_classification.sql --model llama-3.1-8b-instant
-python main.py samples/npa_classification.sql --model llama-3.3-70b-versatile
-```
 
 ### Other useful flags
 
@@ -177,13 +170,9 @@ streamlit run app.py
 
 This opens a local page where you can:
 
-- **Enter your Groq API key** in the sidebar (falls back to `GROQ_API_KEY`
-  from `.env` if already set — the key is only held in the browser
-  session, never written to disk).
-- **Switch the Groq model** from a dropdown (`llama-3.3-70b-versatile`,
-  `llama-3.1-8b-instant`, or a custom model name) — the vector store and
-  Groq client are cached and reused, so switching models between runs is
-  instant, no rebuild required.
+- **Use the LLM settings from `.env`** in the sidebar. The provider,
+  API key, model, and base URL are read from environment variables and
+  not entered manually in the UI.
 - **Provide input** by uploading a `.sql` file, pasting code directly, or
   picking one of the three bundled samples under `samples/`.
 - **Watch live per-stage progress** (ingestion → retrieval/extraction →
@@ -225,7 +214,7 @@ pytest tests/ -v
 `test_ingestion.py` exercises the deterministic parsing/chunking logic
 directly. `test_rule_synthesizer.py` mocks the LLM call so JSON-parsing,
 fallback, and jargon-detection behavior can be verified without a live
-Groq API key.
+API key.
 
 ---
 
