@@ -1,0 +1,16 @@
+# LLM provider - direct Groq SDK (no orchestration framework)
+groq>=0.11.0,<1.0.0
+ 
+# Vector DB (RAG layer) - used directly, including its built-in
+# sentence-transformers embedding function
+chromadb>=0.5.0,<0.6.0
+sentence-transformers>=3.0.0,<4.0.0
+ 
+# SQL/PLSQL structural parsing aid
+sqlglot>=25.0.0,<26.0.0
+ 
+# Config management
+python-dotenv>=1.0.0,<2.0.0
+ 
+# Frontend
+streamlit>=1.38.0,<2.0.0
