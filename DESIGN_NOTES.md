@@ -52,12 +52,14 @@ structural heuristics for the procedural chunking. This was a deliberate
 scope decision after early experiments where trying to make sqlglot
 "understand" IF/LOOP constructs produced brittle, hard-to-debug code.
 
-**Local, file-based RAG (Chroma + sentence-transformers).** Domain
+**Local, file-based RAG (Chroma + deterministic local embeddings).** Domain
 context (RBI IRAC thresholds, PLSQL construct meanings) is retrieved
 per-chunk before extraction so the model correctly interprets constructs
 like cursors, MERGE, and overdue-day branching in banking terms rather
-than generic terms. Embeddings run locally (no extra API cost/latency),
-keeping only the two reasoning stages dependent on the Groq API.
+than generic terms. A deterministic hash-based embedding function runs
+locally (no model download or extra API cost/latency), keeping only the
+two reasoning stages dependent on the Groq API. Chroma is pinned to a
+release with platform wheels so setup does not compile native dependencies.
 
 **Never silently guess.** Every stage that can fail to confidently
 interpret something (malformed JSON from the model, unresolved dynamic

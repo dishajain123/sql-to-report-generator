@@ -63,8 +63,8 @@ Each agent lives in its own module under `agents/` and is orchestrated by
 `pipeline.py` — plain Python method calls, no agent framework. Agents 1
 and 5 are pure/deterministic (no LLM call); agents 3 and 4 call the
 configured chat model through the OpenAI SDK; agent 2 is a local,
-file-based `chromadb` collection queried directly (embeddings via
-chromadb's built-in sentence-transformers embedding function).
+file-based `chromadb` collection queried directly with the deterministic
+local embedding function in `agents/retriever.py`.
 
 ---
 
@@ -113,6 +113,10 @@ source .venv/bin/activate      # Windows: .venv\Scripts\activate
 ```
 
 ### 2. Install dependencies
+
+Python 3.13 or newer is supported. The pinned Chroma release includes
+binary wheels for Windows and Linux, so a C++ compiler and Rust toolchain
+are not required.
 
 ```bash
 pip install -r requirements.txt
