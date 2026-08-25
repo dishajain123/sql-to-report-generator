@@ -15,11 +15,10 @@ into a local, file-based ChromaDB collection, and exposes a
 `retrieve()` method that the Logic Extraction Agent calls per code
 chunk to fetch grounding context before interpretation.
 
-Embeddings are produced locally via chromadb's built-in
-`SentenceTransformerEmbeddingFunction` (all-MiniLM-L6-v2), so the RAG
-layer works entirely offline / free of additional API cost - only the
-two LLM reasoning stages (logic_extractor, rule_synthesizer) call out
-to the configured chat completion provider.
+Embeddings are produced locally via a deterministic hash-based embedding
+function, so the RAG layer works entirely offline / free of additional
+API cost - only the two LLM reasoning stages (logic_extractor,
+rule_synthesizer) call out to the configured chat completion provider.
 """
 
 from __future__ import annotations
@@ -65,6 +64,10 @@ class _LocalHashEmbeddingFunction:
         self.dimension = dimension
 
     def __call__(self, input):  # Chroma expects a callable embedding function
+        return [self._embed_text(text) for text in input]
+
+    def embed_query(self, input):
+        """Return query embeddings for Chroma versions with split APIs."""
         return [self._embed_text(text) for text in input]
 
     def _embed_text(self, text: str) -> List[float]:

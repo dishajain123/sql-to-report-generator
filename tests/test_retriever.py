@@ -7,7 +7,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agents.retriever import PatternRetrievalAgent
+from agents.retriever import PatternRetrievalAgent, _LocalHashEmbeddingFunction
+
+
+def test_local_embedding_supports_chroma_query_api():
+    embedding_function = _LocalHashEmbeddingFunction()
+
+    embeddings = embedding_function.embed_query(["overdue days provisioning"])
+
+    assert len(embeddings) == 1
+    assert len(embeddings[0]) == 384
 
 
 def test_retriever_builds_offline_with_local_embeddings(tmp_path):
