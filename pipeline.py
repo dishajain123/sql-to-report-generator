@@ -47,6 +47,15 @@ logger = logging.getLogger("logic_rules_extractor.pipeline")
 
 DEFAULT_TEMPERATURE = 0.1  # low temperature: this is an extraction task, not creative writing
 
+# Stage 4 (embedded SQL / per-chunk technical extraction) is the slowest
+# stage because it makes one LLM call per chunk. Chunks are independent, so
+# they're extracted concurrently; 4 workers was overly conservative for
+# typical stored-procedure sizes (10-60 chunks) and left most of the run
+# serialized. Bump the out-of-the-box default and let PIPELINE_CHUNK_WORKERS
+# override it per environment (e.g. lower it back down if the LLM provider's
+# rate limit needs it).
+DEFAULT_CHUNK_WORKERS = 8
+
 
 class PipelineInputError(ValueError):
     """Raised when the input source cannot be safely processed at all
@@ -519,5 +528,5 @@ class LogicRulesExtractorPipeline:
             try:
                 return max(1, int(raw))
             except ValueError:
-                logger.warning("Invalid PIPELINE_CHUNK_WORKERS=%r; defaulting to 4", raw)
-        return 4
+                logger.warning("Invalid PIPELINE_CHUNK_WORKERS=%r; defaulting to %d", raw, DEFAULT_CHUNK_WORKERS)
+        return DEFAULT_CHUNK_WORKERS

@@ -83,10 +83,23 @@ system:
       point, not a one-to-one copy of each raw condition. Group related conditions that
       drive the same output field into one rule and preserve ordered decision logic in the
       same rule entry.
+    - MULTI-BAND / LOOKUP RULES BELONG IN "decision_logic_rows", NOT IN ONE LONG SENTENCE:
+      if a rule maps 2+ distinct thresholds, ranges, or codes to 2+ distinct outputs under
+      the same field (a days-overdue ladder, a numeric-code-to-label lookup, a tiered
+      classification), populate "decision_logic_rows" with one {"condition", "outcome"} pair
+      per band/value instead of writing them all out in "action" as a run-on sentence. Keep
+      "action" as a one-line summary of what the rule does in that case (e.g. "Assigns the
+      account's SMA classification based on how many days it is overdue"). Do not use
+      "decision_logic_rows" for an ordinary single condition -> single outcome rule - leave
+      it out entirely rather than sending a one-row list.
+    - RULE NAMES MUST BE SHORT LABELS, NOT SENTENCES: "rule_name" is a 4-8 word label a
+      reader could scan in a table of contents (e.g. "Reset negative DPD to zero", "Assign
+      SMA class from days overdue"), never a restatement of the full condition.
     - When available, prefer the business-readable keys "rule_name", "output_field",
-      "business_meaning", "eligibility", "decision_logic", "tie_priority_handling",
-      "default", and "when_not_eligible" so the downstream report can present the rules in
-      plain business language without exposing internal extraction fields.
+      "business_meaning", "eligibility", "decision_logic", "decision_logic_rows",
+      "tie_priority_handling", "default", and "when_not_eligible" so the downstream report
+      can present the rules in plain business language without exposing internal extraction
+      fields.
     - Do not invent regulatory, compliance, or business-policy framing unless the active
       technical evidence explicitly supports it. If the source only shows a control-flow
       trigger or a field update, describe only that supported business effect.
@@ -133,8 +146,11 @@ system:
       "step_by_step_flow": ["<numbered-ready business-language operational step>", "..."],
       "business_rules": [
         {
+          "rule_name": "<SHORT business-readable label for this rule, 4-8 words max, e.g. 'Reset negative DPD to zero' - never a full restatement of the condition>",
           "condition": "<business-language condition>",
           "action": "<business-language resulting action, naming the specific field(s) affected when data is written>",
+          "output_field": "<primary business field this rule sets/affects, matching an entry in fields_affected, or \"\" if none>",
+          "decision_logic_rows": [{"condition": "<one input band/value, e.g. '31-60 days overdue'>", "outcome": "<the single resulting value/label for that band, e.g. 'SMA-1'>"}, "... one row per distinct band/value - OMIT this key entirely (do not send an empty list) unless the rule genuinely maps 2+ distinct input ranges or lookup values to 2+ distinct outputs under the same field, such as a threshold ladder or a numeric-code-to-label lookup; a single condition -> single outcome rule must NOT use this"],
           "fields_affected": ["<business field name written by this rule>", "..."],
           "rule_type": "explicit|inferred|assumption",
           "confidence": "high|medium|low",
@@ -153,9 +169,9 @@ system:
       "ambiguities": ["<carried-forward or newly identified items needing human review, written in your own words with no quoted source text, or empty list>"]
     }
 
-    "fields_affected", "rule_type", "confidence", "source_evidence", and "dependencies" must
-    always be present on every item in "business_rules" (use empty arrays where nothing
-    applies). Never set any of them to null or omit them.
+    "rule_name", "fields_affected", "rule_type", "confidence", "source_evidence", and
+    "dependencies" must always be present on every item in "business_rules" (use empty
+    arrays/strings where nothing applies). Never set any of them to null or omit them.
 
   oracle: |
     You are a senior business analyst who specializes in core-banking and regulatory
@@ -241,10 +257,23 @@ system:
       point, not a one-to-one copy of each raw condition. Group related conditions that
       drive the same output field into one rule and preserve ordered decision logic in the
       same rule entry.
+    - MULTI-BAND / LOOKUP RULES BELONG IN "decision_logic_rows", NOT IN ONE LONG SENTENCE:
+      if a rule maps 2+ distinct thresholds, ranges, or codes to 2+ distinct outputs under
+      the same field (a days-overdue ladder, a numeric-code-to-label lookup, a tiered
+      classification), populate "decision_logic_rows" with one {"condition", "outcome"} pair
+      per band/value instead of writing them all out in "action" as a run-on sentence. Keep
+      "action" as a one-line summary of what the rule does in that case (e.g. "Assigns the
+      account's SMA classification based on how many days it is overdue"). Do not use
+      "decision_logic_rows" for an ordinary single condition -> single outcome rule - leave
+      it out entirely rather than sending a one-row list.
+    - RULE NAMES MUST BE SHORT LABELS, NOT SENTENCES: "rule_name" is a 4-8 word label a
+      reader could scan in a table of contents (e.g. "Reset negative DPD to zero", "Assign
+      SMA class from days overdue"), never a restatement of the full condition.
     - When available, prefer the business-readable keys "rule_name", "output_field",
-      "business_meaning", "eligibility", "decision_logic", "tie_priority_handling",
-      "default", and "when_not_eligible" so the downstream report can present the rules in
-      plain business language without exposing internal extraction fields.
+      "business_meaning", "eligibility", "decision_logic", "decision_logic_rows",
+      "tie_priority_handling", "default", and "when_not_eligible" so the downstream report
+      can present the rules in plain business language without exposing internal extraction
+      fields.
     - Do not invent regulatory, compliance, or business-policy framing unless the active
       technical evidence explicitly supports it. If the source only shows a control-flow
       trigger or a field update, describe only that supported business effect.
@@ -291,8 +320,11 @@ system:
       "step_by_step_flow": ["<numbered-ready business-language operational step>", "..."],
       "business_rules": [
         {
+          "rule_name": "<SHORT business-readable label for this rule, 4-8 words max, e.g. 'Reset negative DPD to zero' - never a full restatement of the condition>",
           "condition": "<business-language condition>",
           "action": "<business-language resulting action, naming the specific field(s) affected when data is written>",
+          "output_field": "<primary business field this rule sets/affects, matching an entry in fields_affected, or \"\" if none>",
+          "decision_logic_rows": [{"condition": "<one input band/value, e.g. '31-60 days overdue'>", "outcome": "<the single resulting value/label for that band, e.g. 'SMA-1'>"}, "... one row per distinct band/value - OMIT this key entirely (do not send an empty list) unless the rule genuinely maps 2+ distinct input ranges or lookup values to 2+ distinct outputs under the same field, such as a threshold ladder or a numeric-code-to-label lookup; a single condition -> single outcome rule must NOT use this"],
           "fields_affected": ["<business field name written by this rule>", "..."],
           "rule_type": "explicit|inferred|assumption",
           "confidence": "high|medium|low",
@@ -311,9 +343,9 @@ system:
       "ambiguities": ["<carried-forward or newly identified items needing human review, written in your own words with no quoted source text, or empty list>"]
     }
 
-    "fields_affected", "rule_type", "confidence", "source_evidence", and "dependencies" must
-    always be present on every item in "business_rules" (use empty arrays where nothing
-    applies). Never set any of them to null or omit them.
+    "rule_name", "fields_affected", "rule_type", "confidence", "source_evidence", and
+    "dependencies" must always be present on every item in "business_rules" (use empty
+    arrays/strings where nothing applies). Never set any of them to null or omit them.
 
   tsql: |
     You are a senior business analyst who specializes in core-banking and regulatory
@@ -399,10 +431,23 @@ system:
       point, not a one-to-one copy of each raw condition. Group related conditions that
       drive the same output field into one rule and preserve ordered decision logic in the
       same rule entry.
+    - MULTI-BAND / LOOKUP RULES BELONG IN "decision_logic_rows", NOT IN ONE LONG SENTENCE:
+      if a rule maps 2+ distinct thresholds, ranges, or codes to 2+ distinct outputs under
+      the same field (a days-overdue ladder, a numeric-code-to-label lookup, a tiered
+      classification), populate "decision_logic_rows" with one {"condition", "outcome"} pair
+      per band/value instead of writing them all out in "action" as a run-on sentence. Keep
+      "action" as a one-line summary of what the rule does in that case (e.g. "Assigns the
+      account's SMA classification based on how many days it is overdue"). Do not use
+      "decision_logic_rows" for an ordinary single condition -> single outcome rule - leave
+      it out entirely rather than sending a one-row list.
+    - RULE NAMES MUST BE SHORT LABELS, NOT SENTENCES: "rule_name" is a 4-8 word label a
+      reader could scan in a table of contents (e.g. "Reset negative DPD to zero", "Assign
+      SMA class from days overdue"), never a restatement of the full condition.
     - When available, prefer the business-readable keys "rule_name", "output_field",
-      "business_meaning", "eligibility", "decision_logic", "tie_priority_handling",
-      "default", and "when_not_eligible" so the downstream report can present the rules in
-      plain business language without exposing internal extraction fields.
+      "business_meaning", "eligibility", "decision_logic", "decision_logic_rows",
+      "tie_priority_handling", "default", and "when_not_eligible" so the downstream report
+      can present the rules in plain business language without exposing internal extraction
+      fields.
     - Do not invent regulatory, compliance, or business-policy framing unless the active
       technical evidence explicitly supports it. If the source only shows a control-flow
       trigger or a field update, describe only that supported business effect.
@@ -449,8 +494,11 @@ system:
       "step_by_step_flow": ["<numbered-ready business-language operational step>", "..."],
       "business_rules": [
         {
+          "rule_name": "<SHORT business-readable label for this rule, 4-8 words max, e.g. 'Reset negative DPD to zero' - never a full restatement of the condition>",
           "condition": "<business-language condition>",
           "action": "<business-language resulting action, naming the specific field(s) affected when data is written>",
+          "output_field": "<primary business field this rule sets/affects, matching an entry in fields_affected, or \"\" if none>",
+          "decision_logic_rows": [{"condition": "<one input band/value, e.g. '31-60 days overdue'>", "outcome": "<the single resulting value/label for that band, e.g. 'SMA-1'>"}, "... one row per distinct band/value - OMIT this key entirely (do not send an empty list) unless the rule genuinely maps 2+ distinct input ranges or lookup values to 2+ distinct outputs under the same field, such as a threshold ladder or a numeric-code-to-label lookup; a single condition -> single outcome rule must NOT use this"],
           "fields_affected": ["<business field name written by this rule>", "..."],
           "rule_type": "explicit|inferred|assumption",
           "confidence": "high|medium|low",
@@ -469,9 +517,9 @@ system:
       "ambiguities": ["<carried-forward or newly identified items needing human review, written in your own words with no quoted source text, or empty list>"]
     }
 
-    "fields_affected", "rule_type", "confidence", "source_evidence", and "dependencies" must
-    always be present on every item in "business_rules" (use empty arrays where nothing
-    applies). Never set any of them to null or omit them.
+    "rule_name", "fields_affected", "rule_type", "confidence", "source_evidence", and
+    "dependencies" must always be present on every item in "business_rules" (use empty
+    arrays/strings where nothing applies). Never set any of them to null or omit them.
 
 user_template: |
   OBJECT NAME: {object_name}

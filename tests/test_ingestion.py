@@ -16,6 +16,7 @@ from agents.ingestion import CodeChunk
 from agents.report_formatter import ReportFormatterAgent
 from guardrails import ground_extraction_against_source
 from dialect_detector import DialectDetectionResult, UnsupportedDialectError, detect_dialect
+import technical_sql_ops as sql_ops
 from technical_sql_ops import extract_table_operations_from_chunks, split_table_operations
 
 
@@ -512,6 +513,75 @@ WHERE RUNNINGPROCESSNAME='SMA_MARKING'
         for op in writes
     )
     assert all("Always, on each execution" not in (op.get("where_predicate") or "") for op in operations)
+
+
+def test_regex_fallback_preserves_where_without_alias(monkeypatch):
+    def fail_parse_one(*args, **kwargs):
+        raise sql_ops.ParseError("forced fallback")
+
+    monkeypatch.setattr(sql_ops.sqlglot, "parse_one", fail_parse_one)
+
+    chunk = CodeChunk(
+        chunk_id="fallback_where",
+        kind="main_body",
+        text="SELECT DATE FROM SYSDAYMATRIX WHERE TIMEKEY = @TIMEKEY",
+        embedded_sql=[],
+        context_path=["main_body"],
+    )
+
+    operations, _ = extract_table_operations_from_chunks([chunk], "tsql")
+    reads, writes = split_table_operations(operations)
+
+    assert not writes
+    assert any(
+        op["table"] == "SYSDAYMATRIX"
+        and op["operation"] == "READ"
+        and op["where_predicate"] == "TIMEKEY = @TIMEKEY"
+        and op["table_alias"] == ""
+        for op in reads
+    )
+
+
+def test_regex_fallback_captures_insert_and_delete(monkeypatch):
+    def fail_parse_one(*args, **kwargs):
+        raise sql_ops.ParseError("forced fallback")
+
+    monkeypatch.setattr(sql_ops.sqlglot, "parse_one", fail_parse_one)
+
+    chunk = CodeChunk(
+        chunk_id="fallback_write",
+        kind="main_body",
+        text=(
+            "INSERT INTO #TEMPTABLE (CustomerAcID, DPD_IntService) "
+            "SELECT CustomerAcID, DPD_IntService FROM #DPD WHERE DPD_IntService > 0; "
+            "DELETE FROM PRO.SMA_MOVEMENT_HISTORY WHERE TIMEKEY = @TIMEKEY"
+        ),
+        embedded_sql=[],
+        context_path=["main_body"],
+    )
+
+    operations, _ = extract_table_operations_from_chunks([chunk], "tsql")
+    reads, writes = split_table_operations(operations)
+
+    assert any(
+        op["table"] == "#TEMPTABLE"
+        and op["operation"] == "INSERT"
+        and op["target_columns"] == ["CustomerAcID", "DPD_IntService"]
+        and op["source_columns"] == ["CustomerAcID", "DPD_IntService"]
+        for op in writes
+    )
+    assert any(
+        op["table"] == "PRO.ACLRUNNINGPROCESSSTATUS" or op["table"] == "PRO.SMA_MOVEMENT_HISTORY"
+        for op in writes
+    )
+    assert any(
+        op["table"] == "PRO.SMA_MOVEMENT_HISTORY"
+        and op["operation"] == "DELETE"
+        and op["where_predicate"] == "TIMEKEY = @TIMEKEY"
+        and op["table_alias"] == ""
+        for op in writes
+    )
+    assert not reads or all(op["operation"] == "READ" for op in reads)
 
 
 def test_table_sections_do_not_turn_missing_predicates_into_filters():

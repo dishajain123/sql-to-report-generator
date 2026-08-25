@@ -18,6 +18,7 @@ from sqlglot import exp
 from sqlglot.errors import ParseError
 
 from agents.ingestion import CodeChunk, CodeIngestionAgent
+from sql_statement_boundaries import split_top_level_statements
 
 
 _TABLE_REF_PATTERN = r"(?:\[(?:[^\]]|\]\])+\]|[#A-Za-z_][\w$#]*)(?:\s*\.\s*(?:\[(?:[^\]]|\]\])+\]|[#A-Za-z_][\w$#]*))*"
@@ -43,6 +44,14 @@ _TABLE_ALIAS_STOPWORDS = {
     "SET",
     "END",
 }
+# Same stopwords, usable as a negative lookahead *inside* a regex alias
+# capture group, so "<table> WHERE ..." (no real alias) never has "WHERE"
+# swallowed as if it were an alias - which would otherwise strip the
+# keyword out of the remaining text and silently blank the WHERE clause.
+_TABLE_ALIAS_STOPWORD_PATTERN = "|".join(sorted(_TABLE_ALIAS_STOPWORDS))
+_OPTIONAL_ALIAS_GROUP = (
+    rf"(?:\s+(?:AS\s+)?(?!(?:{_TABLE_ALIAS_STOPWORD_PATTERN})\b)(?P<{{name}}>\w+))?"
+)
 
 
 @dataclass
@@ -171,103 +180,13 @@ def _split_embedded_sql_statements(embedded_sql: str, dialect: str) -> List[str]
     if not text:
         return []
     masked = CodeIngestionAgent._mask_strings_and_comments(text, mask_brackets=(str(dialect).lower() != "tsql"))
-    lines = text.splitlines(keepends=True)
-    if not lines:
-        return [text]
-
-    spans: List[Tuple[int, int]] = []
-    current_start: Optional[int] = None
-    current_is_cte = False
-    cte_main_consumed = False
-    current_statement_kind: Optional[str] = None
-    offset = 0
-
-    for line in lines:
-        line_masked = masked[offset : offset + len(line)]
-        stripped = line_masked.lstrip()
-        indent = len(line_masked) - len(stripped)
-        line_start = offset + indent
-        keyword_match = re.match(
-            r"(?i)^(WITH|SELECT|INSERT|UPDATE|DELETE|MERGE|DECLARE|SET)\b", stripped
-        )
-        terminator_match = re.match(
-            r"(?i)^(END(?:\s+(?:CATCH|TRY|IF|LOOP|WHILE|CASE))?|ELSE|EXCEPTION|GO)\b",
-            stripped,
-        )
-
-        if terminator_match and current_start is not None and _line_is_top_level_statement_start(line_masked):
-            span = text[current_start:line_start].strip()
-            if span:
-                spans.append((current_start, line_start))
-            current_start = None
-            current_is_cte = False
-            cte_main_consumed = False
-            current_statement_kind = None
-            offset += len(line)
-            continue
-
-        if keyword_match and _line_is_top_level_statement_start(line_masked):
-            keyword = keyword_match.group(1).upper()
-            if (
-                keyword == "SET"
-                and current_start is not None
-                and current_statement_kind in {"UPDATE", "INSERT", "DELETE", "MERGE"}
-            ):
-                offset += len(line)
-                continue
-            if current_start is None:
-                current_start = line_start
-                current_is_cte = keyword == "WITH"
-                cte_main_consumed = False
-                current_statement_kind = keyword
-            elif current_is_cte and not cte_main_consumed and keyword in {
-                "SELECT",
-                "INSERT",
-                "UPDATE",
-                "DELETE",
-                "MERGE",
-            }:
-                cte_main_consumed = True
-                current_statement_kind = keyword
-            else:
-                span = text[current_start:line_start].strip()
-                if span:
-                    spans.append((current_start, line_start))
-                current_start = line_start
-                current_is_cte = keyword == "WITH"
-                cte_main_consumed = False
-                current_statement_kind = keyword
-
-        offset += len(line)
-
-    if current_start is not None:
-        spans.append((current_start, len(text)))
-
-    statements = [text[start:end].strip() for start, end in spans if text[start:end].strip()]
-    return statements or [text]
+    return split_top_level_statements(text, masked)
 
 
 def _strip_sql_comments(text: str) -> str:
     stripped = re.sub(r"/\*.*?\*/", " ", text, flags=re.DOTALL)
     stripped = re.sub(r"--[^\n]*", " ", stripped)
     return stripped
-
-
-def _line_is_top_level_statement_start(line_masked: str) -> bool:
-    # If the line starts with DML/CTE keywords at top level, treat it as a
-    # statement boundary. Any substantial nesting before the keyword means it
-    # belongs to an inner subquery/CASE block and should not split the source.
-    depth = 0
-    for ch in line_masked:
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth = max(depth - 1, 0)
-        if depth > 0:
-            return False
-        if ch.strip():
-            break
-    return True
 
 
 def _extract_table_ops_from_tree(
@@ -556,6 +475,83 @@ def _operation_dedupe_key(operation: Dict[str, Any]) -> tuple:
     )
 
 
+_JOIN_KEYWORDS_RE = re.compile(
+    r"(?is)\b(?:INNER\s+JOIN|LEFT\s+(?:OUTER\s+)?JOIN|RIGHT\s+(?:OUTER\s+)?JOIN|"
+    r"FULL\s+(?:OUTER\s+)?JOIN|OUTER\s+JOIN|CROSS\s+JOIN|JOIN)\b"
+)
+
+
+def _extract_from_clause_alias_map(from_text: str) -> Dict[str, str]:
+    """Parse a raw `FROM ... JOIN ...` clause fragment (regex-fallback path
+    only - the sqlglot AST path resolves aliases structurally already) and
+    return {ALIAS_UPPER: real_table_name}. Best-effort: any segment that
+    doesn't cleanly match "<table> [AS] <alias>" is skipped rather than
+    guessed at.
+    """
+    if not from_text:
+        return {}
+    alias_map: Dict[str, str] = {}
+    for segment in _JOIN_KEYWORDS_RE.split(from_text):
+        # A base FROM clause can list multiple comma-separated tables; a
+        # JOIN segment carries its own ON predicate that must be stripped
+        # first so it doesn't get swallowed into the alias match.
+        before_on = re.split(r"(?is)\bON\b", segment, maxsplit=1)[0]
+        for candidate in before_on.split(","):
+            match = re.match(
+                rf"(?is)\s*(?P<table>{_TABLE_REF_PATTERN})\s*(?:(?:AS\s+)?(?P<alias>\w+))?\s*$",
+                candidate.strip(),
+            )
+            if not match:
+                continue
+            alias = (match.group("alias") or "").strip()
+            table_ref = match.group("table").strip()
+            if alias and alias.upper() not in _TABLE_ALIAS_STOPWORDS:
+                alias_map[alias.upper()] = table_ref
+    return alias_map
+
+
+def _find_top_level_keyword(masked_text: str, keyword: str, start: int = 0) -> int:
+    """Return the index of the first standalone occurrence of `keyword`
+    (matched as a whole word, case-insensitively, against `masked_text`)
+    that sits at parenthesis depth 0, scanning forward from `start`.
+    Returns -1 if not found.
+
+    Depth is computed from the very beginning of `masked_text` (not from
+    `start`) so parens opened earlier in the string are still accounted
+    for correctly.
+    """
+    depth = 0
+    for i in range(0, min(start, len(masked_text))):
+        ch = masked_text[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(depth - 1, 0)
+
+    n = len(masked_text)
+    kw = keyword.upper()
+    kw_len = len(kw)
+    i = start
+    while i < n:
+        ch = masked_text[i]
+        if ch == "(":
+            depth += 1
+            i += 1
+            continue
+        if ch == ")":
+            depth = max(depth - 1, 0)
+            i += 1
+            continue
+        if depth == 0 and masked_text[i : i + kw_len].upper() == kw:
+            before_ok = i == 0 or not (masked_text[i - 1].isalnum() or masked_text[i - 1] == "_")
+            after_idx = i + kw_len
+            after_ok = after_idx >= n or not (masked_text[after_idx].isalnum() or masked_text[after_idx] == "_")
+            if before_ok and after_ok:
+                return i
+        i += 1
+    return -1
+
+
 def _regex_fallback_table_operations(
     *,
     statement_text: str,
@@ -568,7 +564,8 @@ def _regex_fallback_table_operations(
 
     select_match = re.search(
         rf"(?is)\bSELECT\b(?P<select>.*?)\bFROM\b\s+(?P<table>{_TABLE_REF_PATTERN})"
-        r"(?:\s+(?:AS\s+)?(?P<alias>\w+))?(?P<rest>.*?)(?=$|\bUPDATE\b|\bINSERT\b|\bDELETE\b|\bMERGE\b|\bDECLARE\b|\bSET\b|\bEND\b)",
+        + _OPTIONAL_ALIAS_GROUP.format(name="alias")
+        + r"(?P<rest>.*?)(?=$|\bUPDATE\b|\bINSERT\b|\bDELETE\b|\bMERGE\b|\bDECLARE\b|\bSET\b|\bEND\b)",
         text,
     )
     if select_match:
@@ -620,22 +617,57 @@ def _regex_fallback_table_operations(
             }
         )
 
-    update_match = re.search(
+    update_head_match = re.search(
         rf"(?is)\bUPDATE\s+(?P<table>{_TABLE_REF_PATTERN})"
-        r"(?:\s+(?:AS\s+)?(?P<alias>\w+))?\s+SET\s+(?P<set>.*?)(?:\bFROM\b\s+(?P<from>.*?))?"
-        r"(?:\bWHERE\b\s+(?P<where>.*?))?(?=$|\bUPDATE\b|\bINSERT\b|\bDELETE\b|\bMERGE\b|\bDECLARE\b|\bSET\b|\bEND\b)",
+        + _OPTIONAL_ALIAS_GROUP.format(name="alias")
+        + r"\s+SET\s+",
         text,
     )
-    if update_match:
-        table = update_match.group("table")
-        alias = update_match.group("alias") or ""
-        set_part = update_match.group("set") or ""
-        where_part = _normalize_clause_text(update_match.group("where") or "")
+    if update_head_match:
+        table = update_head_match.group("table")
+        alias = update_head_match.group("alias") or ""
+        set_start = update_head_match.end()
+        masked_full = CodeIngestionAgent._mask_strings_and_comments(
+            text, mask_brackets=(str(dialect).lower() != "tsql")
+        )
+
+        from_idx = _find_top_level_keyword(masked_full, "FROM", set_start)
+        where_idx = _find_top_level_keyword(masked_full, "WHERE", set_start)
+
+        if from_idx != -1 and (where_idx == -1 or from_idx < where_idx):
+            set_part = text[set_start:from_idx]
+            from_end = where_idx if where_idx != -1 else len(text)
+            from_part = text[from_idx + 4 : from_end]
+            where_part = _normalize_clause_text(text[where_idx + 5 :]) if where_idx != -1 else ""
+        elif where_idx != -1:
+            set_part = text[set_start:where_idx]
+            from_part = ""
+            where_part = _normalize_clause_text(text[where_idx + 5 :])
+        else:
+            set_part = text[set_start:]
+            from_part = ""
+            where_part = ""
+
         target_columns = _split_update_target_columns(set_part)
+
+        # T-SQL allows `UPDATE <alias> SET ... FROM <real_table> <alias> JOIN ...`.
+        # In that shape the token right after UPDATE is an alias, not a table
+        # name - resolve it against the FROM/JOIN clause before falling back
+        # to using it verbatim, so the report never shows a bare alias (A, B,
+        # AA...) in place of the real table.
+        alias_map = _extract_from_clause_alias_map(from_part)
+        resolved_table = alias_map.get(table.strip().upper())
+        if resolved_table:
+            final_table = resolved_table
+            final_alias = table.strip()
+        else:
+            final_table = table.strip()
+            final_alias = alias
+
         operations.append(
             {
-                "table": _normalize_table_reference_text(table.strip(), text),
-                "table_alias": alias,
+                "table": _normalize_table_reference_text(final_table, text),
+                "table_alias": final_alias,
                 "operation": "UPDATE",
                 "statement_kind": "UPDATE",
                 "source_statement_id": statement_id,
@@ -661,6 +693,116 @@ def _regex_fallback_table_operations(
                     "chunk_context": list(chunk.context_path or []),
                     "statement_id": statement_id,
                     "statement_kind": "UPDATE",
+                    "statement_text": statement_text,
+                    "statement_parse_status": "regex_fallback",
+                    "dialect": dialect,
+                    "table_occurrence": 1,
+                },
+            }
+        )
+
+    insert_match = re.search(
+        rf"(?is)\bINSERT\s+INTO\s+(?P<table>{_TABLE_REF_PATTERN})\s*"
+        r"(?:\((?P<cols>[^()]*)\))?\s*(?P<rest>.*?)"
+        r"(?=$|\bUPDATE\b|\bINSERT\b|\bDELETE\b|\bMERGE\b|\bDECLARE\b|\bEND\b)",
+        text,
+    )
+    if insert_match:
+        table = insert_match.group("table")
+        cols_text = insert_match.group("cols") or ""
+        rest = insert_match.group("rest") or ""
+        target_columns = _unique_preserve([c.strip() for c in cols_text.split(",") if c.strip()])
+        select_in_rest = re.search(r"(?is)\bSELECT\b(?P<select>.*?)\bFROM\b", rest)
+        source_columns = (
+            _split_simple_select_columns(select_in_rest.group("select")) if select_in_rest else []
+        )
+        if not target_columns and source_columns:
+            # `INSERT INTO table SELECT col1, col2 ...` with no explicit
+            # column list - the selected columns are the effective targets.
+            target_columns = list(source_columns)
+        operations.append(
+            {
+                "table": _normalize_table_reference_text(table.strip(), text),
+                "table_alias": "",
+                "operation": "INSERT",
+                "statement_kind": "INSERT",
+                "source_statement_id": statement_id,
+                "statement_id": statement_id,
+                "source_statement_text": statement_text,
+                "source_chunk_id": chunk.chunk_id,
+                "source_chunk_kind": chunk.kind,
+                "source_chunk_context": list(chunk.context_path or []),
+                "target_columns": target_columns,
+                "source_columns": source_columns,
+                "columns": _unique_preserve(target_columns),
+                "where_predicate": None,
+                "filter_condition": None,
+                "having_predicate": None,
+                "join_predicates": [],
+                "exists_predicates": [],
+                "constants": _extract_simple_constants(text),
+                "active_status": "ACTIVE",
+                "confidence": "medium",
+                "provenance": {
+                    "chunk_id": chunk.chunk_id,
+                    "chunk_kind": chunk.kind,
+                    "chunk_context": list(chunk.context_path or []),
+                    "statement_id": statement_id,
+                    "statement_kind": "INSERT",
+                    "statement_text": statement_text,
+                    "statement_parse_status": "regex_fallback",
+                    "dialect": dialect,
+                    "table_occurrence": 1,
+                },
+            }
+        )
+
+    delete_match = re.search(
+        rf"(?is)\bDELETE\s+(?:(?P<pre_alias>\w+)\s+)?FROM\s+(?P<table>{_TABLE_REF_PATTERN})"
+        + _OPTIONAL_ALIAS_GROUP.format(name="post_alias")
+        + r"(?P<rest>.*?)"
+        r"(?=$|\bUPDATE\b|\bINSERT\b|\bDELETE\b|\bMERGE\b|\bDECLARE\b|\bEND\b)",
+        text,
+    )
+    if delete_match:
+        table = delete_match.group("table")
+        pre_alias = delete_match.group("pre_alias") or ""
+        post_alias = delete_match.group("post_alias") or ""
+        rest = delete_match.group("rest") or ""
+        where_match = re.search(r"(?is)\bWHERE\b(?P<where>.*)$", rest)
+        where_predicate = _normalize_clause_text(where_match.group("where")) if where_match else ""
+        alias = post_alias or pre_alias
+        if alias.upper() in _TABLE_ALIAS_STOPWORDS:
+            alias = ""
+        operations.append(
+            {
+                "table": _normalize_table_reference_text(table.strip(), text),
+                "table_alias": alias,
+                "operation": "DELETE",
+                "statement_kind": "DELETE",
+                "source_statement_id": statement_id,
+                "statement_id": statement_id,
+                "source_statement_text": statement_text,
+                "source_chunk_id": chunk.chunk_id,
+                "source_chunk_kind": chunk.kind,
+                "source_chunk_context": list(chunk.context_path or []),
+                "target_columns": [],
+                "source_columns": _extract_simple_columns(text),
+                "columns": [],
+                "where_predicate": where_predicate,
+                "filter_condition": where_predicate or None,
+                "having_predicate": None,
+                "join_predicates": [],
+                "exists_predicates": [],
+                "constants": _extract_simple_constants(text),
+                "active_status": "ACTIVE",
+                "confidence": "medium",
+                "provenance": {
+                    "chunk_id": chunk.chunk_id,
+                    "chunk_kind": chunk.kind,
+                    "chunk_context": list(chunk.context_path or []),
+                    "statement_id": statement_id,
+                    "statement_kind": "DELETE",
                     "statement_text": statement_text,
                     "statement_parse_status": "regex_fallback",
                     "dialect": dialect,
@@ -803,12 +945,15 @@ def _resolve_insert_target(tree: exp.Insert, dialect: str) -> tuple[Optional[exp
 
 def _resolve_update_target(tree: exp.Update, dialect: str) -> Optional[exp.Table]:
     target_alias = _table_alias(tree.this) if isinstance(tree.this, exp.Table) else _normalize_table_name(tree.this)
+    target_alias_key = target_alias.upper()
     from_tables = _collect_table_nodes(tree)
     alias_matches: List[exp.Table] = []
     for table in from_tables:
-        if _table_alias(table) != target_alias and _normalize_table_name(table) != target_alias:
+        table_alias_key = _table_alias(table).upper()
+        table_name_key = _normalize_table_name(table).upper()
+        if table_alias_key != target_alias_key and table_name_key != target_alias_key:
             continue
-        if _normalize_table_name(table) != target_alias or table.db:
+        if table_name_key != target_alias_key or table.db:
             alias_matches.append(table)
     if alias_matches:
         return alias_matches[0]
@@ -831,13 +976,13 @@ def _resolve_merge_target(tree: exp.Merge, dialect: str) -> Optional[exp.Table]:
 
 def _source_tables(tree: exp.Expression, target_table: Optional[exp.Table]) -> List[exp.Table]:
     target_signature = _table_signature(target_table) if target_table is not None else ""
-    target_alias = _table_alias(target_table) if target_table is not None else ""
+    target_alias_key = (_table_alias(target_table) if target_table is not None else "").upper()
     tables = []
     seen: set[tuple[str, str]] = set()
     for table in _collect_table_nodes(tree):
         signature = _table_signature(table)
         alias = _table_alias(table)
-        if signature == target_signature or alias == target_alias:
+        if signature == target_signature or alias.upper() == target_alias_key:
             continue
         key = (signature, alias)
         if key in seen:

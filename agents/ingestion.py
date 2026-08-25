@@ -54,6 +54,7 @@ from sqlglot.errors import ParseError
 
 from dialect_detector import DialectDetectionResult, ORACLE, TSQL, detect_dialect
 from guardrails import InputGuardrailError, run_input_guardrails
+from sql_statement_boundaries import split_top_level_statement_spans
 
 # --------------------------------------------------------------------------
 # Data models
@@ -1151,32 +1152,17 @@ class CodeIngestionAgent:
         ):
             return [text]
 
-        # Split on statement terminators (';') while keeping control-flow
-        # continuations attached to the statement that introduced them.
-        raw_segments = [segment.strip() for segment in text.split(";") if segment.strip()]
-        statements: List[str] = []
-        buffer = ""
-
-        def is_continuation(segment_text: str) -> bool:
-            return bool(
-                re.match(
-                    r"^(ELSE\b|ELSIF\b|WHEN\b|EXCEPTION\b|END\s+(IF|CASE|TRY|CATCH|LOOP|WHILE)\b)",
-                    segment_text,
-                    re.IGNORECASE,
-                )
-            )
-
-        for segment in raw_segments:
-            if not buffer:
-                buffer = segment
-                continue
-            if is_continuation(segment):
-                buffer += ";" + segment
-                continue
-            statements.append(buffer + ";")
-            buffer = segment
-        if buffer:
-            statements.append(buffer + ";")
+        # Split at real top-level statement boundaries (keyword- and
+        # parenthesis-depth-aware, not ';'-based - a lot of legacy T-SQL
+        # has few or no semicolon terminators at all, which made the
+        # previous ';'-only split a silent no-op and forced everything
+        # through the raw line/character hard-wrap below, which does not
+        # know where a statement or a multi-line CASE expression ends and
+        # can truncate mid-expression or even mid-word). This split is
+        # gap-free by construction - every character of `text` still ends
+        # up in exactly one statement piece.
+        spans = split_top_level_statement_spans(text, masked)
+        statements = [text[start:end] for start, end in spans] or [text]
 
         pieces: List[str] = []
         buf = ""
@@ -1191,11 +1177,11 @@ class CodeIngestionAgent:
         if not pieces:
             pieces = [text]
 
-        # Statement-boundary splitting alone cannot help text with too few
-        # (or no) ';' terminators relative to its size - e.g. a long run of
-        # single-line comments. Hard-wrap on line boundaries as a final
-        # fallback so no chunk sent downstream ever exceeds the ceiling,
-        # regardless of how few statement terminators it contains.
+        # A single top-level statement can still be larger than the
+        # ceiling on its own (e.g. one enormous CASE expression) - hard-
+        # wrap on line boundaries as the last resort so no chunk sent
+        # downstream ever exceeds the ceiling, regardless of how few
+        # statement boundaries it contains.
         final_pieces: List[str] = []
         for piece in pieces:
             final_pieces.extend(self._hard_wrap_on_lines(piece))
