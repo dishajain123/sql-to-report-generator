@@ -375,6 +375,39 @@ def _extract_table_ops_from_tree(
             )
         return operations
 
+    if isinstance(tree, exp.TruncateTable):
+        # TRUNCATE has no WHERE/predicate - it is an unconditional,
+        # whole-table wipe, which is a materially different (and higher-
+        # risk) operation than a predicated DELETE. Keep that distinction
+        # visible rather than collapsing it into a generic write, and
+        # never invent a where_predicate/join/exists for it.
+        operations = []
+        for occurrence_index, table in enumerate(
+            getattr(tree, "expressions", None) or [], start=1
+        ):
+            if not isinstance(table, exp.Table):
+                continue
+            operations.append(
+                _build_operation_record(
+                    operation="TRUNCATE",
+                    table=table,
+                    target_columns=[],
+                    source_columns=[],
+                    where_predicate=None,
+                    having_predicate=None,
+                    join_predicates=[],
+                    exists_predicates=[],
+                    constants=[],
+                    statement_kind=statement_kind,
+                    statement_text=statement_text,
+                    statement_id=statement_id,
+                    chunk=chunk,
+                    dialect=dialect,
+                    table_occurrence=occurrence_index,
+                )
+            )
+        return operations
+
     if isinstance(tree, exp.Merge):
         target_table = _resolve_merge_target(tree, dialect)
         if target_table is not None:
@@ -423,7 +456,7 @@ def _extract_table_ops_from_tree(
 
 
 def _iter_top_level_operation_nodes(expression: exp.Expression) -> Iterable[exp.Expression]:
-    relevant_types = (exp.Select, exp.Insert, exp.Update, exp.Delete, exp.Merge)
+    relevant_types = (exp.Select, exp.Insert, exp.Update, exp.Delete, exp.Merge, exp.TruncateTable)
 
     def _children(node: exp.Expression) -> Iterable[exp.Expression]:
         for value in node.args.values():

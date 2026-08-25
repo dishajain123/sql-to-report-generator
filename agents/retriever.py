@@ -58,6 +58,18 @@ class _LocalHashEmbeddingFunction:
     local hash-based embedding avoids Hugging Face downloads and keeps
     the app usable offline while still providing stable semantic-ish
     retrieval over the curated knowledge base.
+
+    Implements the small bit of chromadb's ``EmbeddingFunction`` protocol
+    (``name`` / ``build_from_config`` / ``get_config``) that newer chromadb
+    versions (1.x) require even for a hand-rolled function - without it,
+    ``get_or_create_collection`` on an existing persisted collection raises
+    ``AttributeError: '_LocalHashEmbeddingFunction' object has no
+    attribute 'name'`` from chromadb's own conflict-validation code before
+    a single query ever runs, silently breaking retrieval/RAG in offline
+    mode. Reporting itself as chromadb's reserved "default" name keeps
+    that conflict check a no-op (see chromadb.api.collection_configuration
+    .validate_embedding_function_conflict_on_get) without depending on
+    chromadb's actual default (network-downloaded) embedding function.
     """
 
     def __init__(self, dimension: int = _EMBEDDING_DIMENSION):
@@ -69,6 +81,20 @@ class _LocalHashEmbeddingFunction:
     def embed_query(self, input):
         """Return query embeddings for Chroma versions with split APIs."""
         return [self._embed_text(text) for text in input]
+
+    @staticmethod
+    def name() -> str:
+        return "default"
+
+    @staticmethod
+    def build_from_config(config):
+        return _LocalHashEmbeddingFunction(dimension=(config or {}).get("dimension", _EMBEDDING_DIMENSION))
+
+    def get_config(self):
+        return {"dimension": self.dimension}
+
+    def is_legacy(self) -> bool:
+        return False
 
     def _embed_text(self, text: str) -> List[float]:
         vector = [0.0] * self.dimension

@@ -24,6 +24,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
+from agents.ingestion import decode_sql_source_bytes
 from llm_client import LLMConfig, load_llm_config
 from pipeline import LogicRulesExtractorPipeline, PipelineInputError
 
@@ -339,7 +340,11 @@ if source == "Upload a .sql file":
         label_visibility="collapsed",
     )
     if uploaded is not None:
-        sql_code = uploaded.getvalue().decode("utf-8", errors="replace")
+        # Use the same BOM/heuristic-aware decoder as the CLI path
+        # (agents.ingestion.decode_sql_source_bytes) instead of a bare
+        # UTF-8 decode, which silently corrupts UTF-16 SSMS/Toad exports
+        # (a very common source of "truncated"/garbled SQL in the UI).
+        sql_code = decode_sql_source_bytes(uploaded.getvalue())
         sql_filename = uploaded.name
 
 elif source == "Paste code":
@@ -359,7 +364,7 @@ else:
 
     if sample_files:
         chosen = st.selectbox("Choose a bundled sample", sample_files)
-        sql_code = (SAMPLES_DIR / chosen).read_text(encoding="utf-8", errors="replace")
+        sql_code = decode_sql_source_bytes((SAMPLES_DIR / chosen).read_bytes())
         sql_filename = chosen
         with st.expander("Preview sample code", expanded=False):
             st.code(sql_code, language="sql")

@@ -57,6 +57,69 @@ from guardrails import InputGuardrailError, run_input_guardrails
 from sql_statement_boundaries import split_top_level_statement_spans
 
 # --------------------------------------------------------------------------
+# Source-byte decoding
+# --------------------------------------------------------------------------
+#
+# Kept at module level (not just as a CodeIngestionAgent staticmethod) so
+# every entry point that reads raw SQL bytes - the CLI (main.py), the
+# Streamlit uploader / bundled-sample picker (app.py), and tests - can
+# import and reuse the exact same encoding detection instead of each
+# caller doing its own (often naive) `.decode("utf-8", errors="replace")`,
+# which silently corrupts the very common case of a UTF-16 SSMS/Toad SQL
+# export (every character interleaved with NUL bytes survives the decode
+# as garbage rather than raising, so the corruption is invisible until
+# parsing/extraction downstream mysteriously fails or truncates).
+
+
+def decode_sql_source_bytes(raw: bytes) -> str:
+    """Decode SQL source text using a small set of safe, common encodings.
+
+    Many vendor SQL exports (SSMS "Save As", Toad, etc.) are UTF-16 with a
+    BOM, or UTF-16 without a BOM. Reading them as UTF-8 with
+    errors="replace" does not raise - it "succeeds" while turning every
+    character into `<char>\\x00`, which then fails every keyword/regex
+    match downstream (BEGIN/END, DELETE/TRUNCATE, table names, etc.) with
+    no visible error. We try BOM/heuristic-based decoders first, then fall
+    back to UTF-8.
+    """
+    if not raw:
+        return ""
+
+    candidates: List[str] = []
+
+    if raw.startswith(codecs.BOM_UTF8):
+        candidates.append("utf-8-sig")
+    if raw.startswith(codecs.BOM_UTF16_LE) or raw.startswith(codecs.BOM_UTF16_BE):
+        candidates.append("utf-16")
+    else:
+        # No BOM: heuristically detect UTF-16 by NUL-byte parity. Plain
+        # ASCII/UTF-8 SQL source essentially never contains NUL bytes, so a
+        # high NUL ratio is a strong UTF-16 signal; which half of the byte
+        # pairs is zero tells us little-endian vs big-endian.
+        nul_ratio = raw.count(b"\x00") / max(len(raw), 1)
+        if nul_ratio > 0.1:
+            even_nuls = raw[0::2].count(0) / max(len(raw[0::2]), 1)
+            odd_nuls = raw[1::2].count(0) / max(len(raw[1::2]), 1)
+            if odd_nuls > even_nuls:
+                candidates.extend(["utf-16-le", "utf-16"])
+            elif even_nuls > odd_nuls:
+                candidates.extend(["utf-16-be", "utf-16"])
+
+    candidates.extend(["utf-8-sig", "utf-8"])
+
+    seen = set()
+    for encoding in candidates:
+        if encoding in seen:
+            continue
+        seen.add(encoding)
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+# --------------------------------------------------------------------------
 # Data models
 # --------------------------------------------------------------------------
 
@@ -268,39 +331,13 @@ class CodeIngestionAgent:
     def _decode_source_bytes(raw: bytes) -> str:
         """Decode SQL source text using a small set of safe, common encodings.
 
-        Many vendor SQL exports are UTF-16 with a BOM; reading them as
-        UTF-8 with replacement silently corrupts the header before
-        preprocessing and parameter extraction can run. We try the
-        BOM/heuristic-based decoders first, then fall back to UTF-8.
+        Thin wrapper kept for backward compatibility; delegates to the
+        module-level ``decode_sql_source_bytes`` so every entry point
+        (CLI, Streamlit upload, bundled-sample loading, tests) shares the
+        exact same encoding detection instead of each caller reimplementing
+        (or, worse, skipping) it.
         """
-        candidates: List[str] = []
-
-        if raw.startswith(codecs.BOM_UTF8):
-            candidates.append("utf-8-sig")
-        if raw.startswith(codecs.BOM_UTF16_LE) or raw.startswith(codecs.BOM_UTF16_BE):
-            candidates.append("utf-16")
-        else:
-            nul_ratio = raw.count(b"\x00") / max(len(raw), 1)
-            if nul_ratio > 0.1:
-                even_nuls = raw[0::2].count(0) / max(len(raw[0::2]), 1)
-                odd_nuls = raw[1::2].count(0) / max(len(raw[1::2]), 1)
-                if odd_nuls > even_nuls:
-                    candidates.extend(["utf-16-le", "utf-16"])
-                elif even_nuls > odd_nuls:
-                    candidates.extend(["utf-16-be", "utf-16"])
-
-        candidates.extend(["utf-8-sig", "utf-8"])
-
-        seen = set()
-        for encoding in candidates:
-            if encoding in seen:
-                continue
-            seen.add(encoding)
-            try:
-                return raw.decode(encoding)
-            except UnicodeDecodeError:
-                continue
-        return raw.decode("utf-8", errors="replace")
+        return decode_sql_source_bytes(raw)
 
     # ------------------------------------------------------------------
     # Comment / string masking (used only to find structural split points)

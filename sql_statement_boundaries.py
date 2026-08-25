@@ -35,8 +35,8 @@ running count *carried across lines* to avoid exactly that.
 It also has to work on legacy T-SQL that uses few or no semicolon
 terminators at all (extremely common in older stored procedures), so
 statement boundaries here are keyword-based (a line starting with
-WITH/SELECT/INSERT/UPDATE/DELETE/MERGE/DECLARE at paren-depth 0 starts a
-new statement) rather than relying on ';' at all.
+WITH/SELECT/INSERT/UPDATE/DELETE/MERGE/DECLARE/TRUNCATE at paren-depth 0
+starts a new statement) rather than relying on ';' at all.
 
 Design note - "boundary list", not independent spans: the splitter
 records only the *start* positions of new statements ("cut points") and
@@ -57,7 +57,7 @@ from __future__ import annotations
 import re
 from typing import List, Optional, Tuple
 
-_KEYWORD_RE = re.compile(r"(?i)^(WITH|SELECT|INSERT|UPDATE|DELETE|MERGE|DECLARE)\b")
+_KEYWORD_RE = re.compile(r"(?i)^(WITH|SELECT|INSERT|UPDATE|DELETE|MERGE|DECLARE|TRUNCATE)\b")
 _SET_RE = re.compile(r"(?i)^SET\b")
 _TERMINATOR_RE = re.compile(
     r"(?i)^(END(?:\s+(?:CATCH|TRY|IF|LOOP|WHILE|CASE))?|ELSE|EXCEPTION|GO)\b"
