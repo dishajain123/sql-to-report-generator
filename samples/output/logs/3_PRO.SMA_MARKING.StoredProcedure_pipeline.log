@@ -1,0 +1,38 @@
+2026-08-25 10:13:43,844 | INFO | __main__ | Run 3 started for PRO.SMA_MARKING.StoredProcedure.sql
+2026-08-25 10:13:43,846 | INFO | logic_rules_extractor.pipeline | Stage 1/6: Running input guardrails
+2026-08-25 10:13:43,855 | INFO | logic_rules_extractor.pipeline | Stage 1/6 completed in 0.00s (input guardrails)
+2026-08-25 10:13:43,858 | INFO | logic_rules_extractor.pipeline | Stage 2/6: Detecting dialect
+2026-08-25 10:13:43,905 | INFO | logic_rules_extractor.pipeline | Detected tsql dialect (confidence: high)
+2026-08-25 10:13:43,908 | INFO | logic_rules_extractor.pipeline | Stage 2/6 completed in 0.05s (dialect detection)
+2026-08-25 10:13:43,919 | INFO | logic_rules_extractor.pipeline | Stage 3/6: Preprocessing, parsing, and chunking /tmp/tmplcoilwfl.sql
+2026-08-25 10:13:44,372 | INFO | logic_rules_extractor.pipeline | Detected tsql PROCEDURE 'SMA_MARKING' with 11 chunk(s)
+2026-08-25 10:13:44,377 | INFO | logic_rules_extractor.pipeline | Stage 3/6 completed in 0.46s (preprocessing/parsing/chunking)
+2026-08-25 10:13:44,381 | INFO | logic_rules_extractor.pipeline | Stage 4/6: Retrieving dependencies / pattern context and extracting logic per chunk (model: gpt-4.1)
+2026-08-25 10:13:44,845 | INFO | logic_rules_extractor.pipeline | Persistent knowledge base ready in 0.46s
+2026-08-25 10:14:09,886 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-25 10:14:14,756 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-25 10:14:15,874 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-25 10:14:16,816 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-25 10:14:17,127 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-25 10:14:17,630 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-25 10:14:17,660 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-25 10:14:18,071 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-25 10:14:18,897 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-25 10:14:20,365 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-25 10:14:23,629 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-25 10:14:23,658 | INFO | logic_rules_extractor.pipeline | Stage 4/6 completed in 39.27s total (kb_ready=0.46s, retrieval/KB sum=1.37s, LLM extraction sum=270.08s, workers=8, chunks=11)
+2026-08-25 10:14:23,664 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
+2026-08-25 10:14:23,669 | WARNING | sqlglot | 'BEGIN  
+    SET NOCOUNT ON' contains unsupported syntax. Falling back to parsing as a 'Command'.
+2026-08-25 10:14:23,682 | WARNING | sqlglot | 'BEGIN TRY' contains unsupported syntax. Falling back to parsing as a 'Command'.
+2026-08-25 10:14:25,428 | WARNING | sqlglot | 'Declare @vEffectiveto INT Set @vEffectiveto= (select Timekey-1  FROM [dbo].Automate_Advances WHERE E' contains unsupported syntax. Falling back to parsing as a 'Command'.
+2026-08-25 10:14:25,817 | WARNING | sqlglot | 'BEGIN  CATCH  
+  
+  
+     DROP TABLE #TEMPTABLE_SMACLASS  
+  DROP TABLE #SMACLASS  
+  DROP TABL' contains unsupported syntax. Falling back to parsing as a 'Command'.
+2026-08-25 10:16:31,562 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-25 10:16:31,904 | INFO | logic_rules_extractor.pipeline | Stage 5/6 completed in 128.24s (business reasoning)
+2026-08-25 10:16:31,908 | INFO | logic_rules_extractor.pipeline | Stage 6/6: Applying output guardrails and formatting final report
+2026-08-25 10:16:31,923 | INFO | logic_rules_extractor.pipeline | Stage 6/6 completed in 0.01s (final report generation)

@@ -287,7 +287,7 @@ def test_large_table_is_split_with_repeated_headers_and_no_rows_lost():
     for i in range(75):
         assert f"PRO.TABLE_{i}" in report
     # header line repeated more than once (split happened)
-    assert report.count("| Table Name | Business Context | Filter Conditions |") > 1
+    assert report.count("| Table Name | Key Columns | Filter Conditions |") > 1
 
 
 def test_small_table_is_not_split():

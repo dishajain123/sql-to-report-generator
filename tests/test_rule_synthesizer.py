@@ -410,6 +410,25 @@ def test_report_formatter_surfaces_provenance_fields():
                         "technical_references": ["conditions[1]"],
                         "unresolved_ambiguities": ["Underlying technical chunk could not be parsed cleanly."],
                         "dependencies": [],
+                    },
+                    {
+                        "condition": "SMA classification ladder",
+                        "action": "Assigns SMA classification based on DPD band",
+                        "output_field": "SMA_CLASS",
+                        "decision_logic_rows": [
+                            {"condition": "1-30 days overdue", "outcome": "SMA-0"},
+                            {"condition": "31-60 days overdue", "outcome": "SMA-1"},
+                            {"condition": "61+ days overdue", "outcome": "SMA-2"},
+                        ],
+                        "fields_affected": ["SMA_CLASS"],
+                        "rule_type": "explicit",
+                        "confidence": "high",
+                        "validation_status": "verified",
+                        "source_evidence": ["CASE WHEN DPD_Max BETWEEN 1 AND 30 THEN 'SMA-0' ..."],
+                        "source_chunks": ["04_main_body:main_body"],
+                        "technical_references": [],
+                        "unresolved_ambiguities": [],
+                        "dependencies": [],
                     }
                 ],
                 "calculations": [],
@@ -493,11 +512,12 @@ def test_report_formatter_surfaces_provenance_fields():
         synthesis=result,
         extraction_guardrail_warnings=[],
     )
-    assert "# Business Conditions Report — obj" in report
+    assert "# obj — Business Logic Report" in report
     assert "## Rule: overdue_days <= 90" in report
     assert "## Rule: DPD_Max > 90 [Needs Review]" in report
     assert "**Applies to:**" in report
     assert "### Decision Logic" in report
+    assert "SMA-0" in report and "SMA-1" in report and "SMA-2" in report
     assert "Business Rule Summary" in report
     assert "<details>" in report
     assert "Show rule-to-source mapping" in report
