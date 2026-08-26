@@ -83,6 +83,16 @@ system:
       point, not a one-to-one copy of each raw condition. Group related conditions that
       drive the same output field into one rule and preserve ordered decision logic in the
       same rule entry.
+    - Prefer the core business decision or state change over supporting bookkeeping side
+      effects. Do not split out audit logging, error logging, history logging, or other
+      auxiliary persistence as separate business rules unless that logging is the primary
+      business outcome of the object itself.
+    - Keep "condition" and "action" as terse and stable as possible. Use the shortest
+      faithful branch label or threshold expression that still identifies the rule, and
+      avoid explanatory sentences, hedging, or supporting clauses.
+    - When a rule writes data, list only the actual business fields being written in
+      "fields_affected". Never include audit rows, error rows, generic record phrases, or
+      table names as affected fields.
     - MULTI-BAND / LOOKUP RULES BELONG IN "decision_logic_rows", NOT IN ONE LONG SENTENCE:
       if a rule maps 2+ distinct thresholds, ranges, or codes to 2+ distinct outputs under
       the same field (a days-overdue ladder, a numeric-code-to-label lookup, a tiered
@@ -159,6 +169,8 @@ system:
     - Be concise and precise. Prefer plain English banking terminology (e.g. "overdue days",
       "asset classification", "provisioning amount", "outstanding balance") over generic
       terms.
+    - If the source shows a short control-flow branch label or threshold, prefer that exact
+      compact form rather than expanding it into a narrative sentence.
 
     AMBIGUITIES - NEVER QUOTE THE SOURCE:
     - Every string in "ambiguities" must be written entirely in your own analytical words. Do
@@ -304,6 +316,16 @@ system:
       point, not a one-to-one copy of each raw condition. Group related conditions that
       drive the same output field into one rule and preserve ordered decision logic in the
       same rule entry.
+    - Prefer the core business decision or state change over supporting bookkeeping side
+      effects. Do not split out audit logging, error logging, history logging, or other
+      auxiliary persistence as separate business rules unless that logging is the primary
+      business outcome of the object itself.
+    - Keep "condition" and "action" as terse and stable as possible. Use the shortest
+      faithful branch label or threshold expression that still identifies the rule, and
+      avoid explanatory sentences, hedging, or supporting clauses.
+    - When a rule writes data, list only the actual business fields being written in
+      "fields_affected". Never include audit rows, error rows, generic record phrases, or
+      table names as affected fields.
     - MULTI-BAND / LOOKUP RULES BELONG IN "decision_logic_rows", NOT IN ONE LONG SENTENCE:
       if a rule maps 2+ distinct thresholds, ranges, or codes to 2+ distinct outputs under
       the same field (a days-overdue ladder, a numeric-code-to-label lookup, a tiered
@@ -380,6 +402,8 @@ system:
     - Be concise and precise. Prefer plain English banking terminology (e.g. "overdue days",
       "asset classification", "provisioning amount", "outstanding balance") over generic
       terms.
+    - If the source shows a short control-flow branch label or threshold, prefer that exact
+      compact form rather than expanding it into a narrative sentence.
 
     AMBIGUITIES - NEVER QUOTE THE SOURCE:
     - Every string in "ambiguities" must be written entirely in your own analytical words. Do
@@ -525,6 +549,16 @@ system:
       point, not a one-to-one copy of each raw condition. Group related conditions that
       drive the same output field into one rule and preserve ordered decision logic in the
       same rule entry.
+    - Prefer the core business decision or state change over supporting bookkeeping side
+      effects. Do not split out audit logging, error logging, history logging, or other
+      auxiliary persistence as separate business rules unless that logging is the primary
+      business outcome of the object itself.
+    - Keep "condition" and "action" as terse and stable as possible. Use the shortest
+      faithful branch label or threshold expression that still identifies the rule, and
+      avoid explanatory sentences, hedging, or supporting clauses.
+    - When a rule writes data, list only the actual business fields being written in
+      "fields_affected". Never include audit rows, error rows, generic record phrases, or
+      table names as affected fields.
     - MULTI-BAND / LOOKUP RULES BELONG IN "decision_logic_rows", NOT IN ONE LONG SENTENCE:
       if a rule maps 2+ distinct thresholds, ranges, or codes to 2+ distinct outputs under
       the same field (a days-overdue ladder, a numeric-code-to-label lookup, a tiered
@@ -601,6 +635,8 @@ system:
     - Be concise and precise. Prefer plain English banking terminology (e.g. "overdue days",
       "asset classification", "provisioning amount", "outstanding balance") over generic
       terms.
+    - If the source shows a short control-flow branch label or threshold, prefer that exact
+      compact form rather than expanding it into a narrative sentence.
 
     AMBIGUITIES - NEVER QUOTE THE SOURCE:
     - Every string in "ambiguities" must be written entirely in your own analytical words. Do

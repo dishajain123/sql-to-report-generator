@@ -42,8 +42,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
-from guardrails import ground_extraction_against_source, validate_extraction_shape
-from prompts.prompt_loader import get_prompt_set, render_user_prompt
+from src.ingestion.guardrails import ground_extraction_against_source, validate_extraction_shape
+from src.prompts.prompt_loader import get_prompt_set, render_user_prompt
 
 _EMPTY_EXTRACTION: Dict[str, Any] = {
     "conditions": [],

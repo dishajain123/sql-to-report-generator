@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agents.ingestion import CodeChunk, IngestionResult, Parameter
+from src.ingestion.ingestion import CodeChunk, IngestionResult, Parameter
 from pipeline import LogicRulesExtractorPipeline
 
 
@@ -99,7 +99,7 @@ def test_parallel_chunk_extraction_preserves_order():
 
 
 def test_retriever_build_or_load_is_reused_when_already_loaded(tmp_path, monkeypatch):
-    from agents import retriever as retriever_module
+    from src.retrieval import retriever as retriever_module
 
     agent = retriever_module.PatternRetrievalAgent(
         persist_directory=str(tmp_path / "chroma"),

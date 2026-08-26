@@ -23,11 +23,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
-from agents.ingestion import CodeChunk, CodeIngestionAgent, decode_sql_source_bytes
-from agents.report_formatter import ReportFormatterAgent
-from agents.rule_synthesizer import SynthesisResult
-from sql_statement_boundaries import split_top_level_statements
-from technical_sql_ops import extract_table_operations_from_chunks, split_table_operations
+from src.ingestion.ingestion import CodeChunk, CodeIngestionAgent, decode_sql_source_bytes
+from src.output.report_formatter import ReportFormatterAgent
+from src.synthesis.rule_synthesizer import SynthesisResult
+from src.dialect.detector import DialectDetectionResult
+from src.parsing.statement_boundaries import split_top_level_statements
+from src.parsing.technical_sql_ops import extract_table_operations_from_chunks, split_table_operations
 
 
 # --------------------------------------------------------------------------
@@ -81,6 +82,32 @@ def test_code_ingestion_agent_decode_source_bytes_delegates_to_shared_function()
     text = "SELECT 1"
     raw = b"\xff\xfe" + text.encode("utf-16-le")
     assert CodeIngestionAgent._decode_source_bytes(raw) == decode_sql_source_bytes(raw)
+
+
+def test_ingestion_preserves_original_code_and_chunk_location_metadata():
+    agent = CodeIngestionAgent(max_chunk_chars=200, dialect="oracle")
+    original = "CREATE OR REPLACE PROCEDURE demo AS\nBEGIN\nSELECT 1 FROM dual;\nEND;"
+    cleaned = original.replace("\r\n", "\n")
+    detection = DialectDetectionResult(dialect="ORACLE", confidence="high", concrete_dialect="oracle")
+
+    result = agent.ingest_text(
+        cleaned,
+        dialect="oracle",
+        source_filename="demo.sql",
+        original_code=original,
+        prevalidated_code=cleaned,
+        prevalidated_warnings=[],
+        prevalidated_injection_flags=[],
+        detection_result=detection,
+    )
+
+    assert result.original_code == original
+    assert result.raw_code == cleaned
+    assert result.chunks
+    first_chunk = result.chunks[0]
+    assert first_chunk.source_filename == "demo.sql"
+    assert first_chunk.source_line_start >= 1
+    assert first_chunk.source_line_end >= first_chunk.source_line_start
 
 
 # --------------------------------------------------------------------------
@@ -196,7 +223,7 @@ def test_truncate_immediately_followed_by_insert_no_separators_both_extracted():
 
 
 def test_local_hash_embedding_function_reports_default_name():
-    from agents.retriever import _LocalHashEmbeddingFunction
+    from src.retrieval.retriever import _LocalHashEmbeddingFunction
 
     fn = _LocalHashEmbeddingFunction()
     assert fn.name() == "default"
@@ -372,6 +399,16 @@ def test_source_traceability_table_survives_pipes_in_technical_references():
             "rule_type": "explicit",
             "validation_status": "verified",
             "technical_references": ["conditions[0]"],
+            "evidence_spans": [
+                {
+                    "source_file": "demo.sql",
+                    "line_start": 12,
+                    "line_end": 14,
+                    "chunk_id": "01_main",
+                    "statement_id": "STMT-01",
+                    "evidence_type": "CONDITION",
+                }
+            ],
         }
     ]
     merged_extraction = {
@@ -383,7 +420,58 @@ def test_source_traceability_table_survives_pipes_in_technical_references():
                 "source_chunk_id": "01_main",
                 "source_chunk_kind": "main_body",
             }
-        ]
+        ],
+        "chunk_provenance": [
+            {
+                "chunk_id": "01_main",
+                "chunk_kind": "main_body",
+                "chunk_context": ["main_body"],
+                "embedded_sql": [],
+                "parse_error": "",
+                "guardrail_warnings": [],
+                "support_confidence": "high",
+                "source_file": "demo.sql",
+                "source_char_start": 100,
+                "source_char_end": 200,
+                "source_line_start": 12,
+                "source_line_end": 14,
+                "source_location_status": "available",
+            }
+        ],
     }
     report = ReportFormatterAgent()._source_traceability_details(rules, merged_extraction)
     assert _no_broken_table_rows(report)
+    assert "Lines 12-14" in report
+
+
+def test_business_rule_block_shows_compact_source_location():
+    rules = [
+        {
+            "condition": "overdue_days <= 90",
+            "action": "Keeps the account in the standard bucket",
+            "rule_type": "explicit",
+            "validation_status": "verified",
+            "source_evidence": ["overdue_days <= 90"],
+            "source_chunks": ["01_main:main_body"],
+            "evidence_spans": [
+                {
+                    "source_file": "demo.sql",
+                    "line_start": 12,
+                    "line_end": 14,
+                    "chunk_id": "01_main",
+                    "statement_id": "STMT-01",
+                    "evidence_type": "CONDITION",
+                }
+            ],
+            "technical_references": ["conditions[0]"],
+            "unresolved_ambiguities": [],
+            "dependencies": [],
+        }
+    ]
+    report = ReportFormatterAgent().format(
+        ingestion=_ingestion_stub(),
+        merged_extraction={"tables_read": [], "tables_written": [], "conditions": []},
+        synthesis=_synthesis_stub(rules),
+        extraction_guardrail_warnings=[],
+    )
+    assert "**Source:** demo.sql | Lines 12-14 | Chunk 01_main | Statement STMT-01" in report

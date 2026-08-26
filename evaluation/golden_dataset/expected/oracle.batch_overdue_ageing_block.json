@@ -1,0 +1,24 @@
+{
+  "case_id": "oracle.batch_overdue_ageing_block",
+  "dialect": "ORACLE",
+  "object_type": "PLSQL_BLOCK",
+  "object_name": "UNKNOWN_OBJECT",
+  "parameters": [],
+  "tables_read": ["LOAN_ACCOUNT"],
+  "tables_written": ["LOAN_ACCOUNT", "OVERDUE_AGEING_SUMMARY", "NPA_AUDIT_LOG"],
+  "operations": [
+    {"operation": "READ", "table": "LOAN_ACCOUNT"},
+    {"operation": "UPDATE", "table": "OVERDUE_AGEING_SUMMARY"},
+    {"operation": "MERGE", "table": "OVERDUE_AGEING_SUMMARY"},
+    {"operation": "INSERT", "table": "NPA_AUDIT_LOG"}
+  ],
+  "business_rules": [
+    {"condition": "<= 30 days", "action": "Assign BUCKET_0_30"},
+    {"condition": "<= 60 days", "action": "Assign BUCKET_31_60"},
+    {"condition": "<= 90 days", "action": "Assign BUCKET_61_90"},
+    {"condition": "> 90 days", "action": "Assign BUCKET_90_PLUS"}
+  ],
+  "important_fields": ["overdue_days", "v_ageing_bucket", "v_processed_count"],
+  "ambiguities": [],
+  "review_required": true
+}

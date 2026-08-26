@@ -39,11 +39,15 @@ shown when the synthesized rule actually carries explicit
 from __future__ import annotations
 
 from collections import OrderedDict
+import copy
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from agents.ingestion import IngestionResult
-from agents.rule_synthesizer import SynthesisResult
+from src.ingestion.ingestion import IngestionResult
+from src.ir.canonical_ir import CanonicalBusinessIR
+from src.synthesis.rule_synthesizer import SynthesisResult
+from src.dialect.detector import AMBIGUOUS, ORACLE, TSQL, UNKNOWN, UNSUPPORTED, normalize_dialect_name
+from src.core.pipeline_utils import RunMetadata, run_metadata_to_dict
 
 _NOT_DETERMINED = "Not explicitly determined from source SQL."
 
@@ -82,15 +86,24 @@ class ReportFormatterAgent:
         ingestion: IngestionResult,
         merged_extraction: Dict[str, Any],
         synthesis: SynthesisResult,
+        canonical_ir: Optional[CanonicalBusinessIR] = None,
         extraction_guardrail_warnings: Optional[List[str]] = None,
+        run_metadata: Optional[RunMetadata] = None,
     ) -> str:
-        rules: List[Dict[str, Any]] = synthesis.data.get("business_rules", []) or []
+        run_metadata = run_metadata or getattr(ingestion, "run_metadata", None) or self._metadata_from_merged(
+            merged_extraction
+        )
+        canonical_ir = canonical_ir or self._canonical_ir(ingestion, merged_extraction, synthesis, run_metadata)
+        merged_extraction = canonical_ir.to_legacy_merged_extraction(merged_extraction)
+        synthesis = self._synthesis_view(synthesis, canonical_ir)
+        rules: List[Dict[str, Any]] = [rule.to_dict() for rule in canonical_ir.business_rules]
 
         consolidated_reads = self._consolidate_rows(merged_extraction.get("tables_read", []) or [])
         consolidated_writes = self._consolidate_rows(merged_extraction.get("tables_written", []) or [])
 
         sections = [
             self._title_block(ingestion, synthesis),
+            self._run_metadata_section(ingestion, run_metadata),
             self._at_a_glance(ingestion, synthesis, consolidated_reads, consolidated_writes, rules),
             self._what_this_does(synthesis, rules),
             self._end_to_end_flow(synthesis),
@@ -107,7 +120,9 @@ class ReportFormatterAgent:
             self._source_traceability_details(rules, merged_extraction),
             self._calculations(synthesis),
             self._exception_handling(synthesis),
-            self._validation_summary(rules),
+            self._validation_summary(rules, merged_extraction, synthesis),
+            self._reconciliation_summary(merged_extraction, synthesis),
+            self._quality_summary(merged_extraction, synthesis),
             self._ambiguities(ingestion, synthesis, extraction_guardrail_warnings or []),
         ]
         sections = [s for s in sections if s and s.strip()]
@@ -120,7 +135,72 @@ class ReportFormatterAgent:
     def _title_block(self, ingestion: IngestionResult, synthesis: SynthesisResult) -> str:
         object_name = self._display_object_name(ingestion)
         tagline = self._one_line_purpose(synthesis)
-        return f"# {object_name} — Business Logic Report\n\n> {tagline}"
+        object_id = getattr(ingestion, "object_id", "") or "unassigned"
+        return f"# {object_name} — Business Logic Report\n\n> {tagline}\n\n> Object ID: `{object_id}`"
+
+    @staticmethod
+    def _metadata_from_merged(merged_extraction: Dict[str, Any]) -> Optional[RunMetadata]:
+        metadata = merged_extraction.get("run_metadata")
+        if isinstance(metadata, RunMetadata):
+            return metadata
+        if isinstance(metadata, dict) and metadata:
+            try:
+                return RunMetadata(**metadata)
+            except TypeError:
+                return None
+        return None
+
+    @staticmethod
+    def _canonical_ir(
+        ingestion: IngestionResult,
+        merged_extraction: Dict[str, Any],
+        synthesis: SynthesisResult,
+        run_metadata: Optional[RunMetadata],
+    ) -> CanonicalBusinessIR:
+        cached = merged_extraction.get("canonical_ir") or synthesis.data.get("canonical_ir")
+        if isinstance(cached, dict) and cached:
+            try:
+                return CanonicalBusinessIR.from_pipeline(
+                    ingestion=ingestion,
+                    merged_extraction=merged_extraction,
+                    synthesis=synthesis,
+                    run_metadata=run_metadata,
+                )
+            except Exception:
+                pass
+        return CanonicalBusinessIR.from_pipeline(
+            ingestion=ingestion,
+            merged_extraction=merged_extraction,
+            synthesis=synthesis,
+            run_metadata=run_metadata,
+        )
+
+    @staticmethod
+    def _synthesis_view(synthesis: SynthesisResult, canonical_ir: CanonicalBusinessIR) -> SynthesisResult:
+        view = copy.copy(synthesis)
+        view.data = canonical_ir.to_legacy_synthesis_data(synthesis.data)
+        return view
+
+    def _run_metadata_section(self, ingestion: IngestionResult, run_metadata: Optional[RunMetadata]) -> str:
+        data = run_metadata_to_dict(run_metadata)
+        if not data:
+            return ""
+        rows = [
+            ("Pipeline Version", data.get("pipeline_version", "")),
+            ("Prompt Version", data.get("prompt_version", "")),
+            ("Knowledge Base Version", data.get("knowledge_base_version", "")),
+            ("Model", data.get("model_name", "")),
+            ("Provider", data.get("provider", "")),
+            ("Dialect", self._display_dialect(getattr(ingestion, "dialect", ""))),
+            ("Dialect Confidence", self._title_confidence(getattr(ingestion, "dialect_confidence", ""))),
+            ("Source Hash", data.get("source_hash", "")),
+            ("Configuration Version", data.get("configuration_version", "")),
+            ("Run Timestamp", data.get("run_timestamp", "")),
+            ("Object ID", data.get("object_id", "") or getattr(ingestion, "object_id", "")),
+        ]
+        lines = ["## Run Metadata", "", "| Item | Value |", "|---|---|"]
+        lines.extend(f"| {label} | `{value}` |" if value else f"| {label} |  |" for label, value in rows)
+        return "\n".join(lines)
 
     @staticmethod
     def _one_line_purpose(synthesis: SynthesisResult) -> str:
@@ -129,6 +209,67 @@ class ReportFormatterAgent:
             return _NOT_DETERMINED
         first_sentence = re.split(r"(?<=[.!?])\s+", summary)[0].strip()
         return first_sentence or summary
+
+    @staticmethod
+    def _display_dialect(dialect: str) -> str:
+        normalized = normalize_dialect_name(dialect)
+        mapping = {
+            ORACLE: "Oracle",
+            TSQL: "T-SQL",
+            UNKNOWN: "Unknown",
+            AMBIGUOUS: "Ambiguous",
+            UNSUPPORTED: "Unsupported",
+        }
+        return mapping.get(normalized, str(dialect).title() if dialect else "Unknown")
+
+    @staticmethod
+    def _title_confidence(confidence: str) -> str:
+        normalized = str(confidence or "").strip().lower()
+        return normalized.title() if normalized else "Low"
+
+    @staticmethod
+    def _format_source_location(span: Dict[str, Any]) -> str:
+        source_file = str(span.get("source_file") or "").strip() or "source"
+        line_start = int(span.get("line_start") or -1)
+        line_end = int(span.get("line_end") or -1)
+        chunk_id = str(span.get("chunk_id") or "").strip()
+        statement_id = str(span.get("statement_id") or "").strip()
+
+        parts = [source_file]
+        if line_start > 0:
+            if line_end > 0 and line_end != line_start:
+                parts.append(f"Lines {line_start}-{line_end}")
+            else:
+                parts.append(f"Line {line_start}")
+        if chunk_id:
+            parts.append(f"Chunk {chunk_id}")
+        if statement_id:
+            parts.append(f"Statement {statement_id}")
+        return " | ".join(parts)
+
+    def _format_evidence_spans(self, spans: List[Dict[str, Any]], limit: int = 2) -> str:
+        cleaned: List[str] = []
+        seen: set = set()
+        for span in spans or []:
+            if not isinstance(span, dict):
+                continue
+            key = (
+                str(span.get("source_file") or ""),
+                int(span.get("line_start") or -1),
+                int(span.get("line_end") or -1),
+                str(span.get("chunk_id") or ""),
+                str(span.get("statement_id") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(self._format_source_location(span))
+        if not cleaned:
+            return ""
+        if len(cleaned) > limit:
+            remainder = len(cleaned) - limit
+            return "; ".join(cleaned[:limit]) + f" (+{remainder} more span(s))"
+        return "; ".join(cleaned)
 
     # ------------------------------------------------------------------
     # 1. At a Glance
@@ -142,7 +283,8 @@ class ReportFormatterAgent:
         consolidated_writes: List[Dict[str, Any]],
         rules: List[Dict[str, Any]],
     ) -> str:
-        dialect_label = "Oracle SQL / PL-SQL" if getattr(ingestion, "dialect", "") == "oracle" else "SQL Server T-SQL"
+        dialect_label = self._display_dialect(getattr(ingestion, "dialect", ""))
+        confidence_label = self._title_confidence(getattr(ingestion, "dialect_confidence", ""))
         object_name = self._display_object_name(ingestion)
         object_type = self._display_object_type(getattr(ingestion, "object_type", ""))
 
@@ -163,6 +305,7 @@ class ReportFormatterAgent:
             ("Object", f"`{object_name}`"),
             ("Type", object_type),
             ("SQL Dialect", dialect_label),
+            ("Dialect Confidence", confidence_label),
             ("Parameters", params_display),
             ("Primary Business Entity", entity_display),
             ("Tables Updated", primary_tables),
@@ -170,6 +313,14 @@ class ReportFormatterAgent:
         ]
         lines = ["## At a Glance", "", "| Item | Details |", "|---|---|"]
         lines.extend(f"| {label} | {value} |" for label, value in rows)
+        if normalize_dialect_name(getattr(ingestion, "dialect", "")) in {UNKNOWN, AMBIGUOUS, UNSUPPORTED}:
+            lines.extend(
+                [
+                    "",
+                    "**Manual review required:** the SQL dialect could not be confidently resolved "
+                    "and downstream parsing was handled with a restricted fallback path.",
+                ]
+            )
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -250,6 +401,7 @@ class ReportFormatterAgent:
 
     def _render_business_rule_block(self, idx: int, rule: Dict[str, Any]) -> List[str]:
         rule_name = self._business_rule_name(rule, idx)
+        rule_id = str(rule.get("rule_id") or f"rule_{idx:02d}").strip()
         status = str(rule.get("validation_status") or "unverified").strip().lower()
         title_suffix = " [Needs Review]" if status != "verified" else ""
         output_field = self._business_rule_output(rule)
@@ -260,7 +412,14 @@ class ReportFormatterAgent:
         default_value = self._rule_text_lines(rule.get("default"))
         when_not_eligible = self._rule_text_lines(rule.get("when_not_eligible"))
 
-        lines = [f"## Rule: {rule_name}{title_suffix}", ""]
+        lines = [f"## Rule: {rule_name}{title_suffix}", "", f"**Rule ID:** `{rule_id}`"]
+        reconciliation_status = str(rule.get("reconciliation_status") or "").strip().upper()
+        if reconciliation_status:
+            lines.append(f"**Reconciliation status:** `{reconciliation_status}`")
+        evidence_spans = rule.get("evidence_spans") or []
+        source_location = self._format_evidence_spans(evidence_spans)
+        if source_location:
+            lines.append(f"**Source:** {source_location}")
         if output_field != "Not specified":
             lines.append(f"**Applies to:** `{output_field}`")
         lines.append(f"**Business meaning:** {business_meaning}")
@@ -665,9 +824,13 @@ class ReportFormatterAgent:
         for idx, rule in enumerate(rules, start=1):
             icon = self._review_priority_icon(rule)
             name = self._escape_table_cell(self._business_rule_name(rule, idx))
+            rule_id = self._escape_table_cell(str(rule.get("rule_id") or f"rule_{idx:02d}"))
             output = self._escape_table_cell(self._business_rule_output(rule))
             purpose = self._escape_table_cell(self._shorten_text(self._business_rule_business_meaning(rule), 140))
-            rows.append(f"| {icon} {idx} | {name} | `{output}` | {purpose} |")
+            recon_status = str(rule.get("reconciliation_status") or "").strip().upper()
+            if recon_status:
+                name = f"{name} [{recon_status}]"
+            rows.append(f"| {icon} {idx} | {name} (`{rule_id}`) | `{output}` | {purpose} |")
         return "## Business Rule Summary\n\n" + self._render_split_table(header, rows)
 
     # ------------------------------------------------------------------
@@ -685,14 +848,18 @@ class ReportFormatterAgent:
             "",
         ]
         header = [
-            "| # | Rule | Source Evidence | SQL Statements / Chunks | Technical References | Notes |",
-            "|---|---|---|---|---|---|",
+            "| # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |",
+            "|---|---|---|---|---|---|---|",
         ]
         rows = []
         for idx, rule in enumerate(rules, start=1):
             name = self._business_rule_name(rule, idx)
+            rule_id = str(rule.get("rule_id") or f"rule_{idx:02d}")
             evidence = rule.get("source_evidence") or []
             evidence_display = self._shorten_text("; ".join(evidence), 260) if evidence else "Not cited"
+            source_location_display = self._format_evidence_spans(rule.get("evidence_spans") or [])
+            if not source_location_display:
+                source_location_display = "Not cited"
             source_chunks = rule.get("source_chunks") or []
             source_chunks_display = "; ".join(source_chunks) if source_chunks else "Not cited"
             technical_refs = self._dedupe_technical_references(
@@ -706,14 +873,15 @@ class ReportFormatterAgent:
                 else "Needs Review"
             )
             rows.append(
-                f"| {idx} | {self._escape_table_cell(name)} | {self._escape_table_cell(evidence_display)} | "
-                f"{self._escape_table_cell(source_chunks_display)} | {self._escape_table_cell(technical_refs_display)} | "
-                f"{self._escape_table_cell(notes)} |"
+                f"| {idx} | {self._escape_table_cell(f'{name} ({rule_id})')} | {self._escape_table_cell(evidence_display)} | "
+                f"{self._escape_table_cell(source_location_display)} | {self._escape_table_cell(source_chunks_display)} | "
+                f"{self._escape_table_cell(technical_refs_display)} | {self._escape_table_cell(notes)} |"
             )
         lines.append(self._render_split_table(header, rows))
         lines.append("")
         lines.append(
             "_Source evidence is the literal technical text carried through the pipeline; "
+            "Source Location is derived deterministically from chunk and statement provenance when available; "
             "SQL Statements / Chunks and Technical References point back to the extracted "
             "chunk ids and statement references used by the guardrails. Technical references "
             "that repeat the same table/operation/target-columns are shown once._"
@@ -765,7 +933,12 @@ class ReportFormatterAgent:
         )
         return f"## Exception Handling Behavior\n\n{summary}"
 
-    def _validation_summary(self, rules: List[Dict[str, Any]]) -> str:
+    def _validation_summary(
+        self,
+        rules: List[Dict[str, Any]],
+        merged_extraction: Dict[str, Any],
+        synthesis: SynthesisResult,
+    ) -> str:
         """Rollup of how many business rules are explicit/inferred/
         assumption and verified/unverified, so a reviewer can triage
         which rules need the closest human scrutiny without reading the
@@ -815,6 +988,126 @@ class ReportFormatterAgent:
             lines.append(
                 "\n_Rules marked **ambiguous** are supported only weakly or with "
                 "conflicting technical signals and need a human review before use._"
+            )
+        return "\n".join(lines)
+
+    def _reconciliation_summary(self, merged_extraction: Dict[str, Any], synthesis: SynthesisResult) -> str:
+        reconciliation = merged_extraction.get("reconciliation") or synthesis.data.get("reconciliation") or {}
+        if not isinstance(reconciliation, dict) or not reconciliation:
+            return ""
+
+        summary = reconciliation.get("summary") or {}
+        status_counts = reconciliation.get("status_counts") or {}
+        records = reconciliation.get("records") or []
+        review_required = bool(reconciliation.get("review_required") or summary.get("review_required"))
+
+        lines = [
+            "## Reconciliation Summary",
+            "",
+            f"- **Matched facts:** {summary.get('matched', status_counts.get('MATCHED', 0))}",
+            f"- **Deterministic-only facts:** {summary.get('deterministic_only', status_counts.get('DETERMINISTIC_ONLY', 0))}",
+            f"- **LLM-only claims:** {summary.get('llm_only', status_counts.get('LLM_ONLY', 0))}",
+            f"- **Conflicts:** {summary.get('conflicts', status_counts.get('CONFLICT', 0))}",
+            f"- **Unresolved items:** {summary.get('unresolved', status_counts.get('UNRESOLVED', 0))}",
+        ]
+
+        if review_required:
+            lines.append("- **Review required:** Yes")
+        else:
+            lines.append("- **Review required:** No")
+
+        note = str(summary.get("note") or "").strip()
+        if note:
+            lines.extend(["", note])
+
+        review_items = []
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            status = str(record.get("status") or "").upper()
+            if status in {"CONFLICT", "LLM_ONLY", "UNRESOLVED", "DETERMINISTIC_ONLY"}:
+                review_items.append(record)
+        if review_items:
+            lines.extend(["", "### Review Items", ""])
+            for record in review_items[:5]:
+                label = record.get("kind") or "item"
+                rec_id = record.get("reconciliation_id") or "n/a"
+                rule_id = record.get("rule_id") or ""
+                chunk_id = record.get("chunk_id") or ""
+                statement_id = record.get("statement_id") or ""
+                status = str(record.get("status") or "").upper()
+                note_text = str(record.get("note") or "").strip()
+                context_bits = [bit for bit in [rule_id, chunk_id, statement_id] if bit]
+                context = ", ".join(context_bits) if context_bits else "no direct provenance"
+                line = f"- `{status}` {label} (`{rec_id}`): {context}"
+                if note_text:
+                    line += f" - {note_text}"
+                lines.append(line)
+
+        return "\n".join(lines)
+
+    def _quality_summary(self, merged_extraction: Dict[str, Any], synthesis: SynthesisResult) -> str:
+        quality = merged_extraction.get("quality") or synthesis.data.get("quality") or {}
+        if not isinstance(quality, dict) or not quality:
+            return ""
+
+        coverage = quality.get("coverage") or merged_extraction.get("reconciliation", {}).get("coverage") or {}
+        contradictions = quality.get("contradictions") or merged_extraction.get("reconciliation", {}).get("contradictions") or []
+        factors = quality.get("factors") or {}
+        status = str(quality.get("status") or "LOW_CONFIDENCE").upper()
+        score = quality.get("score")
+        review_required = bool(quality.get("review_required"))
+
+        lines = [
+            "## Quality Summary",
+            "",
+            f"- **Overall status:** {status}",
+        ]
+        if score is not None:
+            lines.append(f"- **Quality score:** {score}/100")
+        lines.append(
+            f"- **Statement coverage:** {coverage.get('parsed_statements', 0)} / {coverage.get('total_statements', 0)}"
+            + (
+                f" ({coverage.get('statement_parse_success_pct')}%)"
+                if coverage.get("statement_parse_success_pct") is not None
+                else ""
+            )
+        )
+        lines.append(
+            f"- **Rule grounding coverage:** {coverage.get('rules_with_deterministic_support', 0)} / {coverage.get('synthesized_rules', 0)}"
+            + (
+                f" ({coverage.get('rule_grounding_pct')}%)"
+                if coverage.get("rule_grounding_pct") is not None
+                else ""
+            )
+        )
+        lines.append(f"- **Conflicts:** {coverage.get('conflicts', 0)}")
+        lines.append(f"- **Contradictions:** {coverage.get('contradictions', len(contradictions) if isinstance(contradictions, list) else 0)}")
+        lines.append(f"- **Review required items:** {coverage.get('review_required_items', 0)}")
+        if review_required:
+            lines.append("- **Review required:** Yes")
+        else:
+            lines.append("- **Review required:** No")
+
+        note = str(quality.get("note") or "").strip()
+        if note:
+            lines.extend(["", note])
+
+        if isinstance(contradictions, list) and contradictions:
+            lines.extend(["", "### Contradictions", ""])
+            for finding in contradictions[:5]:
+                if not isinstance(finding, dict):
+                    continue
+                finding_type = str(finding.get("type") or "contradiction").replace("_", " ").title()
+                severity = str(finding.get("severity") or "LOW").upper()
+                explanation = str(finding.get("explanation") or "").strip()
+                target = finding.get("rule_id") or ", ".join(finding.get("related_rule_ids") or []) or "source"
+                lines.append(f"- `{severity}` {finding_type} on `{target}`" + (f": {explanation}" if explanation else ""))
+
+        if factors:
+            lines.append("")
+            lines.append(
+                "_Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._"
             )
         return "\n".join(lines)
 
@@ -1118,6 +1411,13 @@ class ReportFormatterAgent:
           - amber: everything else (unverified, assumption, inferred,
             partially supported) - review before treating as confirmed
         """
+        reconciliation_status = str(rule.get("reconciliation_status") or "").strip().upper()
+        if reconciliation_status == "CONFLICT":
+            return "🔴"
+        if reconciliation_status in {"LLM_ONLY", "UNRESOLVED"}:
+            return "🟠"
+        if reconciliation_status == "DETERMINISTIC_ONLY":
+            return "🟡"
         status = str(rule.get("validation_status") or "unverified").strip().lower()
         rule_type = str(rule.get("rule_type") or "").strip().lower()
         if status in {"parser_failed", "ambiguous"}:

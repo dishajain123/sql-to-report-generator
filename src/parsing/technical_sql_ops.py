@@ -17,8 +17,8 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError
 
-from agents.ingestion import CodeChunk, CodeIngestionAgent
-from sql_statement_boundaries import split_top_level_statements
+from src.ingestion.ingestion import CodeChunk, CodeIngestionAgent
+from src.parsing.statement_boundaries import split_top_level_statement_spans, split_top_level_statements
 
 
 _TABLE_REF_PATTERN = r"(?:\[(?:[^\]]|\]\])+\]|[#A-Za-z_][\w$#]*)(?:\s*\.\s*(?:\[(?:[^\]]|\]\])+\]|[#A-Za-z_][\w$#]*))*"
@@ -67,6 +67,13 @@ class StatementProvenance:
     parse_error: str = ""
     active_status: str = "ACTIVE"
     operation_count: int = 0
+    source_file: str = ""
+    source_char_start: int = -1
+    source_char_end: int = -1
+    source_line_start: int = -1
+    source_line_end: int = -1
+    source_location_status: str = "unavailable"
+    evidence_type: str = ""
 
 
 def extract_table_operations_from_chunks(
@@ -82,7 +89,10 @@ def extract_table_operations_from_chunks(
     operations: List[Dict[str, Any]] = []
     provenance: List[Dict[str, Any]] = []
     seen_operation_keys: set[tuple] = set()
-    sqlglot_dialect = "tsql" if str(dialect).lower() == "tsql" else "oracle"
+    normalized_dialect = str(dialect or "").strip().lower()
+    if normalized_dialect not in {"oracle", "tsql"}:
+        return operations, provenance
+    sqlglot_dialect = "tsql" if normalized_dialect == "tsql" else "oracle"
 
     for chunk in chunks:
         source_texts = [("chunk_text", getattr(chunk, "text", "") or "")]
@@ -93,9 +103,22 @@ def extract_table_operations_from_chunks(
 
         statement_counter = 0
         for source_label, source_text in source_texts:
-            for statement_text in _split_embedded_sql_statements(source_text, dialect):
+            for statement_start, statement_end in _split_embedded_sql_statement_spans(source_text, dialect):
+                statement_text = source_text[statement_start:statement_end].strip()
+                if not statement_text:
+                    continue
                 statement_counter += 1
                 statement_id = f"{chunk.chunk_id}:{source_label}_{statement_counter:02d}"
+                loc_start, loc_end = _locate_statement_span(chunk.text or source_text, statement_text)
+                if loc_start >= 0:
+                    source_line_start = _line_number_for_offset(chunk.text or source_text, loc_start)
+                    source_line_end = _line_number_for_offset(chunk.text or source_text, max(loc_end - 1, loc_start))
+                    source_location_status = "available"
+                else:
+                    source_line_start = -1
+                    source_line_end = -1
+                    source_location_status = "unavailable"
+                evidence_type = _infer_evidence_type(source_label, statement_text)
                 statement_prov = StatementProvenance(
                     statement_id=statement_id,
                     source_chunk_id=chunk.chunk_id,
@@ -103,6 +126,13 @@ def extract_table_operations_from_chunks(
                     source_chunk_context=list(getattr(chunk, "context_path", []) or []),
                     statement_index=statement_counter,
                     source_statement_text=statement_text,
+                    source_file=getattr(chunk, "source_file", "") or "",
+                    source_char_start=loc_start,
+                    source_char_end=loc_end,
+                    source_line_start=source_line_start if source_location_status == "available" else getattr(chunk, "source_line_start", -1),
+                    source_line_end=source_line_end if source_location_status == "available" else getattr(chunk, "source_line_end", -1),
+                    source_location_status=source_location_status,
+                    evidence_type=evidence_type,
                 )
 
                 parse_source = _strip_sql_comments(statement_text)
@@ -168,10 +198,13 @@ def split_table_operations(
     reads: List[Dict[str, Any]] = []
     writes: List[Dict[str, Any]] = []
     for op in table_operations:
-        if str(op.get("operation", "")).upper() == "READ":
+        operation = str(op.get("operation", "")).upper()
+        if operation == "READ":
             reads.append(dict(op))
         else:
             writes.append(dict(op))
+            if operation in {"UPDATE", "MERGE"} and op.get("table"):
+                reads.append({**dict(op), "operation": "READ"})
     return reads, writes
 
 
@@ -181,6 +214,55 @@ def _split_embedded_sql_statements(embedded_sql: str, dialect: str) -> List[str]
         return []
     masked = CodeIngestionAgent._mask_strings_and_comments(text, mask_brackets=(str(dialect).lower() != "tsql"))
     return split_top_level_statements(text, masked)
+
+
+def _split_embedded_sql_statement_spans(embedded_sql: str, dialect: str) -> List[Tuple[int, int]]:
+    text = str(embedded_sql or "")
+    if not text.strip():
+        return []
+    masked = CodeIngestionAgent._mask_strings_and_comments(text, mask_brackets=(str(dialect).lower() != "tsql"))
+    return split_top_level_statement_spans(text, masked)
+
+
+def _locate_statement_span(source_text: str, statement_text: str) -> Tuple[int, int]:
+    source = str(source_text or "")
+    target = str(statement_text or "").strip()
+    if not source or not target:
+        return -1, -1
+    start = source.find(target)
+    if start < 0:
+        return -1, -1
+    return start, start + len(target)
+
+
+def _line_number_for_offset(text: str, offset: int) -> int:
+    if offset < 0:
+        return -1
+    return text.count("\n", 0, offset) + 1
+
+
+def _infer_evidence_type(source_label: str, statement_text: str) -> str:
+    label = str(source_label or "").lower()
+    stmt = str(statement_text or "").strip().upper()
+    if label.startswith("embedded_"):
+        return "ASSIGNMENT" if stmt.startswith("UPDATE") else "OUTCOME"
+    if stmt.startswith("SELECT"):
+        return "TABLE_REFERENCE"
+    if stmt.startswith("UPDATE"):
+        return "ASSIGNMENT"
+    if stmt.startswith("INSERT"):
+        return "OUTCOME"
+    if stmt.startswith("DELETE"):
+        return "CONDITION"
+    if stmt.startswith("MERGE"):
+        return "OUTCOME"
+    if stmt.startswith("TRUNCATE"):
+        return "OUTCOME"
+    if stmt.startswith("EXCEPTION") or stmt.startswith("BEGIN CATCH"):
+        return "EXCEPTION"
+    if "CASE" in stmt or "WHEN " in stmt:
+        return "CONDITION"
+    return "TABLE_REFERENCE"
 
 
 def _strip_sql_comments(text: str) -> str:
@@ -255,33 +337,12 @@ def _extract_table_ops_from_tree(
                     table_occurrence=1,
                 )
             )
-        for occurrence_index, table in enumerate(_source_tables(tree, target_table), start=1):
-            operations.append(
-                _build_operation_record(
-                    operation="READ",
-                    table=table,
-                    target_columns=_render_select_projection_columns(source_expr, dialect)
-                    if source_expr is not None
-                    else [],
-                    source_columns=source_columns,
-                    where_predicate=where_predicate,
-                    having_predicate=having_predicate,
-                    join_predicates=join_predicates,
-                    exists_predicates=exists_predicates,
-                    constants=constants,
-                    statement_kind=statement_kind,
-                    statement_text=statement_text,
-                    statement_id=statement_id,
-                    chunk=chunk,
-                    dialect=dialect,
-                    table_occurrence=occurrence_index,
-                )
-            )
         return operations
 
     if isinstance(tree, exp.Update):
         target_table = _resolve_update_target(tree, dialect)
         target_columns = _render_update_target_columns(tree, dialect)
+        assigned_values = _render_update_assigned_values(tree, dialect)
         source_columns = _unique_preserve(
             [
                 col
@@ -301,32 +362,13 @@ def _extract_table_ops_from_tree(
                     join_predicates=join_predicates,
                     exists_predicates=exists_predicates,
                     constants=constants,
+                    assigned_values=assigned_values,
                     statement_kind=statement_kind,
                     statement_text=statement_text,
                     statement_id=statement_id,
                     chunk=chunk,
                     dialect=dialect,
                     table_occurrence=1,
-                )
-            )
-        for occurrence_index, table in enumerate(_source_tables(tree, target_table), start=1):
-            operations.append(
-                _build_operation_record(
-                    operation="READ",
-                    table=table,
-                    target_columns=[],
-                    source_columns=source_columns,
-                    where_predicate=where_predicate,
-                    having_predicate=having_predicate,
-                    join_predicates=join_predicates,
-                    exists_predicates=exists_predicates,
-                    constants=constants,
-                    statement_kind=statement_kind,
-                    statement_text=statement_text,
-                    statement_id=statement_id,
-                    chunk=chunk,
-                    dialect=dialect,
-                    table_occurrence=occurrence_index,
                 )
             )
         return operations
@@ -345,32 +387,13 @@ def _extract_table_ops_from_tree(
                     join_predicates=join_predicates,
                     exists_predicates=exists_predicates,
                     constants=constants,
+                    assigned_values=[],
                     statement_kind=statement_kind,
                     statement_text=statement_text,
                     statement_id=statement_id,
                     chunk=chunk,
                     dialect=dialect,
                     table_occurrence=1,
-                )
-            )
-        for occurrence_index, table in enumerate(_source_tables(tree, target_table), start=1):
-            operations.append(
-                _build_operation_record(
-                    operation="READ",
-                    table=table,
-                    target_columns=[],
-                    source_columns=all_columns,
-                    where_predicate=where_predicate,
-                    having_predicate=having_predicate,
-                    join_predicates=join_predicates,
-                    exists_predicates=exists_predicates,
-                    constants=constants,
-                    statement_kind=statement_kind,
-                    statement_text=statement_text,
-                    statement_id=statement_id,
-                    chunk=chunk,
-                    dialect=dialect,
-                    table_occurrence=occurrence_index,
                 )
             )
         return operations
@@ -398,6 +421,7 @@ def _extract_table_ops_from_tree(
                     join_predicates=[],
                     exists_predicates=[],
                     constants=[],
+                    assigned_values=[],
                     statement_kind=statement_kind,
                     statement_text=statement_text,
                     statement_id=statement_id,
@@ -422,32 +446,13 @@ def _extract_table_ops_from_tree(
                     join_predicates=join_predicates,
                     exists_predicates=exists_predicates,
                     constants=constants,
+                    assigned_values=[],
                     statement_kind=statement_kind,
                     statement_text=statement_text,
                     statement_id=statement_id,
                     chunk=chunk,
                     dialect=dialect,
                     table_occurrence=1,
-                )
-            )
-        for occurrence_index, table in enumerate(_source_tables(tree, target_table), start=1):
-            operations.append(
-                _build_operation_record(
-                    operation="READ",
-                    table=table,
-                    target_columns=[],
-                    source_columns=all_columns,
-                    where_predicate=where_predicate,
-                    having_predicate=having_predicate,
-                    join_predicates=join_predicates,
-                    exists_predicates=exists_predicates,
-                    constants=constants,
-                    statement_kind=statement_kind,
-                    statement_text=statement_text,
-                    statement_id=statement_id,
-                    chunk=chunk,
-                    dialect=dialect,
-                    table_occurrence=occurrence_index,
                 )
             )
         return operations
@@ -923,6 +928,7 @@ def _build_operation_record(
     chunk: CodeChunk,
     dialect: str,
     table_occurrence: int,
+    assigned_values: Sequence[Dict[str, Any]] | None = None,
 ) -> Dict[str, Any]:
     table_name = _normalize_table_name_with_text(table, statement_text)
     table_alias = _table_alias(table)
@@ -940,6 +946,12 @@ def _build_operation_record(
         "source_chunk_id": chunk.chunk_id,
         "source_chunk_kind": chunk.kind,
         "source_chunk_context": list(chunk.context_path or []),
+        "source_file": getattr(chunk, "source_filename", "") or "",
+        "source_char_start": getattr(chunk, "source_char_start", -1),
+        "source_char_end": getattr(chunk, "source_char_end", -1),
+        "source_line_start": getattr(chunk, "source_line_start", -1),
+        "source_line_end": getattr(chunk, "source_line_end", -1),
+        "source_location_status": getattr(chunk, "source_location_status", "unavailable"),
         "target_columns": list(target_columns),
         "source_columns": list(source_columns),
         "columns": combined_columns,
@@ -949,6 +961,7 @@ def _build_operation_record(
         "join_predicates": list(join_predicates),
         "exists_predicates": list(exists_predicates),
         "constants": list(constants),
+        "assigned_values": list(assigned_values or []),
         "active_status": "ACTIVE",
         "confidence": "high",
         "provenance": {
@@ -961,6 +974,12 @@ def _build_operation_record(
             "statement_parse_status": "parsed",
             "dialect": dialect,
             "table_occurrence": table_occurrence,
+            "source_file": getattr(chunk, "source_filename", "") or "",
+            "source_char_start": getattr(chunk, "source_char_start", -1),
+            "source_char_end": getattr(chunk, "source_char_end", -1),
+            "source_line_start": getattr(chunk, "source_line_start", -1),
+            "source_line_end": getattr(chunk, "source_line_end", -1),
+            "source_location_status": getattr(chunk, "source_location_status", "unavailable"),
         },
     }
 
@@ -1055,6 +1074,24 @@ def _render_update_target_columns(tree: exp.Update, dialect: str) -> List[str]:
             if left is not None:
                 cols.append(left.sql(dialect=dialect))
     return _unique_preserve(cols)
+
+
+def _render_update_assigned_values(tree: exp.Update, dialect: str) -> List[Dict[str, str]]:
+    pairs: List[Dict[str, str]] = []
+    for assignment in tree.args.get("expressions") or []:
+        if not isinstance(assignment, exp.Expression):
+            continue
+        left = assignment.args.get("this")
+        right = assignment.args.get("expression")
+        if left is None or right is None:
+            continue
+        pairs.append(
+            {
+                "column": left.sql(dialect=dialect),
+                "expression": right.sql(dialect=dialect),
+            }
+        )
+    return pairs
 
 
 def _render_join_predicates(tree: exp.Expression, dialect: str) -> List[Dict[str, Any]]:

@@ -1,0 +1,20 @@
+{
+  "case_id": "oracle.provision_summary_view",
+  "dialect": "ORACLE",
+  "object_type": "VIEW",
+  "object_name": "VW_PROVISION_SUMMARY",
+  "parameters": [],
+  "tables_read": ["LOAN_ACCOUNT", "NPA_PROVISION"],
+  "tables_written": [],
+  "operations": [
+    {"operation": "READ", "table": "LOAN_ACCOUNT"},
+    {"operation": "READ", "table": "NPA_PROVISION"}
+  ],
+  "business_rules": [
+    {"condition": "asset_classification IS NOT NULL", "action": "Include only classified accounts"},
+    {"condition": "latest calculated_date per account", "action": "Summarize latest provision values"}
+  ],
+  "important_fields": ["branch_code", "asset_classification", "account_count", "total_outstanding", "total_provision"],
+  "ambiguities": [],
+  "review_required": false
+}

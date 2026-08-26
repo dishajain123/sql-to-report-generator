@@ -1,0 +1,19 @@
+{
+  "case_id": "tsql.go_batches",
+  "dialect": "TSQL",
+  "object_type": "UNKNOWN",
+  "object_name": "UNKNOWN_OBJECT",
+  "parameters": [],
+  "tables_read": ["dbo.Account"],
+  "tables_written": ["dbo.Account", "dbo.AccountAudit"],
+  "operations": [
+    {"operation": "UPDATE", "table": "dbo.Account"},
+    {"operation": "INSERT", "table": "dbo.AccountAudit"}
+  ],
+  "business_rules": [
+    {"condition": "DpdDays > 90", "action": "Mark accounts overdue and audit the status change"}
+  ],
+  "important_fields": ["AccountId", "NewStatus", "DpdDays"],
+  "ambiguities": [],
+  "review_required": true
+}

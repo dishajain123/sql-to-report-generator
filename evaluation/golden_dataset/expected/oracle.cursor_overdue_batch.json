@@ -1,0 +1,24 @@
+{
+  "case_id": "oracle.cursor_overdue_batch",
+  "dialect": "ORACLE",
+  "object_type": "PLSQL_BLOCK",
+  "object_name": "UNKNOWN_OBJECT",
+  "parameters": [],
+  "tables_read": ["LOAN_ACCOUNT"],
+  "tables_written": ["LOAN_ACCOUNT", "NPA_PROVISION", "NPA_AUDIT_LOG"],
+  "operations": [
+    {"operation": "READ", "table": "LOAN_ACCOUNT"},
+    {"operation": "UPDATE", "table": "LOAN_ACCOUNT"},
+    {"operation": "MERGE", "table": "NPA_PROVISION"},
+    {"operation": "INSERT", "table": "NPA_AUDIT_LOG"}
+  ],
+  "business_rules": [
+    {"condition": "overdue_days > 90", "action": "Process only overdue accounts"},
+    {"condition": "91-365 days", "action": "Set SUBSTANDARD and 15 pct"},
+    {"condition": "366-1095 days", "action": "Set DOUBTFUL1 and 25 pct"},
+    {"condition": "else", "action": "Set LOSS and 100 pct"}
+  ],
+  "important_fields": ["overdue_days", "v_new_classification", "v_provision_pct"],
+  "ambiguities": [],
+  "review_required": true
+}

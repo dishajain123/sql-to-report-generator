@@ -14,8 +14,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agents.ingestion import IngestionResult, Parameter
-from agents.report_formatter import ReportFormatterAgent
+from src.ingestion.ingestion import IngestionResult, Parameter
+from src.output.report_formatter import ReportFormatterAgent
 
 
 def _make_ingestion(raw_code: str) -> IngestionResult:

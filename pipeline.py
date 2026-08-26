@@ -31,17 +31,22 @@ import copy
 import hashlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from agents.ingestion import CodeIngestionAgent, IngestionResult
-from agents.retriever import PatternRetrievalAgent
-from agents.logic_extractor import LogicExtractionAgent, ChunkExtraction
-from agents.rule_synthesizer import RuleSynthesizerAgent, SynthesisResult
-from agents.report_formatter import ReportFormatterAgent
-from technical_sql_ops import extract_table_operations_from_chunks, split_table_operations
-from guardrails import InputGuardrailError, run_input_guardrails
-from dialect_detector import UnsupportedDialectError, detect_dialect
-from llm_client import LLMConfig, create_llm_client, load_llm_config
+from src.ingestion.ingestion import CodeIngestionAgent, IngestionResult
+from src.retrieval.retriever import PatternRetrievalAgent
+from src.extraction.logic_extractor import LogicExtractionAgent, ChunkExtraction
+from src.synthesis.rule_synthesizer import RuleSynthesizerAgent, SynthesisResult
+from src.output.report_formatter import ReportFormatterAgent
+from src.parsing.technical_sql_ops import extract_table_operations_from_chunks, split_table_operations
+from src.ingestion.guardrails import InputGuardrailError, run_input_guardrails
+from src.dialect.detector import UnsupportedDialectError, detect_dialect
+from src.core.llm_client import LLMConfig, create_llm_client, load_llm_config
+from src.validation.confidence import derive_chunk_support_confidence
+from src.validation.reconciliation import reconcile_deterministic_evidence
+from src.ir.canonical_ir import CanonicalBusinessIR
+from src.core.pipeline_utils import PIPELINE_VERSION, RunMetadata, build_run_metadata, run_metadata_to_dict, stable_id
 
 logger = logging.getLogger("logic_rules_extractor.pipeline")
 
@@ -55,6 +60,13 @@ DEFAULT_TEMPERATURE = 0.1  # low temperature: this is an extraction task, not cr
 # override it per environment (e.g. lower it back down if the LLM provider's
 # rate limit needs it).
 DEFAULT_CHUNK_WORKERS = 8
+
+
+def supported_analysis_dialect(ingestion: IngestionResult) -> Optional[str]:
+    dialect = (ingestion.concrete_dialect or ingestion.fallback_dialect or ingestion.dialect or "").strip().lower()
+    if dialect in {"oracle", "tsql"}:
+        return dialect
+    return None
 
 
 class PipelineInputError(ValueError):
@@ -84,6 +96,9 @@ class LogicRulesExtractorPipeline:
         self.retrieval_k = retrieval_k
         self.chunk_workers = self._resolve_chunk_workers(chunk_workers)
         self.dialect = dialect
+        self.project_root = Path(__file__).resolve().parent
+        self.pipeline_version = PIPELINE_VERSION
+        self.provider = self.llm_config.provider
 
         self.client = create_llm_client(self.llm_config)
 
@@ -153,9 +168,7 @@ class LogicRulesExtractorPipeline:
             detection = detect_dialect(guard_result.clean_code, hint=effective_dialect)
         except UnsupportedDialectError as exc:
             raise PipelineInputError(str(exc)) from exc
-        _report_progress(
-            f"Detected {detection.dialect} dialect (confidence: {detection.confidence})"
-        )
+        _report_progress(f"Detected {detection.dialect} dialect (confidence: {detection.confidence})")
 
         stage_2_seconds = time.perf_counter() - stage_start
         logger.info("Stage 2/6 completed in %.2fs (dialect detection)", stage_2_seconds)
@@ -165,8 +178,9 @@ class LogicRulesExtractorPipeline:
         try:
             ingestion = self.ingestion_agent.ingest_text(
                 guard_result.clean_code,
-                dialect=detection.dialect,
+                dialect=effective_dialect,
                 source_filename=sql_file_path,
+                original_code=raw_code,
                 prevalidated_code=guard_result.clean_code,
                 prevalidated_warnings=guard_result.warnings,
                 prevalidated_injection_flags=guard_result.injection_flags,
@@ -174,6 +188,16 @@ class LogicRulesExtractorPipeline:
             )
         except UnsupportedDialectError as exc:
             raise PipelineInputError(str(exc)) from exc
+        run_metadata = build_run_metadata(
+            project_root=self.project_root,
+            model_name=self.model_name,
+            provider=self.provider,
+            dialect=ingestion.dialect,
+            dialect_confidence=ingestion.dialect_confidence,
+            raw_source=ingestion.raw_code,
+            object_id=ingestion.object_id,
+        )
+        ingestion.run_metadata = run_metadata
         _report_progress(
             f"Detected {ingestion.dialect} {ingestion.object_type} '{ingestion.object_name}' "
             f"with {len(ingestion.chunks)} chunk(s)"
@@ -193,7 +217,10 @@ class LogicRulesExtractorPipeline:
         kb_seconds = time.perf_counter() - kb_start
         if kb_seconds > 0:
             logger.info("Persistent knowledge base ready in %.2fs", kb_seconds)
-        chunk_extractions = self._extract_all_chunks(ingestion)
+        analysis_dialect = supported_analysis_dialect(ingestion)
+        chunk_extractions = self._extract_all_chunks(
+            ingestion, run_metadata=run_metadata, analysis_dialect=analysis_dialect
+        )
         extraction_guardrail_warnings = self._collect_extraction_guardrail_warnings(chunk_extractions)
         retrieval_seconds, extraction_seconds = self._chunk_timing_totals(chunk_extractions)
         stage_4_seconds = time.perf_counter() - stage_start
@@ -210,16 +237,18 @@ class LogicRulesExtractorPipeline:
 
         _report_progress("Stage 5/6: Reasoning over the technical extraction into business rules")
         stage_start = time.perf_counter()
-        merged_extraction = self._merge_extractions(chunk_extractions)
-        table_operations, statement_provenance = extract_table_operations_from_chunks(
-            ingestion.chunks, ingestion.dialect
-        )
+        merged_extraction = self._merge_extractions(chunk_extractions, ingestion=ingestion)
+        merged_extraction["run_metadata"] = run_metadata_to_dict(run_metadata)
+        merged_extraction["llm_tables_read"] = list(merged_extraction.get("tables_read", []))
+        merged_extraction["llm_tables_written"] = list(merged_extraction.get("tables_written", []))
+        if analysis_dialect is None:
+            table_operations, statement_provenance = [], []
+        else:
+            table_operations, statement_provenance = extract_table_operations_from_chunks(
+                ingestion.chunks, analysis_dialect
+            )
         merged_extraction["statement_provenance"] = statement_provenance
         if table_operations:
-            merged_extraction["llm_tables_read"] = list(merged_extraction.get("tables_read", []))
-            merged_extraction["llm_tables_written"] = list(
-                merged_extraction.get("tables_written", [])
-            )
             merged_extraction["table_operations"] = table_operations
             merged_extraction["tables_read"], merged_extraction["tables_written"] = (
                 split_table_operations(table_operations)
@@ -230,20 +259,50 @@ class LogicRulesExtractorPipeline:
             object_type=ingestion.object_type,
             parameter_summary=parameter_summary,
             merged_extraction=merged_extraction,
-            dialect=ingestion.dialect,
+            dialect=analysis_dialect or ingestion.dialect,
             raw_source=ingestion.raw_code,
         )
+        synthesis.data["run_metadata"] = run_metadata_to_dict(run_metadata)
         logger.info("Stage 5/6 completed in %.2fs (business reasoning)", time.perf_counter() - stage_start)
 
-        _report_progress("Stage 6/6: Applying output guardrails and formatting final report")
+        _report_progress("Stage 6/6: Reconciling deterministic evidence against synthesized output")
+        stage_start = time.perf_counter()
+        reconciliation = reconcile_deterministic_evidence(
+            ingestion=ingestion,
+            merged_extraction=merged_extraction,
+            synthesis=synthesis,
+        )
+        merged_extraction["reconciliation"] = reconciliation.to_dict()
+        merged_extraction["coverage"] = reconciliation.coverage
+        merged_extraction["quality"] = reconciliation.quality
+        synthesis.data["reconciliation"] = reconciliation.to_dict()
+        synthesis.data["coverage"] = reconciliation.coverage
+        synthesis.data["quality"] = reconciliation.quality
+        canonical_ir = CanonicalBusinessIR.from_pipeline(
+            ingestion=ingestion,
+            merged_extraction=merged_extraction,
+            synthesis=synthesis,
+            reconciliation=reconciliation,
+            run_metadata=run_metadata,
+        )
+        merged_extraction["canonical_ir"] = canonical_ir.to_dict()
+        synthesis.data["canonical_ir"] = canonical_ir.to_dict()
+        stage_6_seconds = time.perf_counter() - stage_start
+        logger.info(
+            "Stage 6/6 completed in %.2fs (deterministic reconciliation)", stage_6_seconds
+        )
+
+        _report_progress("Stage 7/7: Applying output guardrails and formatting final report")
         stage_start = time.perf_counter()
         report = self.formatter_agent.format(
             ingestion=ingestion,
             merged_extraction=merged_extraction,
             synthesis=synthesis,
+            canonical_ir=canonical_ir,
             extraction_guardrail_warnings=extraction_guardrail_warnings,
+            run_metadata=run_metadata,
         )
-        logger.info("Stage 6/6 completed in %.2fs (final report generation)", time.perf_counter() - stage_start)
+        logger.info("Stage 7/7 completed in %.2fs (final report generation)", time.perf_counter() - stage_start)
         return report
 
     # ------------------------------------------------------------------
@@ -258,9 +317,16 @@ class LogicRulesExtractorPipeline:
         return CodeIngestionAgent._load_file(sql_file_path)
 
     def _extract_all_chunks(
-        self, ingestion: IngestionResult
+        self,
+        ingestion: IngestionResult,
+        run_metadata: Optional[RunMetadata] = None,
+        analysis_dialect: Optional[str] = None,
     ) -> list[ChunkExtraction]:
         if not ingestion.chunks:
+            return []
+        if analysis_dialect is None:
+            analysis_dialect = supported_analysis_dialect(ingestion)
+        if analysis_dialect is None:
             return []
 
         exact_extraction_cache: Dict[str, ChunkExtraction] = {}
@@ -277,6 +343,7 @@ class LogicRulesExtractorPipeline:
                     exact_extraction_cache=exact_extraction_cache,
                     cache_lock=cache_lock,
                     in_flight=in_flight,
+                    cache_namespace=self._chunk_cache_namespace(ingestion, run_metadata),
                 )
                 results.append(extraction)
             return results
@@ -291,6 +358,7 @@ class LogicRulesExtractorPipeline:
                     exact_extraction_cache,
                     cache_lock,
                     in_flight,
+                    self._chunk_cache_namespace(ingestion, run_metadata),
                 )
                 for idx, chunk in enumerate(ingestion.chunks)
             ]
@@ -306,6 +374,7 @@ class LogicRulesExtractorPipeline:
         exact_extraction_cache: Optional[Dict[str, ChunkExtraction]] = None,
         cache_lock: Optional[threading.Lock] = None,
         in_flight: Optional[Dict[str, threading.Event]] = None,
+        cache_namespace: str = "",
     ) -> tuple[int, ChunkExtraction]:
         timings: Dict[str, float] = {"retrieval": 0.0, "extraction": 0.0}
         query = self._build_retrieval_query(ingestion, chunk)
@@ -319,6 +388,7 @@ class LogicRulesExtractorPipeline:
                 ingestion=ingestion,
                 chunk=chunk,
                 rag_context=rag_context,
+                cache_namespace=cache_namespace,
             )
             cached = None
             owner = True
@@ -370,7 +440,7 @@ class LogicRulesExtractorPipeline:
                 object_name=ingestion.object_name,
                 chunk_context=chunk.context_path,
                 embedded_sql=chunk.embedded_sql,
-                dialect=ingestion.dialect,
+                dialect=ingestion.concrete_dialect or ingestion.fallback_dialect or "oracle",
             )
         except Exception as exc:  # noqa: BLE001
             extraction = ChunkExtraction(
@@ -406,12 +476,16 @@ class LogicRulesExtractorPipeline:
         return index, extraction
 
     @staticmethod
-    def _chunk_cache_key(ingestion: IngestionResult, chunk, rag_context: str) -> str:
+    def _chunk_cache_key(
+        ingestion: IngestionResult, chunk, rag_context: str, cache_namespace: str = ""
+    ) -> str:
         payload = "|".join(
             [
+                cache_namespace,
                 ingestion.object_type,
                 ingestion.object_name,
                 ingestion.dialect,
+                ingestion.concrete_dialect,
                 chunk.kind,
                 " > ".join(chunk.context_path or []),
                 chunk.text,
@@ -420,6 +494,22 @@ class LogicRulesExtractorPipeline:
             ]
         )
         return hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
+
+    @staticmethod
+    def _chunk_cache_namespace(
+        ingestion: IngestionResult, run_metadata: Optional[RunMetadata] = None
+    ) -> str:
+        return stable_id(
+            "cache",
+            PIPELINE_VERSION,
+            ingestion.source_hash,
+            ingestion.dialect,
+            ingestion.concrete_dialect,
+            ingestion.fallback_dialect,
+            run_metadata.configuration_version if run_metadata else "",
+            run_metadata.prompt_version if run_metadata else "",
+            run_metadata.knowledge_base_version if run_metadata else "",
+        )
 
     @staticmethod
     def _chunk_timing_totals(chunk_extractions: list[ChunkExtraction]) -> tuple[float, float]:
@@ -451,7 +541,9 @@ class LogicRulesExtractorPipeline:
         return f"{ingestion.dialect} {ingestion.object_type} {context} banking logic: {snippet}{suffix}"
 
     @staticmethod
-    def _merge_extractions(chunk_extractions: list[ChunkExtraction]) -> Dict[str, Any]:
+    def _merge_extractions(
+        chunk_extractions: list[ChunkExtraction], ingestion: Optional[IngestionResult] = None
+    ) -> Dict[str, Any]:
         merged: Dict[str, Any] = {
             "conditions": [],
             "loops": [],
@@ -462,7 +554,20 @@ class LogicRulesExtractorPipeline:
             "ambiguities": [],
             "chunk_provenance": [],
         }
+        chunk_lookup = {chunk.chunk_id: chunk for chunk in getattr(ingestion, "chunks", []) or []}
         for extraction in chunk_extractions:
+            chunk_meta = chunk_lookup.get(extraction.chunk_id)
+            support_confidence = derive_chunk_support_confidence(
+                parse_error=extraction.parse_error,
+                guardrail_warnings=extraction.guardrail_warnings,
+                has_direct_evidence=bool(extraction.data.get("tables_read") or extraction.data.get("tables_written")),
+                has_embedded_sql=bool(extraction.embedded_sql),
+                ambiguity_count=len(extraction.data.get("ambiguities", []) or []),
+                dynamic_sql_detected=any("Dynamic SQL detected" in w for w in extraction.guardrail_warnings),
+                parser_unavailable=bool(
+                    any("structural validation was unavailable" in w.lower() for w in extraction.guardrail_warnings)
+                ),
+            )
             merged["chunk_provenance"].append(
                 {
                     "chunk_id": extraction.chunk_id,
@@ -471,11 +576,13 @@ class LogicRulesExtractorPipeline:
                     "embedded_sql": extraction.embedded_sql,
                     "parse_error": extraction.parse_error,
                     "guardrail_warnings": extraction.guardrail_warnings,
-                    "support_confidence": (
-                        "low"
-                        if extraction.parse_error
-                        else ("medium" if extraction.guardrail_warnings else "high")
-                    ),
+                    "support_confidence": support_confidence,
+                    "source_file": getattr(chunk_meta, "source_filename", "") if chunk_meta else "",
+                    "source_char_start": getattr(chunk_meta, "source_char_start", -1) if chunk_meta else -1,
+                    "source_char_end": getattr(chunk_meta, "source_char_end", -1) if chunk_meta else -1,
+                    "source_line_start": getattr(chunk_meta, "source_line_start", -1) if chunk_meta else -1,
+                    "source_line_end": getattr(chunk_meta, "source_line_end", -1) if chunk_meta else -1,
+                    "source_location_status": getattr(chunk_meta, "source_location_status", "unavailable") if chunk_meta else "unavailable",
                 }
             )
             for key in merged:
@@ -493,12 +600,17 @@ class LogicRulesExtractorPipeline:
                         )
                         annotated_item.setdefault(
                             "source_confidence",
-                            (
-                                "low"
-                                if extraction.parse_error
-                                else ("medium" if extraction.guardrail_warnings else "high")
-                            ),
+                            support_confidence,
                         )
+                        if chunk_meta is not None:
+                            annotated_item.setdefault("source_file", getattr(chunk_meta, "source_filename", ""))
+                            annotated_item.setdefault("source_char_start", getattr(chunk_meta, "source_char_start", -1))
+                            annotated_item.setdefault("source_char_end", getattr(chunk_meta, "source_char_end", -1))
+                            annotated_item.setdefault("source_line_start", getattr(chunk_meta, "source_line_start", -1))
+                            annotated_item.setdefault("source_line_end", getattr(chunk_meta, "source_line_end", -1))
+                            annotated_item.setdefault(
+                                "source_location_status", getattr(chunk_meta, "source_location_status", "unavailable")
+                            )
                         merged[key].append(annotated_item)
                     else:
                         merged[key].append(item)

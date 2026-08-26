@@ -24,6 +24,12 @@ env/
 .coverage
 htmlcov/
 
+# Generated runtime / pipeline artifacts
+runtime/
+chroma_store/
+data/
+samples/output/
+
 # Build
 build/
 dist/

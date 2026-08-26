@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agents.retriever import PatternRetrievalAgent, _LocalHashEmbeddingFunction
+from src.retrieval.retriever import PatternRetrievalAgent, _LocalHashEmbeddingFunction
 
 
 def test_local_embedding_supports_chroma_query_api():

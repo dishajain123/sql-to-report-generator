@@ -1,0 +1,82 @@
+{
+  "cases": [
+    {
+      "case_id": "oracle.classify_npa_and_provision",
+      "sql_path": "samples/npa_classification.sql",
+      "dialect": "oracle",
+      "expected_path": "expected/oracle.classify_npa_and_provision.json"
+    },
+    {
+      "case_id": "oracle.npa_simple",
+      "sql_path": "samples/npa_simple.sql",
+      "dialect": "oracle",
+      "expected_path": "expected/oracle.npa_simple.json"
+    },
+    {
+      "case_id": "oracle.cursor_overdue_batch",
+      "sql_path": "samples/cursor_overdue_batch.sql",
+      "dialect": "oracle",
+      "expected_path": "expected/oracle.cursor_overdue_batch.json"
+    },
+    {
+      "case_id": "oracle.batch_overdue_ageing_block",
+      "sql_path": "samples/batch_overdue_ageing_block.sql",
+      "dialect": "oracle",
+      "expected_path": "expected/oracle.batch_overdue_ageing_block.json"
+    },
+    {
+      "case_id": "oracle.provisioning_view",
+      "sql_path": "samples/provisioning_view.sql",
+      "dialect": "oracle",
+      "expected_path": "expected/oracle.provisioning_view.json"
+    },
+    {
+      "case_id": "oracle.provision_summary_view",
+      "sql_path": "samples/provisioning_summary_view.sql",
+      "dialect": "oracle",
+      "expected_path": "expected/oracle.provision_summary_view.json"
+    },
+    {
+      "case_id": "tsql.update_account_status",
+      "sql_path": "evaluation/golden_dataset/tsql/update_account_status.sql",
+      "dialect": "tsql",
+      "expected_path": "expected/tsql.update_account_status.json"
+    },
+    {
+      "case_id": "tsql.merge_provisioning",
+      "sql_path": "evaluation/golden_dataset/tsql/merge_provisioning.sql",
+      "dialect": "tsql",
+      "expected_path": "expected/tsql.merge_provisioning.json"
+    },
+    {
+      "case_id": "tsql.try_catch_batch",
+      "sql_path": "evaluation/golden_dataset/tsql/try_catch_batch.sql",
+      "dialect": "tsql",
+      "expected_path": "expected/tsql.try_catch_batch.json"
+    },
+    {
+      "case_id": "tsql.go_batches",
+      "sql_path": "evaluation/golden_dataset/tsql/go_batches.sql",
+      "dialect": "tsql",
+      "expected_path": "expected/tsql.go_batches.json"
+    },
+    {
+      "case_id": "tsql.dynamic_sql",
+      "sql_path": "evaluation/golden_dataset/tsql/dynamic_sql.sql",
+      "dialect": "tsql",
+      "expected_path": "expected/tsql.dynamic_sql.json"
+    },
+    {
+      "case_id": "edge.unknown_dialect",
+      "sql_path": "evaluation/golden_dataset/edge_cases/unknown_dialect.sql",
+      "dialect": "auto",
+      "expected_path": "expected/edge.unknown_dialect.json"
+    },
+    {
+      "case_id": "edge.postgres_unsupported",
+      "sql_path": "evaluation/golden_dataset/edge_cases/postgres_unsupported.sql",
+      "dialect": "auto",
+      "expected_path": "expected/edge.postgres_unsupported.json"
+    }
+  ]
+}

@@ -11,13 +11,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
-from agents.ingestion import CodeIngestionAgent
-from agents.ingestion import CodeChunk
-from agents.report_formatter import ReportFormatterAgent
-from guardrails import ground_extraction_against_source
-from dialect_detector import DialectDetectionResult, UnsupportedDialectError, detect_dialect
-import technical_sql_ops as sql_ops
-from technical_sql_ops import extract_table_operations_from_chunks, split_table_operations
+from src.ingestion.ingestion import CodeIngestionAgent
+from src.ingestion.ingestion import CodeChunk
+from src.output.report_formatter import ReportFormatterAgent
+from src.ingestion.guardrails import run_input_guardrails
+from src.ingestion.guardrails import ground_extraction_against_source
+from src.dialect.detector import DialectDetectionResult, detect_dialect
+import src.parsing.technical_sql_ops as sql_ops
+from src.parsing.technical_sql_ops import extract_table_operations_from_chunks, split_table_operations
 
 
 SAMPLE_PROCEDURE = """
@@ -515,6 +516,60 @@ WHERE RUNNINGPROCESSNAME='SMA_MARKING'
     assert all("Always, on each execution" not in (op.get("where_predicate") or "") for op in operations)
 
 
+def test_update_insert_select_does_not_emit_spurious_read_rows():
+    chunk = CodeChunk(
+        chunk_id="dml_chunk",
+        kind="main_body",
+        text=(
+            "UPDATE dbo.Account SET Status = 'OVERDUE' WHERE DpdDays > 90;\n"
+            "INSERT INTO dbo.AccountAudit (AccountId, NewStatus)\n"
+            "SELECT AccountId, 'OVERDUE' FROM dbo.Account WHERE DpdDays > 90;"
+        ),
+        embedded_sql=[],
+        context_path=["main_body"],
+    )
+
+    operations, _ = extract_table_operations_from_chunks([chunk], "tsql")
+    reads, writes = split_table_operations(operations)
+
+    assert [op["operation"] for op in writes] == ["UPDATE", "INSERT"]
+    assert [op["table"] for op in reads] == ["dbo.Account"]
+    assert all(op["operation"] != "READ" or op["table"] != "dbo.Account" for op in operations if op["operation"] == "READ")
+
+
+def test_unsupported_postgresql_short_circuits_without_oracle_fallback():
+    raw = """
+CREATE OR REPLACE FUNCTION demo_fn()
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE NOTICE 'hi';
+END;
+$$;
+"""
+    clean = run_input_guardrails(raw).clean_code
+    detection = detect_dialect(clean, hint="auto")
+    agent = CodeIngestionAgent(dialect="auto")
+    result = agent.ingest_text(
+        clean,
+        dialect="auto",
+        source_filename="demo_fn.sql",
+        original_code=raw,
+        prevalidated_code=clean,
+        prevalidated_warnings=[],
+        prevalidated_injection_flags=[],
+        detection_result=detection,
+    )
+
+    assert result.dialect == "UNSUPPORTED"
+    assert result.object_type == "UNKNOWN"
+    assert result.object_name == "UNKNOWN_OBJECT"
+    assert result.concrete_dialect == ""
+    assert result.fallback_dialect == ""
+    assert result.parse_warnings == ["PostgreSQL features detected; unsupported by the current parser layer."]
+
+
 def test_regex_fallback_preserves_where_without_alias(monkeypatch):
     def fail_parse_one(*args, **kwargs):
         raise sql_ops.ParseError("forced fallback")
@@ -689,7 +744,7 @@ GO
     assert not any(chunk.text.lstrip().startswith("ELSE") for chunk in chunks)
 
 
-def test_detect_dialect_rejects_postgresql():
+def test_detect_dialect_marks_postgresql_as_unsupported():
     pg_code = """
     CREATE OR REPLACE FUNCTION demo_fn()
     RETURNS void
@@ -700,17 +755,27 @@ def test_detect_dialect_rejects_postgresql():
     END;
     $$;
     """
-    with pytest.raises(UnsupportedDialectError):
-        detect_dialect(pg_code, hint="auto")
+    result = detect_dialect(pg_code, hint="auto")
+    assert result.dialect == "UNSUPPORTED"
+    assert result.concrete_dialect is None
+    assert result.confidence == "low"
+
+
+def test_detect_dialect_returns_unknown_when_evidence_is_insufficient():
+    code = "SELECT 1 FROM dual;"
+    result = detect_dialect(code, hint="auto")
+    assert result.dialect == "UNKNOWN"
+    assert result.concrete_dialect is None
+    assert result.confidence == "low"
 
 
 def test_ingest_text_uses_prevalidated_input_without_rerunning_guardrails(monkeypatch, agent):
     def fail_guardrails(_raw_code):
         raise AssertionError("run_input_guardrails should not be called for prevalidated input")
 
-    monkeypatch.setattr("agents.ingestion.run_input_guardrails", fail_guardrails)
+    monkeypatch.setattr("src.ingestion.ingestion.run_input_guardrails", fail_guardrails)
 
-    detection = DialectDetectionResult(dialect="oracle", confidence="high")
+    detection = DialectDetectionResult(dialect="ORACLE", confidence="high", concrete_dialect="oracle")
     result = agent.ingest_text(
         SAMPLE_PROCEDURE,
         dialect="oracle",
@@ -720,6 +785,6 @@ def test_ingest_text_uses_prevalidated_input_without_rerunning_guardrails(monkey
         detection_result=detection,
     )
 
-    assert result.dialect == "oracle"
+    assert result.dialect == "ORACLE"
     assert "prevalidated warning" in result.parse_warnings
     assert "prevalidated flag" in result.parse_warnings

@@ -1,0 +1,14 @@
+{
+  "case_id": "edge.unknown_dialect",
+  "dialect": "UNKNOWN",
+  "object_type": "UNKNOWN",
+  "object_name": "UNKNOWN_OBJECT",
+  "parameters": [],
+  "tables_read": [],
+  "tables_written": [],
+  "operations": [],
+  "business_rules": [],
+  "important_fields": [],
+  "ambiguities": ["Insufficient evidence to determine a supported SQL dialect."],
+  "review_required": true
+}

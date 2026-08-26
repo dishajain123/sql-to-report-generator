@@ -1,0 +1,14 @@
+{
+  "case_id": "edge.postgres_unsupported",
+  "dialect": "UNSUPPORTED",
+  "object_type": "UNKNOWN",
+  "object_name": "UNKNOWN_OBJECT",
+  "parameters": [],
+  "tables_read": [],
+  "tables_written": [],
+  "operations": [],
+  "business_rules": [],
+  "important_fields": [],
+  "ambiguities": ["PostgreSQL features detected; unsupported by the current parser layer."],
+  "review_required": true
+}

@@ -1,0 +1,19 @@
+{
+  "case_id": "tsql.dynamic_sql",
+  "dialect": "TSQL",
+  "object_type": "PROCEDURE",
+  "object_name": "dbo.ApplyDynamicTableUpdate",
+  "parameters": [
+    {"name": "@TableName", "direction": "IN", "datatype": "SYSNAME"},
+    {"name": "@AccountId", "direction": "IN", "datatype": "INT"}
+  ],
+  "tables_read": [],
+  "tables_written": [],
+  "operations": [],
+  "business_rules": [
+    {"condition": "dynamic SQL is assembled at runtime", "action": "Flag for manual review instead of claiming a concrete table"}
+  ],
+  "important_fields": ["@TableName", "@AccountId"],
+  "ambiguities": ["Dynamic SQL cannot be statically resolved to a concrete table."],
+  "review_required": true
+}

@@ -1,0 +1,24 @@
+{
+  "case_id": "tsql.update_account_status",
+  "dialect": "TSQL",
+  "object_type": "PROCEDURE",
+  "object_name": "dbo.UpdateAccountStatus",
+  "parameters": [
+    {"name": "@AccountId", "direction": "IN", "datatype": "INT"},
+    {"name": "@NewStatus", "direction": "IN", "datatype": "VARCHAR(20)"}
+  ],
+  "tables_read": ["dbo.Account"],
+  "tables_written": ["dbo.Account", "dbo.AccountAudit", "dbo.ErrorLog"],
+  "operations": [
+    {"operation": "UPDATE", "table": "dbo.Account"},
+    {"operation": "INSERT", "table": "dbo.AccountAudit"},
+    {"operation": "INSERT", "table": "dbo.ErrorLog"}
+  ],
+  "business_rules": [
+    {"condition": "TRY block succeeds", "action": "Update account status and audit the change"},
+    {"condition": "CATCH block", "action": "Log error message"}
+  ],
+  "important_fields": ["@AccountId", "@NewStatus", "Status", "UpdatedAt", "ErrorMessage"],
+  "ambiguities": [],
+  "review_required": true
+}

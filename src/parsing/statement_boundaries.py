@@ -124,6 +124,15 @@ def split_top_level_statement_spans(text: str, masked_text: str) -> List[Tuple[i
                 current_is_cte = keyword == "WITH"
                 cte_main_consumed = False
                 current_statement_kind = keyword
+            elif current_statement_kind == "MERGE" and keyword in {"UPDATE", "INSERT", "DELETE"}:
+                # A MERGE statement commonly contains WHEN MATCHED/WHEN
+                # NOT MATCHED branches whose body lines start with UPDATE
+                # or INSERT. Those are continuations of the same MERGE
+                # statement, not new top-level statements.
+                pass
+            elif current_statement_kind == "INSERT" and keyword == "SELECT":
+                # INSERT ... SELECT is one logical statement, not two.
+                pass
             elif current_is_cte and not cte_main_consumed and keyword in {
                 "SELECT",
                 "INSERT",

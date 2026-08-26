@@ -52,9 +52,22 @@ from typing import List, Optional, Tuple
 import sqlglot
 from sqlglot.errors import ParseError
 
-from dialect_detector import DialectDetectionResult, ORACLE, TSQL, detect_dialect
-from guardrails import InputGuardrailError, run_input_guardrails
-from sql_statement_boundaries import split_top_level_statement_spans
+from src.validation.confidence import derive_chunk_support_confidence
+from src.dialect.detector import (
+    AMBIGUOUS,
+    ORACLE,
+    POSTGRES,
+    TSQL,
+    UNKNOWN,
+    UNSUPPORTED,
+    DialectDetectionResult,
+    detect_dialect,
+    normalize_dialect_name,
+    prompt_dialect_for_state,
+)
+from src.ingestion.guardrails import InputGuardrailError, run_input_guardrails
+from src.parsing.statement_boundaries import split_top_level_statement_spans
+from src.core.pipeline_utils import RunMetadata, stable_id, source_hash
 
 # --------------------------------------------------------------------------
 # Source-byte decoding
@@ -138,6 +151,12 @@ class CodeChunk:
     text: str
     embedded_sql: List[str] = field(default_factory=list)
     context_path: List[str] = field(default_factory=list)
+    source_filename: str = ""
+    source_char_start: int = -1
+    source_char_end: int = -1
+    source_line_start: int = -1
+    source_line_end: int = -1
+    source_location_status: str = "unavailable"
 
 
 @dataclass
@@ -147,12 +166,18 @@ class IngestionResult:
     parameters: List[Parameter]
     raw_code: str
     chunks: List[CodeChunk]
+    original_code: str = ""
+    object_id: str = ""
     source_filename: str = ""
     dialect: str = ORACLE
     dialect_confidence: str = "high"
+    concrete_dialect: str = ""
+    fallback_dialect: str = ""
+    source_hash: str = ""
     object_name_status: str = "verified"  # verified | failed
     parameter_parse_status: str = "parameterless"  # parameterized | parameterless | failed
     parse_warnings: List[str] = field(default_factory=list)
+    run_metadata: Optional[RunMetadata] = None
 
 
 # --------------------------------------------------------------------------
@@ -246,13 +271,14 @@ class CodeIngestionAgent:
 
     def ingest(self, file_path: str, dialect: Optional[str] = None) -> IngestionResult:
         raw_code = self._load_file(file_path)
-        return self.ingest_text(raw_code, dialect=dialect, source_filename=file_path)
+        return self.ingest_text(raw_code, dialect=dialect, source_filename=file_path, original_code=raw_code)
 
     def ingest_text(
         self,
         raw_code: str,
         dialect: Optional[str] = None,
         source_filename: Optional[str] = None,
+        original_code: Optional[str] = None,
         prevalidated_code: Optional[str] = None,
         prevalidated_warnings: Optional[List[str]] = None,
         prevalidated_injection_flags: Optional[List[str]] = None,
@@ -278,37 +304,91 @@ class CodeIngestionAgent:
             warnings.extend(prevalidated_injection_flags or [])
 
         detection = detection_result or detect_dialect(clean_code, hint=dialect or self.dialect_hint)
-        resolved_dialect = detection.dialect
+        resolved_dialect = normalize_dialect_name(detection.dialect)
+        if resolved_dialect in {UNKNOWN, AMBIGUOUS, UNSUPPORTED}:
+            if resolved_dialect == UNSUPPORTED:
+                warnings.append("PostgreSQL features detected; unsupported by the current parser layer.")
+            elif resolved_dialect == UNKNOWN:
+                warnings.append("Insufficient evidence to determine a supported SQL dialect.")
+            else:
+                warnings.append("Dialect evidence is conflicting between Oracle and T-SQL; manual review is required.")
+
+            chunks = self.chunk_code(
+                clean_code,
+                warnings,
+                dialect=resolved_dialect,
+                source_filename=source_filename or "",
+                source_text=original_code or raw_code,
+            )
+            warnings = [
+                warning
+                for warning in warnings
+                if "Dialect-specific SQL parsing was unavailable for this object; embedded SQL is preserved" not in warning
+            ]
+            object_id = stable_id("obj", source_hash(clean_code), "UNKNOWN", "UNKNOWN_OBJECT", resolved_dialect)
+            return IngestionResult(
+                object_id=object_id,
+                object_name="UNKNOWN_OBJECT",
+                object_type="UNKNOWN",
+                parameters=[],
+                raw_code=clean_code,
+                chunks=chunks,
+                original_code=original_code or raw_code,
+                source_filename=source_filename or "",
+                dialect=resolved_dialect,
+                dialect_confidence=detection.confidence,
+                concrete_dialect="",
+                fallback_dialect="",
+                source_hash=source_hash(clean_code),
+                object_name_status="failed",
+                parameter_parse_status="failed",
+                parse_warnings=warnings,
+                run_metadata=None,
+            )
+        prompt_dialect = detection.concrete_dialect or prompt_dialect_for_state(resolved_dialect) or "oracle"
         if detection.confidence == "low":
             warnings.append(
-                f"SQL dialect could not be confidently determined (defaulted to "
-                f"'{resolved_dialect}'); verify the object was analyzed under the "
+                f"SQL dialect could not be confidently determined; verify the object was analyzed under the "
                 "correct dialect."
             )
 
         object_type, object_name, parameters, metadata_warnings, object_name_status, parameter_status = (
             self.extract_object_metadata(
                 clean_code,
-                dialect=resolved_dialect,
+                dialect=prompt_dialect,
                 source_filename=source_filename or "",
             )
         )
         warnings.extend(metadata_warnings)
 
-        chunks = self.chunk_code(clean_code, warnings, dialect=resolved_dialect)
+        chunks = self.chunk_code(
+            clean_code,
+            warnings,
+            dialect=resolved_dialect,
+            source_filename=source_filename or "",
+            source_text=original_code or raw_code,
+        )
+        object_id = stable_id("obj", source_hash(clean_code), object_type, object_name, resolved_dialect)
+        run_metadata = None
 
         return IngestionResult(
+            object_id=object_id,
             object_name=object_name,
             object_type=object_type,
             parameters=parameters,
             raw_code=clean_code,
             chunks=chunks,
+            original_code=original_code or raw_code,
             source_filename=source_filename or "",
             dialect=resolved_dialect,
             dialect_confidence=detection.confidence,
+            concrete_dialect=detection.concrete_dialect or "",
+            fallback_dialect=prompt_dialect if resolved_dialect != prompt_dialect.upper() else "",
+            source_hash=source_hash(clean_code),
             object_name_status=object_name_status,
             parameter_parse_status=parameter_status,
             parse_warnings=warnings,
+            run_metadata=run_metadata,
         )
 
     # ------------------------------------------------------------------
@@ -425,16 +505,24 @@ class CodeIngestionAgent:
     # ------------------------------------------------------------------
 
     def detect_object_type(self, code: str, dialect: str = ORACLE) -> str:
+        dialect = normalize_dialect_name(dialect)
         masked = self._mask_strings_and_comments(code)
-        patterns = _OBJECT_TYPE_PATTERNS.get(dialect, _OBJECT_TYPE_PATTERNS[ORACLE])
+        patterns = _OBJECT_TYPE_PATTERNS.get(dialect)
+        if patterns is None:
+            patterns = _OBJECT_TYPE_PATTERNS[ORACLE] + _OBJECT_TYPE_PATTERNS[TSQL]
         for obj_type, pattern in patterns:
             if pattern.search(masked):
                 return obj_type
         if _ANON_BLOCK_PATTERN.search(masked):
-            return "PLSQL_BLOCK" if dialect == ORACLE else "TSQL_BLOCK"
+            if dialect == ORACLE:
+                return "PLSQL_BLOCK"
+            if dialect == TSQL:
+                return "TSQL_BLOCK"
+            return "UNKNOWN"
         return "UNKNOWN"
 
     def _detect_object_type_with_fallback(self, code: str, dialect: str) -> tuple[str, str]:
+        dialect = normalize_dialect_name(dialect)
         primary = self.detect_object_type(code, dialect=dialect)
         if primary != "UNKNOWN":
             return primary, dialect
@@ -529,6 +617,7 @@ class CodeIngestionAgent:
         return "UNKNOWN_OBJECT"
 
     def extract_object_name(self, code: str, object_type: str, dialect: str = ORACLE) -> str:
+        dialect = normalize_dialect_name(dialect)
         masked = self._mask_strings_and_comments(
             code, mask_brackets=False, mask_double_quotes=False
         )
@@ -543,6 +632,7 @@ class CodeIngestionAgent:
 
     @staticmethod
     def _normalize_object_name(raw_name: str, dialect: str) -> str:
+        dialect = normalize_dialect_name(dialect)
         parts = [part.strip() for part in re.split(r"\s*\.\s*", raw_name) if part.strip()]
         if not parts:
             return "UNKNOWN_OBJECT"
@@ -559,6 +649,7 @@ class CodeIngestionAgent:
     def _extract_object_name_with_fallback(
         self, code: str, object_type: str, dialect: str
     ) -> tuple[str, str]:
+        dialect = normalize_dialect_name(dialect)
         name = self.extract_object_name(code, object_type, dialect=dialect)
         if name != "UNKNOWN_OBJECT":
             return name, dialect
@@ -589,12 +680,14 @@ class CodeIngestionAgent:
                 @p_status VARCHAR(20) OUTPUT
             AS BEGIN ... END
         """
+        dialect = normalize_dialect_name(dialect)
         masked = self._mask_strings_and_comments(code, mask_brackets=(dialect != TSQL))
         if dialect == TSQL:
             return self._extract_parameters_tsql(code, masked)
         return self._extract_parameters_oracle(code, masked)
 
     def _parameter_signature_present(self, code: str, dialect: str) -> bool:
+        dialect = normalize_dialect_name(dialect)
         masked = self._mask_strings_and_comments(code, mask_brackets=(dialect != TSQL))
         if dialect == TSQL:
             header_match = re.search(
@@ -616,6 +709,7 @@ class CodeIngestionAgent:
     def _extract_parameters_with_fallback(
         self, code: str, object_type: str, dialect: str
     ) -> tuple[List[Parameter], str, str]:
+        dialect = normalize_dialect_name(dialect)
         if object_type not in ("PROCEDURE", "FUNCTION"):
             return [], "parameterless", dialect
 
@@ -657,6 +751,7 @@ class CodeIngestionAgent:
     def extract_object_metadata(
         self, code: str, dialect: str = ORACLE, source_filename: str = ""
     ) -> tuple[str, str, List[Parameter], List[str], str, str]:
+        dialect = normalize_dialect_name(dialect)
         warnings: List[str] = []
         object_type, object_type_dialect = self._detect_object_type_with_fallback(code, dialect)
         if object_type in {"UNKNOWN", "PLSQL_BLOCK", "TSQL_BLOCK"}:
@@ -886,7 +981,14 @@ class CodeIngestionAgent:
     # Chunking
     # ------------------------------------------------------------------
 
-    def chunk_code(self, code: str, warnings: List[str], dialect: str = ORACLE) -> List[CodeChunk]:
+    def chunk_code(
+        self,
+        code: str,
+        warnings: List[str],
+        dialect: str = ORACLE,
+        source_filename: str = "",
+        source_text: Optional[str] = None,
+    ) -> List[CodeChunk]:
         """Split procedural code into logically coherent, context-preserving
         sections, then greedily merge adjacent small sections back together
         (up to `max_chunk_chars`) so a typical object produces only a
@@ -895,7 +997,11 @@ class CodeIngestionAgent:
         Any section that is still too large on its own is split further on
         statement boundaries as a fallback.
         """
+        dialect = normalize_dialect_name(dialect)
         batches = self._split_batches(code, dialect)
+        source_text = source_text or code
+        source_cursor = 0
+        source_line_starts = self._line_start_offsets(source_text)
 
         sections: List[Tuple[str, str]] = []
         for batch_idx, batch_text in enumerate(batches):
@@ -913,9 +1019,25 @@ class CodeIngestionAgent:
 
         chunks: List[CodeChunk] = []
         for idx, (kind, text) in enumerate(merged_sections):
+            section_start, section_end = self._locate_text_span(source_text, text, source_cursor)
+            if section_start >= 0:
+                source_cursor = section_end
             for sub_idx, sub_text in enumerate(self._enforce_size_limit(text)):
                 chunk_id = f"{idx:02d}_{kind}" + (f"_{sub_idx}" if sub_idx else "")
                 embedded_sql = self._extract_and_validate_sql(sub_text, warnings, dialect)
+                sub_start, sub_end = self._locate_text_span(text, sub_text)
+                if section_start >= 0 and sub_start >= 0:
+                    global_start = section_start + sub_start
+                    global_end = section_start + sub_end
+                    line_start = self._line_number_for_offset(source_line_starts, global_start)
+                    line_end = self._line_number_for_offset(source_line_starts, max(global_end - 1, global_start))
+                    location_status = "available"
+                else:
+                    global_start = -1
+                    global_end = -1
+                    line_start = -1
+                    line_end = -1
+                    location_status = "unavailable"
                 chunks.append(
                     CodeChunk(
                         chunk_id=chunk_id,
@@ -923,9 +1045,55 @@ class CodeIngestionAgent:
                         text=sub_text,
                         embedded_sql=embedded_sql,
                         context_path=self._build_context_path(kind),
+                        source_filename=source_filename,
+                        source_char_start=global_start,
+                        source_char_end=global_end,
+                        source_line_start=line_start,
+                        source_line_end=line_end,
+                        source_location_status=location_status,
                     )
                 )
         return chunks
+
+    @staticmethod
+    def _line_start_offsets(text: str) -> List[int]:
+        offsets = [0]
+        for idx, char in enumerate(text):
+            if char == "\n" and idx + 1 < len(text):
+                offsets.append(idx + 1)
+        return offsets
+
+    @staticmethod
+    def _line_number_for_offset(line_starts: List[int], offset: int) -> int:
+        if offset < 0:
+            return -1
+        # `line_starts` is kept for backward compatibility with callers
+        # that already precomputed it, but the line number itself is
+        # derived directly from the source offset so it stays correct
+        # even when the source text contains repeated line starts or
+        # partial sections.
+        source_text_line_index = 0
+        for start in line_starts:
+            if start > offset:
+                break
+            source_text_line_index += 1
+        return max(1, source_text_line_index)
+
+    @staticmethod
+    def _locate_text_span(source_text: str, snippet: str, start_at: int = 0) -> Tuple[int, int]:
+        if not source_text or not snippet:
+            return -1, -1
+        snippet_text = str(snippet).strip()
+        if not snippet_text:
+            return -1, -1
+        start = source_text.find(snippet_text, max(0, start_at))
+        if start < 0 and snippet_text != snippet:
+            start = source_text.find(str(snippet), max(0, start_at))
+            if start >= 0:
+                snippet_text = str(snippet)
+        if start < 0:
+            return -1, -1
+        return start, start + len(snippet_text)
 
     def _split_batches(self, code: str, dialect: str) -> List[str]:
         """Split on "GO" batch separators (T-SQL only). Every batch is
@@ -934,6 +1102,7 @@ class CodeIngestionAgent:
         lost, per the preprocessing requirement to retain everything
         relevant to business-rule extraction.
         """
+        dialect = normalize_dialect_name(dialect)
         if dialect != TSQL:
             return [code]
         masked = self._mask_strings_and_comments(code)
@@ -991,6 +1160,7 @@ class CodeIngestionAgent:
         blanked) copy of `code`, but the returned text slices are always
         taken from the original, unmasked `code`.
         """
+        dialect = normalize_dialect_name(dialect)
         masked = self._mask_strings_and_comments(code)
 
         decl_match = re.search(r"\bIS\b|\bAS\b", masked, re.IGNORECASE)
@@ -1121,6 +1291,7 @@ class CodeIngestionAgent:
         object body, so nested exception handlers do not prematurely end
         the main body split.
         """
+        dialect = normalize_dialect_name(dialect)
         begin_depth = 0
         case_depth = 0
         i = 0
@@ -1260,6 +1431,7 @@ class CodeIngestionAgent:
         flagged, not parsed, since its true text is often only known at
         runtime.
         """
+        dialect = normalize_dialect_name(dialect)
         masked = self._mask_strings_and_comments(text)
 
         dynamic_pattern = _DYNAMIC_SQL_TSQL if dialect == TSQL else _DYNAMIC_SQL_ORACLE
@@ -1271,6 +1443,13 @@ class CodeIngestionAgent:
             )
 
         validated: List[str] = []
+        if dialect not in (ORACLE, TSQL):
+            warnings.append(
+                "Dialect-specific SQL parsing was unavailable for this object; embedded SQL is preserved "
+                "as source text without structural validation."
+            )
+            return []
+
         sqlglot_dialect = "tsql" if dialect == TSQL else "oracle"
         for start, end in self._find_sql_statement_spans(masked):
             stmt = text[start:end].strip()

@@ -1,0 +1,3844 @@
+{
+  "generated_at": "2026-08-26T10:25:01.880231+00:00",
+  "mode": "live",
+  "results": [
+    {
+      "actual_available": true,
+      "case_id": "oracle.classify_npa_and_provision",
+      "checks": {
+        "ambiguities": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "business_rules": {
+          "actual": [
+            [
+              "v_overdue_days <= 90",
+              "set standard classification and 0.40 provision pct",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days <= 90",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "v_overdue_days between 91 and 365",
+              "set substandard classification and 15 provision pct",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 91 and 365",
+              "set substandard classification and 15 provision pct",
+              ""
+            ],
+            [
+              "v_overdue_days between 366 and 1095",
+              "assigns the account's asset classification and provisioning percentage based on the number of days in doubtful status",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 366 and 1095",
+              "assigns the account's asset classification and provisioning percentage based on the number of days in doubtful status",
+              ""
+            ],
+            [
+              "doubtful since is less than or equal to 365 days",
+              "Set DOUBTFUL1 classification",
+              "v_classification"
+            ],
+            [
+              "doubtful since is less than or equal to 365 days",
+              "Set DOUBTFUL1 classification",
+              ""
+            ],
+            [
+              "doubtful since is greater than 365 days and less than or equal to 1095 days",
+              "Set DOUBTFUL2 classification",
+              "v_classification"
+            ],
+            [
+              "doubtful since is greater than 365 days and less than or equal to 1095 days",
+              "Set DOUBTFUL2 classification",
+              ""
+            ],
+            [
+              "v_overdue_days > 1095",
+              "assigns the account's asset classification to loss or doubtful3 and sets the provisioning percentage to 100%",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days > 1095",
+              "assigns the account's asset classification to loss or doubtful3 and sets the provisioning percentage to 100%",
+              ""
+            ],
+            [
+              "doubtful since is greater than 1095 days",
+              "Set LOSS classification",
+              "v_classification"
+            ],
+            [
+              "doubtful since is greater than 1095 days",
+              "Set LOSS classification",
+              ""
+            ],
+            [
+              "doubtful since is less than or equal to 1095 days",
+              "Set DOUBTFUL3 classification",
+              "v_classification"
+            ],
+            [
+              "doubtful since is less than or equal to 1095 days",
+              "Set DOUBTFUL3 classification",
+              ""
+            ],
+            [
+              "after determining the new classification",
+              "updates the asset classification and last classified date fields for the loan account",
+              "v_classification"
+            ],
+            [
+              "after determining the new classification",
+              "updates the asset classification and last classified date fields for the loan account",
+              ""
+            ],
+            [
+              "after calculating the provision amount",
+              "inserts the account id, classification, provision amount, and calculation date into the npa provision records",
+              "v_provision_amt"
+            ],
+            [
+              "after calculating the provision amount",
+              "inserts the account id, classification, provision amount, and calculation date into the npa provision records",
+              ""
+            ],
+            [
+              "whenever the asset classification is updated",
+              "inserts the account id, previous classification, new classification, and change date into the audit log",
+              ""
+            ],
+            [
+              "the specified account does not exist",
+              "update account status and audit the change",
+              ""
+            ],
+            [
+              "an unexpected error occurs during processing",
+              "log error message",
+              ""
+            ]
+          ],
+          "expected": [
+            [
+              "v_overdue_days <= 90",
+              "set standard classification and 0.40 provision pct",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 91 and 365",
+              "set substandard classification and 15 provision pct",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 366 and 1095",
+              "set doubtful1 or doubtful2 based on doubtful_since",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days > 1095",
+              "set loss or doubtful3 based on doubtful_since",
+              "v_classification"
+            ]
+          ],
+          "f1": 0.14814814814814817,
+          "matches": [
+            [
+              "v_overdue_days <= 90",
+              "set standard classification and 0.40 provision pct",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 91 and 365",
+              "set substandard classification and 15 provision pct",
+              "v_classification"
+            ]
+          ],
+          "missing": [
+            [
+              "v_overdue_days between 366 and 1095",
+              "set doubtful1 or doubtful2 based on doubtful_since",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days > 1095",
+              "set loss or doubtful3 based on doubtful_since",
+              "v_classification"
+            ]
+          ],
+          "precision": 0.08695652173913043,
+          "recall": 0.5,
+          "unexpected": [
+            [
+              "v_overdue_days <= 90",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "v_overdue_days between 91 and 365",
+              "set substandard classification and 15 provision pct",
+              ""
+            ],
+            [
+              "v_overdue_days between 366 and 1095",
+              "assigns the account's asset classification and provisioning percentage based on the number of days in doubtful status",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 366 and 1095",
+              "assigns the account's asset classification and provisioning percentage based on the number of days in doubtful status",
+              ""
+            ],
+            [
+              "doubtful since is less than or equal to 365 days",
+              "Set DOUBTFUL1 classification",
+              "v_classification"
+            ],
+            [
+              "doubtful since is less than or equal to 365 days",
+              "Set DOUBTFUL1 classification",
+              ""
+            ],
+            [
+              "doubtful since is greater than 365 days and less than or equal to 1095 days",
+              "Set DOUBTFUL2 classification",
+              "v_classification"
+            ],
+            [
+              "doubtful since is greater than 365 days and less than or equal to 1095 days",
+              "Set DOUBTFUL2 classification",
+              ""
+            ],
+            [
+              "v_overdue_days > 1095",
+              "assigns the account's asset classification to loss or doubtful3 and sets the provisioning percentage to 100%",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days > 1095",
+              "assigns the account's asset classification to loss or doubtful3 and sets the provisioning percentage to 100%",
+              ""
+            ],
+            [
+              "doubtful since is greater than 1095 days",
+              "Set LOSS classification",
+              "v_classification"
+            ],
+            [
+              "doubtful since is greater than 1095 days",
+              "Set LOSS classification",
+              ""
+            ],
+            [
+              "doubtful since is less than or equal to 1095 days",
+              "Set DOUBTFUL3 classification",
+              "v_classification"
+            ],
+            [
+              "doubtful since is less than or equal to 1095 days",
+              "Set DOUBTFUL3 classification",
+              ""
+            ],
+            [
+              "after determining the new classification",
+              "updates the asset classification and last classified date fields for the loan account",
+              "v_classification"
+            ],
+            [
+              "after determining the new classification",
+              "updates the asset classification and last classified date fields for the loan account",
+              ""
+            ],
+            [
+              "after calculating the provision amount",
+              "inserts the account id, classification, provision amount, and calculation date into the npa provision records",
+              "v_provision_amt"
+            ],
+            [
+              "after calculating the provision amount",
+              "inserts the account id, classification, provision amount, and calculation date into the npa provision records",
+              ""
+            ],
+            [
+              "whenever the asset classification is updated",
+              "inserts the account id, previous classification, new classification, and change date into the audit log",
+              ""
+            ],
+            [
+              "the specified account does not exist",
+              "update account status and audit the change",
+              ""
+            ],
+            [
+              "an unexpected error occurs during processing",
+              "log error message",
+              ""
+            ]
+          ]
+        },
+        "dialect": {
+          "actual": "ORACLE",
+          "expected": "ORACLE",
+          "match": true
+        },
+        "important_fields": {
+          "actual": [
+            "account_id",
+            "account_not_found",
+            "and",
+            "asset_classification",
+            "between",
+            "calculated date",
+            "calculated_date",
+            "classification",
+            "doubtful1",
+            "doubtful2",
+            "doubtful3",
+            "doubtful_since_days",
+            "error",
+            "insert",
+            "into",
+            "last classified date",
+            "last_classified_date",
+            "loan_account",
+            "loss",
+            "new_classification",
+            "npa_audit_log",
+            "npa_provision",
+            "null",
+            "old_classification",
+            "outstanding_amount",
+            "overdue_days",
+            "p_account_id",
+            "set",
+            "sqlerrm",
+            "standard",
+            "substandard",
+            "sysdate",
+            "unsecured_amount",
+            "update",
+            "v_classification",
+            "v_doubtful_since",
+            "v_outstanding_amt",
+            "v_overdue_days",
+            "v_provision_amt",
+            "v_provision_pct",
+            "v_unsecured_amt",
+            "values",
+            "where"
+          ],
+          "expected": [
+            "p_account_id",
+            "v_classification",
+            "v_overdue_days",
+            "v_provision_amt",
+            "v_provision_pct"
+          ],
+          "f1": 0.20833333333333334,
+          "matches": [
+            "p_account_id",
+            "v_classification",
+            "v_overdue_days",
+            "v_provision_amt",
+            "v_provision_pct"
+          ],
+          "missing": [],
+          "precision": 0.11627906976744186,
+          "recall": 1.0,
+          "unexpected": [
+            "account_id",
+            "account_not_found",
+            "and",
+            "asset_classification",
+            "between",
+            "calculated date",
+            "calculated_date",
+            "classification",
+            "doubtful1",
+            "doubtful2",
+            "doubtful3",
+            "doubtful_since_days",
+            "error",
+            "insert",
+            "into",
+            "last classified date",
+            "last_classified_date",
+            "loan_account",
+            "loss",
+            "new_classification",
+            "npa_audit_log",
+            "npa_provision",
+            "null",
+            "old_classification",
+            "outstanding_amount",
+            "overdue_days",
+            "set",
+            "sqlerrm",
+            "standard",
+            "substandard",
+            "sysdate",
+            "unsecured_amount",
+            "update",
+            "v_doubtful_since",
+            "v_outstanding_amt",
+            "v_unsecured_amt",
+            "values",
+            "where"
+          ]
+        },
+        "object_type": {
+          "actual": "procedure",
+          "expected": "procedure",
+          "match": true
+        },
+        "operations": {
+          "actual": [
+            [
+              "insert",
+              "NPA_AUDIT_LOG"
+            ],
+            [
+              "insert",
+              "NPA_PROVISION"
+            ],
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ],
+            [
+              "update",
+              "LOAN_ACCOUNT"
+            ]
+          ],
+          "expected": [
+            [
+              "insert",
+              "NPA_AUDIT_LOG"
+            ],
+            [
+              "insert",
+              "NPA_PROVISION"
+            ],
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ],
+            [
+              "update",
+              "LOAN_ACCOUNT"
+            ]
+          ],
+          "f1": 1.0,
+          "matches": [
+            [
+              "insert",
+              "NPA_AUDIT_LOG"
+            ],
+            [
+              "insert",
+              "NPA_PROVISION"
+            ],
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ],
+            [
+              "update",
+              "LOAN_ACCOUNT"
+            ]
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "parameters": {
+          "actual": [
+            [
+              "P_ACCOUNT_ID",
+              "in",
+              "number"
+            ]
+          ],
+          "expected": [
+            [
+              "P_ACCOUNT_ID",
+              "in",
+              "number"
+            ]
+          ],
+          "f1": 1.0,
+          "matches": [
+            [
+              "P_ACCOUNT_ID",
+              "in",
+              "number"
+            ]
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "tables_read": {
+          "actual": [
+            "loan_account"
+          ],
+          "expected": [
+            "loan_account"
+          ],
+          "f1": 1.0,
+          "matches": [
+            "loan_account"
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "tables_written": {
+          "actual": [
+            "loan_account",
+            "npa_audit_log",
+            "npa_provision"
+          ],
+          "expected": [
+            "loan_account",
+            "npa_audit_log",
+            "npa_provision"
+          ],
+          "f1": 1.0,
+          "matches": [
+            "loan_account",
+            "npa_audit_log",
+            "npa_provision"
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        }
+      },
+      "mode": "live",
+      "notes": [],
+      "status": "FAIL"
+    },
+    {
+      "actual_available": true,
+      "case_id": "oracle.npa_simple",
+      "checks": {
+        "ambiguities": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "business_rules": {
+          "actual": [
+            [
+              "v_overdue_days between 91 and 365",
+              "assigns the asset classification and provisioning percentage according to the overdue days band.",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 91 and 365",
+              "assigns the asset classification and provisioning percentage according to the overdue days band.",
+              ""
+            ],
+            [
+              "overdue days is 90 or less",
+              "Set STANDARD classification",
+              "v_classification"
+            ],
+            [
+              "overdue days is 90 or less",
+              "Set STANDARD classification",
+              ""
+            ],
+            [
+              "overdue days is between 91 and 365",
+              "Set STANDARD classification",
+              "v_classification"
+            ],
+            [
+              "overdue days is between 91 and 365",
+              "Set STANDARD classification",
+              ""
+            ],
+            [
+              "overdue days is between 366 and 1095",
+              "Set DOUBTFUL1 classification",
+              "v_classification"
+            ],
+            [
+              "overdue days is between 366 and 1095",
+              "Set DOUBTFUL1 classification",
+              ""
+            ],
+            [
+              "ELSE",
+              "Set LOSS classification",
+              "v_classification"
+            ],
+            [
+              "ELSE",
+              "Set LOSS classification",
+              ""
+            ],
+            [
+              "asset classification has been determined for the account",
+              "sets the asset classification field of the loan account to the assigned value",
+              "v_classification"
+            ],
+            [
+              "asset classification has been determined for the account",
+              "sets the asset classification field of the loan account to the assigned value",
+              ""
+            ],
+            [
+              "provisioning percentage and outstanding amount are available for the account",
+              "calculates the provision amount and records it in the npa provision records with the classification date",
+              "provision_amount"
+            ],
+            [
+              "provisioning percentage and outstanding amount are available for the account",
+              "calculates the provision amount and records it in the npa provision records with the classification date",
+              ""
+            ],
+            [
+              "asset classification has been updated for the account",
+              "inserts a record in the audit log with the account id, new classification, and change date",
+              "audit log entry"
+            ],
+            [
+              "asset classification has been updated for the account",
+              "inserts a record in the audit log with the account id, new classification, and change date",
+              ""
+            ],
+            [
+              "an error occurs during processing",
+              "log error message",
+              "audit log entry"
+            ],
+            [
+              "an error occurs during processing",
+              "log error message",
+              ""
+            ]
+          ],
+          "expected": [
+            [
+              "v_overdue_days <= 90",
+              "set standard classification",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 91 and 365",
+              "set substandard classification",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 366 and 1095",
+              "set doubtful1 classification",
+              "v_classification"
+            ],
+            [
+              "else",
+              "set loss classification",
+              "v_classification"
+            ]
+          ],
+          "f1": null,
+          "matches": [],
+          "missing": [
+            [
+              "v_overdue_days <= 90",
+              "set standard classification",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 91 and 365",
+              "set substandard classification",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 366 and 1095",
+              "set doubtful1 classification",
+              "v_classification"
+            ],
+            [
+              "else",
+              "set loss classification",
+              "v_classification"
+            ]
+          ],
+          "precision": 0.0,
+          "recall": 0.0,
+          "unexpected": [
+            [
+              "v_overdue_days between 91 and 365",
+              "assigns the asset classification and provisioning percentage according to the overdue days band.",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 91 and 365",
+              "assigns the asset classification and provisioning percentage according to the overdue days band.",
+              ""
+            ],
+            [
+              "overdue days is 90 or less",
+              "Set STANDARD classification",
+              "v_classification"
+            ],
+            [
+              "overdue days is 90 or less",
+              "Set STANDARD classification",
+              ""
+            ],
+            [
+              "overdue days is between 91 and 365",
+              "Set STANDARD classification",
+              "v_classification"
+            ],
+            [
+              "overdue days is between 91 and 365",
+              "Set STANDARD classification",
+              ""
+            ],
+            [
+              "overdue days is between 366 and 1095",
+              "Set DOUBTFUL1 classification",
+              "v_classification"
+            ],
+            [
+              "overdue days is between 366 and 1095",
+              "Set DOUBTFUL1 classification",
+              ""
+            ],
+            [
+              "ELSE",
+              "Set LOSS classification",
+              "v_classification"
+            ],
+            [
+              "ELSE",
+              "Set LOSS classification",
+              ""
+            ],
+            [
+              "asset classification has been determined for the account",
+              "sets the asset classification field of the loan account to the assigned value",
+              "v_classification"
+            ],
+            [
+              "asset classification has been determined for the account",
+              "sets the asset classification field of the loan account to the assigned value",
+              ""
+            ],
+            [
+              "provisioning percentage and outstanding amount are available for the account",
+              "calculates the provision amount and records it in the npa provision records with the classification date",
+              "provision_amount"
+            ],
+            [
+              "provisioning percentage and outstanding amount are available for the account",
+              "calculates the provision amount and records it in the npa provision records with the classification date",
+              ""
+            ],
+            [
+              "asset classification has been updated for the account",
+              "inserts a record in the audit log with the account id, new classification, and change date",
+              "audit log entry"
+            ],
+            [
+              "asset classification has been updated for the account",
+              "inserts a record in the audit log with the account id, new classification, and change date",
+              ""
+            ],
+            [
+              "an error occurs during processing",
+              "log error message",
+              "audit log entry"
+            ],
+            [
+              "an error occurs during processing",
+              "log error message",
+              ""
+            ]
+          ]
+        },
+        "dialect": {
+          "actual": "ORACLE",
+          "expected": "ORACLE",
+          "match": true
+        },
+        "important_fields": {
+          "actual": [
+            "account_id",
+            "and",
+            "asset_classification",
+            "between",
+            "change_date",
+            "classification_date",
+            "else",
+            "error",
+            "insert",
+            "into",
+            "loan_account",
+            "loss",
+            "new_classification",
+            "npa_audit_log",
+            "npa_provision",
+            "outstanding_amount",
+            "overdue_days",
+            "p_account_id",
+            "provision_amount",
+            "set",
+            "sqlerrm",
+            "sysdate",
+            "update",
+            "v_classification",
+            "v_outstanding",
+            "v_overdue_days",
+            "v_provision_pct",
+            "values",
+            "where"
+          ],
+          "expected": [
+            "p_account_id",
+            "v_classification",
+            "v_overdue_days",
+            "v_provision_pct"
+          ],
+          "f1": 0.2424242424242424,
+          "matches": [
+            "p_account_id",
+            "v_classification",
+            "v_overdue_days",
+            "v_provision_pct"
+          ],
+          "missing": [],
+          "precision": 0.13793103448275862,
+          "recall": 1.0,
+          "unexpected": [
+            "account_id",
+            "and",
+            "asset_classification",
+            "between",
+            "change_date",
+            "classification_date",
+            "else",
+            "error",
+            "insert",
+            "into",
+            "loan_account",
+            "loss",
+            "new_classification",
+            "npa_audit_log",
+            "npa_provision",
+            "outstanding_amount",
+            "overdue_days",
+            "provision_amount",
+            "set",
+            "sqlerrm",
+            "sysdate",
+            "update",
+            "v_outstanding",
+            "values",
+            "where"
+          ]
+        },
+        "object_type": {
+          "actual": "procedure",
+          "expected": "procedure",
+          "match": true
+        },
+        "operations": {
+          "actual": [
+            [
+              "insert",
+              "NPA_AUDIT_LOG"
+            ],
+            [
+              "insert",
+              "NPA_PROVISION"
+            ],
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ],
+            [
+              "update",
+              "LOAN_ACCOUNT"
+            ]
+          ],
+          "expected": [
+            [
+              "insert",
+              "NPA_AUDIT_LOG"
+            ],
+            [
+              "insert",
+              "NPA_PROVISION"
+            ],
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ],
+            [
+              "update",
+              "LOAN_ACCOUNT"
+            ]
+          ],
+          "f1": 1.0,
+          "matches": [
+            [
+              "insert",
+              "NPA_AUDIT_LOG"
+            ],
+            [
+              "insert",
+              "NPA_PROVISION"
+            ],
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ],
+            [
+              "update",
+              "LOAN_ACCOUNT"
+            ]
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "parameters": {
+          "actual": [
+            [
+              "P_ACCOUNT_ID",
+              "in",
+              "number"
+            ]
+          ],
+          "expected": [
+            [
+              "P_ACCOUNT_ID",
+              "in",
+              "number"
+            ]
+          ],
+          "f1": 1.0,
+          "matches": [
+            [
+              "P_ACCOUNT_ID",
+              "in",
+              "number"
+            ]
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "tables_read": {
+          "actual": [
+            "loan_account"
+          ],
+          "expected": [
+            "loan_account"
+          ],
+          "f1": 1.0,
+          "matches": [
+            "loan_account"
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "tables_written": {
+          "actual": [
+            "loan_account",
+            "npa_audit_log",
+            "npa_provision"
+          ],
+          "expected": [
+            "loan_account",
+            "npa_audit_log",
+            "npa_provision"
+          ],
+          "f1": 1.0,
+          "matches": [
+            "loan_account",
+            "npa_audit_log",
+            "npa_provision"
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        }
+      },
+      "mode": "live",
+      "notes": [],
+      "status": "FAIL"
+    },
+    {
+      "actual_available": true,
+      "case_id": "oracle.cursor_overdue_batch",
+      "checks": {
+        "ambiguities": {
+          "actual": [
+            "could not deterministically identify the database object type from the raw source."
+          ],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": 0.0,
+          "recall": null,
+          "unexpected": [
+            "could not deterministically identify the database object type from the raw source."
+          ]
+        },
+        "business_rules": {
+          "actual": [
+            [
+              "v_overdue_days between 91 and 365",
+              "set loss classification",
+              "asset_classification"
+            ],
+            [
+              "v_overdue_days between 91 and 365",
+              "set loss classification",
+              ""
+            ],
+            [
+              "91-365 days overdue",
+              "Set STANDARD classification",
+              "asset_classification"
+            ],
+            [
+              "91-365 days overdue",
+              "Set STANDARD classification",
+              ""
+            ],
+            [
+              "366-1095 days overdue",
+              "Set DOUBTFUL1 classification",
+              "asset_classification"
+            ],
+            [
+              "366-1095 days overdue",
+              "Set DOUBTFUL1 classification",
+              ""
+            ],
+            [
+              "more than 1095 days overdue",
+              "Set LOSS classification",
+              "asset_classification"
+            ],
+            [
+              "more than 1095 days overdue",
+              "Set LOSS classification",
+              ""
+            ],
+            [
+              "account is classified as sub-standard, doubtful-1, or loss",
+              "sets the provisioning percentage to 15%, 25%, or 100% based on the new classification",
+              "v_provision_pct"
+            ],
+            [
+              "account is classified as sub-standard, doubtful-1, or loss",
+              "sets the provisioning percentage to 15%, 25%, or 100% based on the new classification",
+              ""
+            ],
+            [
+              "sub-standard",
+              "Set 15% classification",
+              "v_provision_pct"
+            ],
+            [
+              "sub-standard",
+              "Set 15% classification",
+              ""
+            ],
+            [
+              "doubtful-1",
+              "Set 25% classification",
+              "v_provision_pct"
+            ],
+            [
+              "doubtful-1",
+              "Set 25% classification",
+              ""
+            ],
+            [
+              "loss",
+              "Set 100% classification",
+              "v_provision_pct"
+            ],
+            [
+              "loss",
+              "Set 100% classification",
+              ""
+            ],
+            [
+              "provisioning percentage is set for the account",
+              "sets the provisioning amount to outstanding amount multiplied by the provisioning percentage, and updates or inserts this value in the provisioning records",
+              "provision_amount"
+            ],
+            [
+              "provisioning percentage is set for the account",
+              "sets the provisioning amount to outstanding amount multiplied by the provisioning percentage, and updates or inserts this value in the provisioning records",
+              ""
+            ],
+            [
+              "asset classification is changed for an account",
+              "inserts a record in the audit log with the account id, new classification, and change date",
+              "audit log entry"
+            ],
+            [
+              "asset classification is changed for an account",
+              "inserts a record in the audit log with the account id, new classification, and change date",
+              ""
+            ],
+            [
+              "any error occurs during the batch process",
+              "log error message",
+              "audit log entry"
+            ],
+            [
+              "any error occurs during the batch process",
+              "log error message",
+              ""
+            ]
+          ],
+          "expected": [
+            [
+              "overdue_days > 90",
+              "process only overdue accounts",
+              ""
+            ],
+            [
+              "91-365 days",
+              "set substandard and 15 pct",
+              ""
+            ],
+            [
+              "366-1095 days",
+              "set doubtful1 and 25 pct",
+              ""
+            ],
+            [
+              "else",
+              "set loss and 100 pct",
+              ""
+            ]
+          ],
+          "f1": null,
+          "matches": [],
+          "missing": [
+            [
+              "overdue_days > 90",
+              "process only overdue accounts",
+              ""
+            ],
+            [
+              "91-365 days",
+              "set substandard and 15 pct",
+              ""
+            ],
+            [
+              "366-1095 days",
+              "set doubtful1 and 25 pct",
+              ""
+            ],
+            [
+              "else",
+              "set loss and 100 pct",
+              ""
+            ]
+          ],
+          "precision": 0.0,
+          "recall": 0.0,
+          "unexpected": [
+            [
+              "v_overdue_days between 91 and 365",
+              "set loss classification",
+              "asset_classification"
+            ],
+            [
+              "v_overdue_days between 91 and 365",
+              "set loss classification",
+              ""
+            ],
+            [
+              "91-365 days overdue",
+              "Set STANDARD classification",
+              "asset_classification"
+            ],
+            [
+              "91-365 days overdue",
+              "Set STANDARD classification",
+              ""
+            ],
+            [
+              "366-1095 days overdue",
+              "Set DOUBTFUL1 classification",
+              "asset_classification"
+            ],
+            [
+              "366-1095 days overdue",
+              "Set DOUBTFUL1 classification",
+              ""
+            ],
+            [
+              "more than 1095 days overdue",
+              "Set LOSS classification",
+              "asset_classification"
+            ],
+            [
+              "more than 1095 days overdue",
+              "Set LOSS classification",
+              ""
+            ],
+            [
+              "account is classified as sub-standard, doubtful-1, or loss",
+              "sets the provisioning percentage to 15%, 25%, or 100% based on the new classification",
+              "v_provision_pct"
+            ],
+            [
+              "account is classified as sub-standard, doubtful-1, or loss",
+              "sets the provisioning percentage to 15%, 25%, or 100% based on the new classification",
+              ""
+            ],
+            [
+              "sub-standard",
+              "Set 15% classification",
+              "v_provision_pct"
+            ],
+            [
+              "sub-standard",
+              "Set 15% classification",
+              ""
+            ],
+            [
+              "doubtful-1",
+              "Set 25% classification",
+              "v_provision_pct"
+            ],
+            [
+              "doubtful-1",
+              "Set 25% classification",
+              ""
+            ],
+            [
+              "loss",
+              "Set 100% classification",
+              "v_provision_pct"
+            ],
+            [
+              "loss",
+              "Set 100% classification",
+              ""
+            ],
+            [
+              "provisioning percentage is set for the account",
+              "sets the provisioning amount to outstanding amount multiplied by the provisioning percentage, and updates or inserts this value in the provisioning records",
+              "provision_amount"
+            ],
+            [
+              "provisioning percentage is set for the account",
+              "sets the provisioning amount to outstanding amount multiplied by the provisioning percentage, and updates or inserts this value in the provisioning records",
+              ""
+            ],
+            [
+              "asset classification is changed for an account",
+              "inserts a record in the audit log with the account id, new classification, and change date",
+              "audit log entry"
+            ],
+            [
+              "asset classification is changed for an account",
+              "inserts a record in the audit log with the account id, new classification, and change date",
+              ""
+            ],
+            [
+              "any error occurs during the batch process",
+              "log error message",
+              "audit log entry"
+            ],
+            [
+              "any error occurs during the batch process",
+              "log error message",
+              ""
+            ]
+          ]
+        },
+        "dialect": {
+          "actual": "ORACLE",
+          "expected": "ORACLE",
+          "match": true
+        },
+        "important_fields": {
+          "actual": [
+            "account_id",
+            "and",
+            "asset_classification",
+            "batch",
+            "between",
+            "change_date",
+            "classification date",
+            "classification_date",
+            "error",
+            "insert",
+            "into",
+            "loan_account",
+            "loss",
+            "merge",
+            "new_classification",
+            "npa_audit_log",
+            "npa_provision",
+            "null",
+            "outstanding_amount",
+            "overdue_days",
+            "provision_amount",
+            "set",
+            "sqlerrm",
+            "sysdate",
+            "update",
+            "v_new_classification",
+            "v_provision_pct",
+            "values"
+          ],
+          "expected": [
+            "overdue_days",
+            "v_new_classification",
+            "v_provision_pct"
+          ],
+          "f1": 0.19354838709677416,
+          "matches": [
+            "overdue_days",
+            "v_new_classification",
+            "v_provision_pct"
+          ],
+          "missing": [],
+          "precision": 0.10714285714285714,
+          "recall": 1.0,
+          "unexpected": [
+            "account_id",
+            "and",
+            "asset_classification",
+            "batch",
+            "between",
+            "change_date",
+            "classification date",
+            "classification_date",
+            "error",
+            "insert",
+            "into",
+            "loan_account",
+            "loss",
+            "merge",
+            "new_classification",
+            "npa_audit_log",
+            "npa_provision",
+            "null",
+            "outstanding_amount",
+            "provision_amount",
+            "set",
+            "sqlerrm",
+            "sysdate",
+            "update",
+            "values"
+          ]
+        },
+        "object_type": {
+          "actual": "plsql_block",
+          "expected": "plsql_block",
+          "match": true
+        },
+        "operations": {
+          "actual": [
+            [
+              "insert",
+              "NPA_AUDIT_LOG"
+            ],
+            [
+              "merge",
+              "NPA_PROVISION"
+            ],
+            [
+              "read",
+              "DUAL"
+            ],
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ],
+            [
+              "update",
+              "LOAN_ACCOUNT"
+            ]
+          ],
+          "expected": [
+            [
+              "insert",
+              "NPA_AUDIT_LOG"
+            ],
+            [
+              "merge",
+              "NPA_PROVISION"
+            ],
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ],
+            [
+              "update",
+              "LOAN_ACCOUNT"
+            ]
+          ],
+          "f1": 0.888888888888889,
+          "matches": [
+            [
+              "insert",
+              "NPA_AUDIT_LOG"
+            ],
+            [
+              "merge",
+              "NPA_PROVISION"
+            ],
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ],
+            [
+              "update",
+              "LOAN_ACCOUNT"
+            ]
+          ],
+          "missing": [],
+          "precision": 0.8,
+          "recall": 1.0,
+          "unexpected": [
+            [
+              "read",
+              "DUAL"
+            ]
+          ]
+        },
+        "parameters": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "tables_read": {
+          "actual": [
+            "dual",
+            "loan_account",
+            "npa_provision"
+          ],
+          "expected": [
+            "loan_account"
+          ],
+          "f1": 0.5,
+          "matches": [
+            "loan_account"
+          ],
+          "missing": [],
+          "precision": 0.3333333333333333,
+          "recall": 1.0,
+          "unexpected": [
+            "dual",
+            "npa_provision"
+          ]
+        },
+        "tables_written": {
+          "actual": [
+            "loan_account",
+            "npa_audit_log",
+            "npa_provision"
+          ],
+          "expected": [
+            "loan_account",
+            "npa_audit_log",
+            "npa_provision"
+          ],
+          "f1": 1.0,
+          "matches": [
+            "loan_account",
+            "npa_audit_log",
+            "npa_provision"
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        }
+      },
+      "mode": "live",
+      "notes": [
+        "Expected output is marked for manual confirmation."
+      ],
+      "status": "FAIL"
+    },
+    {
+      "actual_available": true,
+      "case_id": "oracle.batch_overdue_ageing_block",
+      "checks": {
+        "ambiguities": {
+          "actual": [
+            "could not deterministically identify the database object type from the raw source.",
+            "the extraction does not show the complete logic for the if statement, leaving its business effect unclear.",
+            "the source or definition of rec.account_id and v_ageing_bucket is not explicitly shown, but their business meaning is inferred from context."
+          ],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": 0.0,
+          "recall": null,
+          "unexpected": [
+            "could not deterministically identify the database object type from the raw source.",
+            "the extraction does not show the complete logic for the if statement, leaving its business effect unclear.",
+            "the source or definition of rec.account_id and v_ageing_bucket is not explicitly shown, but their business meaning is inferred from context."
+          ]
+        },
+        "business_rules": {
+          "actual": [
+            [
+              "<= 30 days",
+              "assigns the account's ageing bucket field to one of four categories based on overdue days",
+              "v_ageing_bucket"
+            ],
+            [
+              "<= 30 days",
+              "assigns the account's ageing bucket field to one of four categories based on overdue days",
+              ""
+            ],
+            [
+              "overdue days between 1 and 30",
+              "bucket_0_30",
+              "v_ageing_bucket"
+            ],
+            [
+              "overdue days between 1 and 30",
+              "bucket_0_30",
+              ""
+            ],
+            [
+              "overdue days between 31 and 60",
+              "bucket_31_60",
+              "v_ageing_bucket"
+            ],
+            [
+              "overdue days between 31 and 60",
+              "bucket_31_60",
+              ""
+            ],
+            [
+              "overdue days between 61 and 90",
+              "bucket_61_90",
+              "v_ageing_bucket"
+            ],
+            [
+              "overdue days between 61 and 90",
+              "bucket_61_90",
+              ""
+            ],
+            [
+              "overdue days greater than 90",
+              "bucket_90_plus",
+              "v_ageing_bucket"
+            ],
+            [
+              "overdue days greater than 90",
+              "bucket_90_plus",
+              ""
+            ],
+            [
+              "account exists in overdue ageing summary or not",
+              "updates the ageing bucket and last updated date if the account exists, or inserts a new record with these fields if it does not",
+              "v_ageing_bucket"
+            ],
+            [
+              "account exists in overdue ageing summary or not",
+              "updates the ageing bucket and last updated date if the account exists, or inserts a new record with these fields if it does not",
+              ""
+            ],
+            [
+              "an error occurs during the update or insert of the overdue ageing summary",
+              "log error message",
+              "audit log entry"
+            ],
+            [
+              "an error occurs during the update or insert of the overdue ageing summary",
+              "log error message",
+              ""
+            ]
+          ],
+          "expected": [
+            [
+              "<= 30 days",
+              "assign bucket_0_30",
+              ""
+            ],
+            [
+              "<= 60 days",
+              "assign bucket_31_60",
+              ""
+            ],
+            [
+              "<= 90 days",
+              "assign bucket_61_90",
+              ""
+            ],
+            [
+              "> 90 days",
+              "assign bucket_90_plus",
+              ""
+            ]
+          ],
+          "f1": null,
+          "matches": [],
+          "missing": [
+            [
+              "<= 30 days",
+              "assign bucket_0_30",
+              ""
+            ],
+            [
+              "<= 60 days",
+              "assign bucket_31_60",
+              ""
+            ],
+            [
+              "<= 90 days",
+              "assign bucket_61_90",
+              ""
+            ],
+            [
+              "> 90 days",
+              "assign bucket_90_plus",
+              ""
+            ]
+          ],
+          "precision": 0.0,
+          "recall": 0.0,
+          "unexpected": [
+            [
+              "<= 30 days",
+              "assigns the account's ageing bucket field to one of four categories based on overdue days",
+              "v_ageing_bucket"
+            ],
+            [
+              "<= 30 days",
+              "assigns the account's ageing bucket field to one of four categories based on overdue days",
+              ""
+            ],
+            [
+              "overdue days between 1 and 30",
+              "bucket_0_30",
+              "v_ageing_bucket"
+            ],
+            [
+              "overdue days between 1 and 30",
+              "bucket_0_30",
+              ""
+            ],
+            [
+              "overdue days between 31 and 60",
+              "bucket_31_60",
+              "v_ageing_bucket"
+            ],
+            [
+              "overdue days between 31 and 60",
+              "bucket_31_60",
+              ""
+            ],
+            [
+              "overdue days between 61 and 90",
+              "bucket_61_90",
+              "v_ageing_bucket"
+            ],
+            [
+              "overdue days between 61 and 90",
+              "bucket_61_90",
+              ""
+            ],
+            [
+              "overdue days greater than 90",
+              "bucket_90_plus",
+              "v_ageing_bucket"
+            ],
+            [
+              "overdue days greater than 90",
+              "bucket_90_plus",
+              ""
+            ],
+            [
+              "account exists in overdue ageing summary or not",
+              "updates the ageing bucket and last updated date if the account exists, or inserts a new record with these fields if it does not",
+              "v_ageing_bucket"
+            ],
+            [
+              "account exists in overdue ageing summary or not",
+              "updates the ageing bucket and last updated date if the account exists, or inserts a new record with these fields if it does not",
+              ""
+            ],
+            [
+              "an error occurs during the update or insert of the overdue ageing summary",
+              "log error message",
+              "audit log entry"
+            ],
+            [
+              "an error occurs during the update or insert of the overdue ageing summary",
+              "log error message",
+              ""
+            ]
+          ]
+        },
+        "dialect": {
+          "actual": "ORACLE",
+          "expected": "ORACLE",
+          "match": true
+        },
+        "important_fields": {
+          "actual": [
+            "account_id",
+            "ageing bucket",
+            "ageing_update_failed",
+            "bucket_0_30",
+            "bucket_31_60",
+            "bucket_61_90",
+            "bucket_90_plus",
+            "insert",
+            "into",
+            "last_updated",
+            "merge",
+            "new_classification",
+            "npa_audit_log",
+            "old_classification",
+            "overdue_ageing_summary",
+            "overdue_days",
+            "set",
+            "sqlerrm",
+            "sysdate",
+            "update",
+            "updatedat",
+            "v_ageing_bucket"
+          ],
+          "expected": [
+            "overdue_days",
+            "v_ageing_bucket",
+            "v_processed_count"
+          ],
+          "f1": 0.16,
+          "matches": [
+            "overdue_days",
+            "v_ageing_bucket"
+          ],
+          "missing": [
+            "v_processed_count"
+          ],
+          "precision": 0.09090909090909091,
+          "recall": 0.6666666666666666,
+          "unexpected": [
+            "account_id",
+            "ageing bucket",
+            "ageing_update_failed",
+            "bucket_0_30",
+            "bucket_31_60",
+            "bucket_61_90",
+            "bucket_90_plus",
+            "insert",
+            "into",
+            "last_updated",
+            "merge",
+            "new_classification",
+            "npa_audit_log",
+            "old_classification",
+            "overdue_ageing_summary",
+            "set",
+            "sqlerrm",
+            "sysdate",
+            "update",
+            "updatedat"
+          ]
+        },
+        "object_type": {
+          "actual": "plsql_block",
+          "expected": "plsql_block",
+          "match": true
+        },
+        "operations": {
+          "actual": [
+            [
+              "insert",
+              "NPA_AUDIT_LOG"
+            ],
+            [
+              "merge",
+              "OVERDUE_AGEING_SUMMARY"
+            ],
+            [
+              "read",
+              "DUAL"
+            ],
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ]
+          ],
+          "expected": [
+            [
+              "insert",
+              "NPA_AUDIT_LOG"
+            ],
+            [
+              "merge",
+              "OVERDUE_AGEING_SUMMARY"
+            ],
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ],
+            [
+              "update",
+              "OVERDUE_AGEING_SUMMARY"
+            ]
+          ],
+          "f1": 0.75,
+          "matches": [
+            [
+              "insert",
+              "NPA_AUDIT_LOG"
+            ],
+            [
+              "merge",
+              "OVERDUE_AGEING_SUMMARY"
+            ],
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ]
+          ],
+          "missing": [
+            [
+              "update",
+              "OVERDUE_AGEING_SUMMARY"
+            ]
+          ],
+          "precision": 0.75,
+          "recall": 0.75,
+          "unexpected": [
+            [
+              "read",
+              "DUAL"
+            ]
+          ]
+        },
+        "parameters": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "tables_read": {
+          "actual": [
+            "dual",
+            "loan_account",
+            "overdue_ageing_summary"
+          ],
+          "expected": [
+            "loan_account"
+          ],
+          "f1": 0.5,
+          "matches": [
+            "loan_account"
+          ],
+          "missing": [],
+          "precision": 0.3333333333333333,
+          "recall": 1.0,
+          "unexpected": [
+            "dual",
+            "overdue_ageing_summary"
+          ]
+        },
+        "tables_written": {
+          "actual": [
+            "npa_audit_log",
+            "overdue_ageing_summary"
+          ],
+          "expected": [
+            "loan_account",
+            "npa_audit_log",
+            "overdue_ageing_summary"
+          ],
+          "f1": 0.8,
+          "matches": [
+            "npa_audit_log",
+            "overdue_ageing_summary"
+          ],
+          "missing": [
+            "loan_account"
+          ],
+          "precision": 1.0,
+          "recall": 0.6666666666666666,
+          "unexpected": []
+        }
+      },
+      "mode": "live",
+      "notes": [
+        "Expected output is marked for manual confirmation."
+      ],
+      "status": "FAIL"
+    },
+    {
+      "actual_available": true,
+      "case_id": "oracle.provisioning_view",
+      "checks": {
+        "ambiguities": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "business_rules": {
+          "actual": [
+            [
+              "the account's asset classification is not 'standard'.",
+              "set standard classification",
+              ""
+            ],
+            [
+              "latest classification_date per account",
+              "set standard classification",
+              "classification_date, account_id, classification_date"
+            ],
+            [
+              "latest classification_date per account",
+              "set standard classification",
+              ""
+            ]
+          ],
+          "expected": [
+            [
+              "asset_classification != standard",
+              "show only non-standard accounts",
+              ""
+            ],
+            [
+              "latest classification_date per account",
+              "keep only most recent provision row",
+              ""
+            ]
+          ],
+          "f1": null,
+          "matches": [],
+          "missing": [
+            [
+              "asset_classification != standard",
+              "show only non-standard accounts",
+              ""
+            ],
+            [
+              "latest classification_date per account",
+              "keep only most recent provision row",
+              ""
+            ]
+          ],
+          "precision": 0.0,
+          "recall": 0.0,
+          "unexpected": [
+            [
+              "the account's asset classification is not 'standard'.",
+              "set standard classification",
+              ""
+            ],
+            [
+              "latest classification_date per account",
+              "set standard classification",
+              "classification_date, account_id, classification_date"
+            ],
+            [
+              "latest classification_date per account",
+              "set standard classification",
+              ""
+            ]
+          ]
+        },
+        "dialect": {
+          "actual": "ORACLE",
+          "expected": "ORACLE",
+          "match": true
+        },
+        "important_fields": {
+          "actual": [
+            "account_id",
+            "asset_classification",
+            "classification_date",
+            "classification_date, account_id, classification_date",
+            "customer_id",
+            "filter_condition",
+            "from",
+            "max",
+            "npa_provision",
+            "provision_amount",
+            "select",
+            "standard",
+            "where"
+          ],
+          "expected": [
+            "account_id",
+            "asset_classification",
+            "customer_id",
+            "provision_amount"
+          ],
+          "f1": 0.47058823529411764,
+          "matches": [
+            "account_id",
+            "asset_classification",
+            "customer_id",
+            "provision_amount"
+          ],
+          "missing": [],
+          "precision": 0.3076923076923077,
+          "recall": 1.0,
+          "unexpected": [
+            "classification_date",
+            "classification_date, account_id, classification_date",
+            "filter_condition",
+            "from",
+            "max",
+            "npa_provision",
+            "select",
+            "standard",
+            "where"
+          ]
+        },
+        "object_type": {
+          "actual": "view",
+          "expected": "view",
+          "match": true
+        },
+        "operations": {
+          "actual": [
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ],
+            [
+              "read",
+              "NPA_PROVISION"
+            ]
+          ],
+          "expected": [
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ],
+            [
+              "read",
+              "NPA_PROVISION"
+            ]
+          ],
+          "f1": 1.0,
+          "matches": [
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ],
+            [
+              "read",
+              "NPA_PROVISION"
+            ]
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "parameters": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "tables_read": {
+          "actual": [
+            "loan_account",
+            "npa_provision"
+          ],
+          "expected": [
+            "loan_account",
+            "npa_provision"
+          ],
+          "f1": 1.0,
+          "matches": [
+            "loan_account",
+            "npa_provision"
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "tables_written": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        }
+      },
+      "mode": "live",
+      "notes": [],
+      "status": "FAIL"
+    },
+    {
+      "actual_available": true,
+      "case_id": "oracle.provision_summary_view",
+      "checks": {
+        "ambiguities": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "business_rules": {
+          "actual": [
+            [
+              "the account has a non-null asset classification.",
+              "include the account in the summary calculations.",
+              ""
+            ],
+            [
+              "latest calculated_date per account",
+              "include only the most recent provision amount for each account in the summary.",
+              "account_id"
+            ],
+            [
+              "latest calculated_date per account",
+              "include only the most recent provision amount for each account in the summary.",
+              ""
+            ]
+          ],
+          "expected": [
+            [
+              "asset_classification is not null",
+              "include only classified accounts",
+              ""
+            ],
+            [
+              "latest calculated_date per account",
+              "summarize latest provision values",
+              ""
+            ]
+          ],
+          "f1": null,
+          "matches": [],
+          "missing": [
+            [
+              "asset_classification is not null",
+              "include only classified accounts",
+              ""
+            ],
+            [
+              "latest calculated_date per account",
+              "summarize latest provision values",
+              ""
+            ]
+          ],
+          "precision": 0.0,
+          "recall": 0.0,
+          "unexpected": [
+            [
+              "the account has a non-null asset classification.",
+              "include the account in the summary calculations.",
+              ""
+            ],
+            [
+              "latest calculated_date per account",
+              "include only the most recent provision amount for each account in the summary.",
+              "account_id"
+            ],
+            [
+              "latest calculated_date per account",
+              "include only the most recent provision amount for each account in the summary.",
+              ""
+            ]
+          ]
+        },
+        "dialect": {
+          "actual": "ORACLE",
+          "expected": "ORACLE",
+          "match": true
+        },
+        "important_fields": {
+          "actual": [
+            "account_count",
+            "account_id",
+            "asset_classification",
+            "calculated_date",
+            "from",
+            "is",
+            "max",
+            "not",
+            "np2",
+            "npa_provision",
+            "null",
+            "select",
+            "total_outstanding",
+            "total_provision",
+            "where"
+          ],
+          "expected": [
+            "account_count",
+            "asset_classification",
+            "branch_code",
+            "total_outstanding",
+            "total_provision"
+          ],
+          "f1": 0.4,
+          "matches": [
+            "account_count",
+            "asset_classification",
+            "total_outstanding",
+            "total_provision"
+          ],
+          "missing": [
+            "branch_code"
+          ],
+          "precision": 0.26666666666666666,
+          "recall": 0.8,
+          "unexpected": [
+            "account_id",
+            "calculated_date",
+            "from",
+            "is",
+            "max",
+            "not",
+            "np2",
+            "npa_provision",
+            "null",
+            "select",
+            "where"
+          ]
+        },
+        "object_type": {
+          "actual": "view",
+          "expected": "view",
+          "match": true
+        },
+        "operations": {
+          "actual": [
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ],
+            [
+              "read",
+              "NPA_PROVISION"
+            ]
+          ],
+          "expected": [
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ],
+            [
+              "read",
+              "NPA_PROVISION"
+            ]
+          ],
+          "f1": 1.0,
+          "matches": [
+            [
+              "read",
+              "LOAN_ACCOUNT"
+            ],
+            [
+              "read",
+              "NPA_PROVISION"
+            ]
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "parameters": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "tables_read": {
+          "actual": [
+            "loan_account",
+            "npa_provision"
+          ],
+          "expected": [
+            "loan_account",
+            "npa_provision"
+          ],
+          "f1": 1.0,
+          "matches": [
+            "loan_account",
+            "npa_provision"
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "tables_written": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        }
+      },
+      "mode": "live",
+      "notes": [],
+      "status": "FAIL"
+    },
+    {
+      "actual_available": true,
+      "case_id": "tsql.update_account_status",
+      "checks": {
+        "ambiguities": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "business_rules": {
+          "actual": [
+            [
+              "a request is made to change the status of a specific account.",
+              "update account status and audit the change",
+              "status"
+            ],
+            [
+              "a request is made to change the status of a specific account.",
+              "update account status and audit the change",
+              ""
+            ],
+            [
+              "an account's status is changed.",
+              "update account status and audit the change",
+              "accountaudit record"
+            ],
+            [
+              "an account's status is changed.",
+              "update account status and audit the change",
+              ""
+            ],
+            [
+              "an error occurs while updating the account status or recording the audit entry.",
+              "update account status and audit the change",
+              "errorlog record"
+            ],
+            [
+              "an error occurs while updating the account status or recording the audit entry.",
+              "update account status and audit the change",
+              ""
+            ]
+          ],
+          "expected": [
+            [
+              "try block succeeds",
+              "update account status and audit the change",
+              ""
+            ],
+            [
+              "catch block",
+              "log error message",
+              ""
+            ]
+          ],
+          "f1": null,
+          "matches": [],
+          "missing": [
+            [
+              "try block succeeds",
+              "update account status and audit the change",
+              ""
+            ],
+            [
+              "catch block",
+              "log error message",
+              ""
+            ]
+          ],
+          "precision": 0.0,
+          "recall": 0.0,
+          "unexpected": [
+            [
+              "a request is made to change the status of a specific account.",
+              "update account status and audit the change",
+              "status"
+            ],
+            [
+              "a request is made to change the status of a specific account.",
+              "update account status and audit the change",
+              ""
+            ],
+            [
+              "an account's status is changed.",
+              "update account status and audit the change",
+              "accountaudit record"
+            ],
+            [
+              "an account's status is changed.",
+              "update account status and audit the change",
+              ""
+            ],
+            [
+              "an error occurs while updating the account status or recording the audit entry.",
+              "update account status and audit the change",
+              "errorlog record"
+            ],
+            [
+              "an error occurs while updating the account status or recording the audit entry.",
+              "update account status and audit the change",
+              ""
+            ]
+          ]
+        },
+        "dialect": {
+          "actual": "TSQL",
+          "expected": "TSQL",
+          "match": true
+        },
+        "important_fields": {
+          "actual": [
+            "@accountid",
+            "@newstatus",
+            "account",
+            "accountaudit",
+            "accountaudit record",
+            "accountid",
+            "createdat",
+            "errorlog",
+            "errorlog record",
+            "errormessage",
+            "getdate",
+            "insert",
+            "into",
+            "set",
+            "status",
+            "update",
+            "updatedat",
+            "where"
+          ],
+          "expected": [
+            "@accountid",
+            "@newstatus",
+            "errormessage",
+            "status",
+            "updatedat"
+          ],
+          "f1": 0.4347826086956522,
+          "matches": [
+            "@accountid",
+            "@newstatus",
+            "errormessage",
+            "status",
+            "updatedat"
+          ],
+          "missing": [],
+          "precision": 0.2777777777777778,
+          "recall": 1.0,
+          "unexpected": [
+            "account",
+            "accountaudit",
+            "accountaudit record",
+            "accountid",
+            "createdat",
+            "errorlog",
+            "errorlog record",
+            "getdate",
+            "insert",
+            "into",
+            "set",
+            "update",
+            "where"
+          ]
+        },
+        "object_type": {
+          "actual": "procedure",
+          "expected": "procedure",
+          "match": true
+        },
+        "operations": {
+          "actual": [
+            [
+              "insert",
+              "DBO.ACCOUNTAUDIT"
+            ],
+            [
+              "insert",
+              "DBO.ERRORLOG"
+            ],
+            [
+              "read",
+              "DBO.ACCOUNT"
+            ],
+            [
+              "update",
+              "DBO.ACCOUNT"
+            ]
+          ],
+          "expected": [
+            [
+              "insert",
+              "DBO.ACCOUNTAUDIT"
+            ],
+            [
+              "insert",
+              "DBO.ERRORLOG"
+            ],
+            [
+              "update",
+              "DBO.ACCOUNT"
+            ]
+          ],
+          "f1": 0.8571428571428571,
+          "matches": [
+            [
+              "insert",
+              "DBO.ACCOUNTAUDIT"
+            ],
+            [
+              "insert",
+              "DBO.ERRORLOG"
+            ],
+            [
+              "update",
+              "DBO.ACCOUNT"
+            ]
+          ],
+          "missing": [],
+          "precision": 0.75,
+          "recall": 1.0,
+          "unexpected": [
+            [
+              "read",
+              "DBO.ACCOUNT"
+            ]
+          ]
+        },
+        "parameters": {
+          "actual": [
+            [
+              "@ACCOUNTID",
+              "in",
+              "int"
+            ],
+            [
+              "@NEWSTATUS",
+              "in",
+              "varchar(20)"
+            ]
+          ],
+          "expected": [
+            [
+              "@ACCOUNTID",
+              "in",
+              "int"
+            ],
+            [
+              "@NEWSTATUS",
+              "in",
+              "varchar(20)"
+            ]
+          ],
+          "f1": 1.0,
+          "matches": [
+            [
+              "@ACCOUNTID",
+              "in",
+              "int"
+            ],
+            [
+              "@NEWSTATUS",
+              "in",
+              "varchar(20)"
+            ]
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "tables_read": {
+          "actual": [
+            "dbo.account"
+          ],
+          "expected": [
+            "dbo.account"
+          ],
+          "f1": 1.0,
+          "matches": [
+            "dbo.account"
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "tables_written": {
+          "actual": [
+            "dbo.account",
+            "dbo.accountaudit",
+            "dbo.errorlog"
+          ],
+          "expected": [
+            "dbo.account",
+            "dbo.accountaudit",
+            "dbo.errorlog"
+          ],
+          "f1": 1.0,
+          "matches": [
+            "dbo.account",
+            "dbo.accountaudit",
+            "dbo.errorlog"
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        }
+      },
+      "mode": "live",
+      "notes": [
+        "Expected output is marked for manual confirmation."
+      ],
+      "status": "FAIL"
+    },
+    {
+      "actual_available": true,
+      "case_id": "tsql.merge_provisioning",
+      "checks": {
+        "ambiguities": {
+          "actual": [
+            "parameter extraction failed for a parameterized object header; the object is not known to be parameterless."
+          ],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": 0.0,
+          "recall": null,
+          "unexpected": [
+            "parameter extraction failed for a parameterized object header; the object is not known to be parameterless."
+          ]
+        },
+        "business_rules": {
+          "actual": [
+            [
+              "source row matches target",
+              "updates the provisioning amount and the last updated timestamp for the account.",
+              "provision_amount"
+            ],
+            [
+              "source row matches target",
+              "updates the provisioning amount and the last updated timestamp for the account.",
+              ""
+            ],
+            [
+              "source row matches target",
+              "creates a new provisioning record with the account id, provisioning amount, and creation timestamp.",
+              "provision_amount"
+            ],
+            [
+              "source row matches target",
+              "creates a new provisioning record with the account id, provisioning amount, and creation timestamp.",
+              ""
+            ]
+          ],
+          "expected": [
+            [
+              "source row matches target",
+              "update existing provision row",
+              ""
+            ],
+            [
+              "source row does not match target",
+              "insert new provision row",
+              ""
+            ]
+          ],
+          "f1": null,
+          "matches": [],
+          "missing": [
+            [
+              "source row matches target",
+              "update existing provision row",
+              ""
+            ],
+            [
+              "source row does not match target",
+              "insert new provision row",
+              ""
+            ]
+          ],
+          "precision": 0.0,
+          "recall": 0.0,
+          "unexpected": [
+            [
+              "source row matches target",
+              "updates the provisioning amount and the last updated timestamp for the account.",
+              "provision_amount"
+            ],
+            [
+              "source row matches target",
+              "updates the provisioning amount and the last updated timestamp for the account.",
+              ""
+            ],
+            [
+              "source row matches target",
+              "creates a new provisioning record with the account id, provisioning amount, and creation timestamp.",
+              "provision_amount"
+            ],
+            [
+              "source row matches target",
+              "creates a new provisioning record with the account id, provisioning amount, and creation timestamp.",
+              ""
+            ]
+          ]
+        },
+        "dialect": {
+          "actual": "TSQL",
+          "expected": "TSQL",
+          "match": true
+        },
+        "important_fields": {
+          "actual": [
+            "account_id",
+            "createdat",
+            "getdate",
+            "insert",
+            "matched",
+            "no",
+            "not",
+            "provision_amount",
+            "set",
+            "update",
+            "updatedat",
+            "values",
+            "when"
+          ],
+          "expected": [
+            "account_id",
+            "created_at",
+            "provision_amount",
+            "updated_at"
+          ],
+          "f1": 0.23529411764705882,
+          "matches": [
+            "account_id",
+            "provision_amount"
+          ],
+          "missing": [
+            "created_at",
+            "updated_at"
+          ],
+          "precision": 0.15384615384615385,
+          "recall": 0.5,
+          "unexpected": [
+            "createdat",
+            "getdate",
+            "insert",
+            "matched",
+            "no",
+            "not",
+            "set",
+            "update",
+            "updatedat",
+            "values",
+            "when"
+          ]
+        },
+        "object_type": {
+          "actual": "procedure",
+          "expected": "procedure",
+          "match": true
+        },
+        "operations": {
+          "actual": [
+            [
+              "merge",
+              "DBO.NPA_PROVISION"
+            ],
+            [
+              "read",
+              "DBO.STAGING_PROVISIONING"
+            ]
+          ],
+          "expected": [
+            [
+              "merge",
+              "DBO.NPA_PROVISION"
+            ],
+            [
+              "read",
+              "DBO.STAGING_PROVISIONING"
+            ]
+          ],
+          "f1": 1.0,
+          "matches": [
+            [
+              "merge",
+              "DBO.NPA_PROVISION"
+            ],
+            [
+              "read",
+              "DBO.STAGING_PROVISIONING"
+            ]
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "parameters": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "tables_read": {
+          "actual": [
+            "dbo.npa_provision",
+            "dbo.staging_provisioning"
+          ],
+          "expected": [
+            "dbo.npa_provision",
+            "dbo.staging_provisioning"
+          ],
+          "f1": 1.0,
+          "matches": [
+            "dbo.npa_provision",
+            "dbo.staging_provisioning"
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "tables_written": {
+          "actual": [
+            "dbo.npa_provision"
+          ],
+          "expected": [
+            "dbo.npa_provision"
+          ],
+          "f1": 1.0,
+          "matches": [
+            "dbo.npa_provision"
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        }
+      },
+      "mode": "live",
+      "notes": [
+        "Expected output is marked for manual confirmation."
+      ],
+      "status": "FAIL"
+    },
+    {
+      "actual_available": true,
+      "case_id": "tsql.try_catch_batch",
+      "checks": {
+        "ambiguities": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "business_rules": {
+          "actual": [
+            [
+              "number of overdue days (dpd) for the account",
+              "set low risk band",
+              "riskband"
+            ],
+            [
+              "number of overdue days (dpd) for the account",
+              "set low risk band",
+              ""
+            ],
+            [
+              "dpd is 30 days or less",
+              "Set LOW risk band",
+              "riskband"
+            ],
+            [
+              "dpd is 30 days or less",
+              "Set LOW risk band",
+              ""
+            ],
+            [
+              "dpd is greater than 30 days and up to 90 days",
+              "Set MEDIUM risk band",
+              "riskband"
+            ],
+            [
+              "dpd is greater than 30 days and up to 90 days",
+              "Set MEDIUM risk band",
+              ""
+            ],
+            [
+              "dpd is greater than 90 days",
+              "Set HIGH risk band",
+              "riskband"
+            ],
+            [
+              "dpd is greater than 90 days",
+              "Set HIGH risk band",
+              ""
+            ],
+            [
+              "an error occurs during the risk band update process",
+              "log error message",
+              ""
+            ]
+          ],
+          "expected": [
+            [
+              "dpddays <= 30",
+              "set low risk band",
+              ""
+            ],
+            [
+              "dpddays <= 90",
+              "set medium risk band",
+              ""
+            ],
+            [
+              "else",
+              "set high risk band",
+              ""
+            ]
+          ],
+          "f1": null,
+          "matches": [],
+          "missing": [
+            [
+              "dpddays <= 30",
+              "set low risk band",
+              ""
+            ],
+            [
+              "dpddays <= 90",
+              "set medium risk band",
+              ""
+            ],
+            [
+              "else",
+              "set high risk band",
+              ""
+            ]
+          ],
+          "precision": 0.0,
+          "recall": 0.0,
+          "unexpected": [
+            [
+              "number of overdue days (dpd) for the account",
+              "set low risk band",
+              "riskband"
+            ],
+            [
+              "number of overdue days (dpd) for the account",
+              "set low risk band",
+              ""
+            ],
+            [
+              "dpd is 30 days or less",
+              "Set LOW risk band",
+              "riskband"
+            ],
+            [
+              "dpd is 30 days or less",
+              "Set LOW risk band",
+              ""
+            ],
+            [
+              "dpd is greater than 30 days and up to 90 days",
+              "Set MEDIUM risk band",
+              "riskband"
+            ],
+            [
+              "dpd is greater than 30 days and up to 90 days",
+              "Set MEDIUM risk band",
+              ""
+            ],
+            [
+              "dpd is greater than 90 days",
+              "Set HIGH risk band",
+              "riskband"
+            ],
+            [
+              "dpd is greater than 90 days",
+              "Set HIGH risk band",
+              ""
+            ],
+            [
+              "an error occurs during the risk band update process",
+              "log error message",
+              ""
+            ]
+          ]
+        },
+        "dialect": {
+          "actual": "TSQL",
+          "expected": "TSQL",
+          "match": true
+        },
+        "important_fields": {
+          "actual": [
+            "@accountid",
+            "accountid",
+            "block",
+            "catch",
+            "dpddays",
+            "errormessage",
+            "exception",
+            "high",
+            "insert",
+            "into",
+            "low",
+            "medium",
+            "on",
+            "riskband",
+            "riskerrors"
+          ],
+          "expected": [
+            "@accountid",
+            "dpddays",
+            "riskband"
+          ],
+          "f1": 0.33333333333333337,
+          "matches": [
+            "@accountid",
+            "dpddays",
+            "riskband"
+          ],
+          "missing": [],
+          "precision": 0.2,
+          "recall": 1.0,
+          "unexpected": [
+            "accountid",
+            "block",
+            "catch",
+            "errormessage",
+            "exception",
+            "high",
+            "insert",
+            "into",
+            "low",
+            "medium",
+            "on",
+            "riskerrors"
+          ]
+        },
+        "object_type": {
+          "actual": "procedure",
+          "expected": "procedure",
+          "match": true
+        },
+        "operations": {
+          "actual": [
+            [
+              "insert",
+              "DBO.RISKERRORS"
+            ],
+            [
+              "update",
+              "DBO.ACCOUNTRISK"
+            ]
+          ],
+          "expected": [
+            [
+              "insert",
+              "DBO.RISKERRORS"
+            ],
+            [
+              "update",
+              "DBO.ACCOUNTRISK"
+            ]
+          ],
+          "f1": 1.0,
+          "matches": [
+            [
+              "insert",
+              "DBO.RISKERRORS"
+            ],
+            [
+              "update",
+              "DBO.ACCOUNTRISK"
+            ]
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "parameters": {
+          "actual": [
+            [
+              "@ACCOUNTID",
+              "in",
+              "int"
+            ]
+          ],
+          "expected": [
+            [
+              "@ACCOUNTID",
+              "in",
+              "int"
+            ]
+          ],
+          "f1": 1.0,
+          "matches": [
+            [
+              "@ACCOUNTID",
+              "in",
+              "int"
+            ]
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "tables_read": {
+          "actual": [
+            "dbo.accountrisk"
+          ],
+          "expected": [
+            "dbo.accountrisk"
+          ],
+          "f1": 1.0,
+          "matches": [
+            "dbo.accountrisk"
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "tables_written": {
+          "actual": [
+            "dbo.accountrisk",
+            "dbo.riskerrors"
+          ],
+          "expected": [
+            "dbo.accountrisk",
+            "dbo.riskerrors"
+          ],
+          "f1": 1.0,
+          "matches": [
+            "dbo.accountrisk",
+            "dbo.riskerrors"
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        }
+      },
+      "mode": "live",
+      "notes": [
+        "Expected output is marked for manual confirmation."
+      ],
+      "status": "FAIL"
+    },
+    {
+      "actual_available": true,
+      "case_id": "tsql.go_batches",
+      "checks": {
+        "ambiguities": {
+          "actual": [
+            "could not deterministically identify the database object name from the raw source.",
+            "could not deterministically identify the database object type from the raw source."
+          ],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": 0.0,
+          "recall": null,
+          "unexpected": [
+            "could not deterministically identify the database object name from the raw source.",
+            "could not deterministically identify the database object type from the raw source."
+          ]
+        },
+        "business_rules": {
+          "actual": [
+            [
+              "dpddays > 90",
+              "sets the account's status to 'overdue'.",
+              "status"
+            ],
+            [
+              "dpddays > 90",
+              "sets the account's status to 'overdue'.",
+              ""
+            ],
+            [
+              "dpddays > 90",
+              "mark accounts overdue and audit the status change",
+              "newstatus"
+            ],
+            [
+              "dpddays > 90",
+              "mark accounts overdue and audit the status change",
+              ""
+            ]
+          ],
+          "expected": [
+            [
+              "dpddays > 90",
+              "mark accounts overdue and audit the status change",
+              ""
+            ]
+          ],
+          "f1": 0.4,
+          "matches": [
+            [
+              "dpddays > 90",
+              "mark accounts overdue and audit the status change",
+              ""
+            ]
+          ],
+          "missing": [],
+          "precision": 0.25,
+          "recall": 1.0,
+          "unexpected": [
+            [
+              "dpddays > 90",
+              "sets the account's status to 'overdue'.",
+              "status"
+            ],
+            [
+              "dpddays > 90",
+              "sets the account's status to 'overdue'.",
+              ""
+            ],
+            [
+              "dpddays > 90",
+              "mark accounts overdue and audit the status change",
+              ""
+            ]
+          ]
+        },
+        "dialect": {
+          "actual": "TSQL",
+          "expected": "TSQL",
+          "match": true
+        },
+        "important_fields": {
+          "actual": [
+            "account",
+            "accountaudit",
+            "accountid",
+            "and",
+            "are",
+            "dpddays",
+            "for",
+            "insert",
+            "into",
+            "overdue",
+            "selected",
+            "set",
+            "status",
+            "update"
+          ],
+          "expected": [
+            "accountid",
+            "dpddays",
+            "newstatus"
+          ],
+          "f1": 0.23529411764705882,
+          "matches": [
+            "accountid",
+            "dpddays"
+          ],
+          "missing": [
+            "newstatus"
+          ],
+          "precision": 0.14285714285714285,
+          "recall": 0.6666666666666666,
+          "unexpected": [
+            "account",
+            "accountaudit",
+            "and",
+            "are",
+            "for",
+            "insert",
+            "into",
+            "overdue",
+            "selected",
+            "set",
+            "status",
+            "update"
+          ]
+        },
+        "object_type": {
+          "actual": "unknown",
+          "expected": "unknown",
+          "match": true
+        },
+        "operations": {
+          "actual": [
+            [
+              "insert",
+              "DBO.ACCOUNTAUDIT"
+            ],
+            [
+              "read",
+              "DBO.ACCOUNT"
+            ],
+            [
+              "update",
+              "DBO.ACCOUNT"
+            ]
+          ],
+          "expected": [
+            [
+              "insert",
+              "DBO.ACCOUNTAUDIT"
+            ],
+            [
+              "update",
+              "DBO.ACCOUNT"
+            ]
+          ],
+          "f1": 0.8,
+          "matches": [
+            [
+              "insert",
+              "DBO.ACCOUNTAUDIT"
+            ],
+            [
+              "update",
+              "DBO.ACCOUNT"
+            ]
+          ],
+          "missing": [],
+          "precision": 0.6666666666666666,
+          "recall": 1.0,
+          "unexpected": [
+            [
+              "read",
+              "DBO.ACCOUNT"
+            ]
+          ]
+        },
+        "parameters": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "tables_read": {
+          "actual": [
+            "dbo.account"
+          ],
+          "expected": [
+            "dbo.account"
+          ],
+          "f1": 1.0,
+          "matches": [
+            "dbo.account"
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "tables_written": {
+          "actual": [
+            "dbo.account",
+            "dbo.accountaudit"
+          ],
+          "expected": [
+            "dbo.account",
+            "dbo.accountaudit"
+          ],
+          "f1": 1.0,
+          "matches": [
+            "dbo.account",
+            "dbo.accountaudit"
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        }
+      },
+      "mode": "live",
+      "notes": [
+        "Expected output is marked for manual confirmation."
+      ],
+      "status": "PASS"
+    },
+    {
+      "actual_available": true,
+      "case_id": "tsql.dynamic_sql",
+      "checks": {
+        "ambiguities": {
+          "actual": [
+            "dynamic sql detected and cannot be fully statically resolved: sp_executesql @sql, n'@id int', @id = @accountid; end;...",
+            "the actual table and column being updated are determined at runtime and cannot be identified from the extraction, making it unclear which business field is affected.",
+            "the business meaning of the flagged indicator and the criteria for flagging are not defined in the extraction.",
+            "there is no information about what happens if the update fails or if the specified account does not exist in the target table."
+          ],
+          "expected": [
+            "dynamic sql cannot be statically resolved to a concrete table."
+          ],
+          "f1": null,
+          "matches": [],
+          "missing": [
+            "dynamic sql cannot be statically resolved to a concrete table."
+          ],
+          "precision": 0.0,
+          "recall": 0.0,
+          "unexpected": [
+            "dynamic sql detected and cannot be fully statically resolved: sp_executesql @sql, n'@id int', @id = @accountid; end;...",
+            "the actual table and column being updated are determined at runtime and cannot be identified from the extraction, making it unclear which business field is affected.",
+            "the business meaning of the flagged indicator and the criteria for flagging are not defined in the extraction.",
+            "there is no information about what happens if the update fails or if the specified account does not exist in the target table."
+          ]
+        },
+        "business_rules": {
+          "actual": [
+            [
+              "dynamic sql is assembled at runtime",
+              "flag for manual review instead of claiming a concrete table",
+              "flagged indicator (exact field and table not statically determined)"
+            ],
+            [
+              "dynamic sql is assembled at runtime",
+              "flag for manual review instead of claiming a concrete table",
+              ""
+            ]
+          ],
+          "expected": [
+            [
+              "dynamic sql is assembled at runtime",
+              "flag for manual review instead of claiming a concrete table",
+              ""
+            ]
+          ],
+          "f1": 0.6666666666666666,
+          "matches": [
+            [
+              "dynamic sql is assembled at runtime",
+              "flag for manual review instead of claiming a concrete table",
+              ""
+            ]
+          ],
+          "missing": [],
+          "precision": 0.5,
+          "recall": 1.0,
+          "unexpected": [
+            [
+              "dynamic sql is assembled at runtime",
+              "flag for manual review instead of claiming a concrete table",
+              ""
+            ]
+          ]
+        },
+        "dialect": {
+          "actual": "TSQL",
+          "expected": "TSQL",
+          "match": true
+        },
+        "important_fields": {
+          "actual": [
+            "@accountid",
+            "@tablename"
+          ],
+          "expected": [
+            "@accountid",
+            "@tablename"
+          ],
+          "f1": 1.0,
+          "matches": [
+            "@accountid",
+            "@tablename"
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "object_type": {
+          "actual": "procedure",
+          "expected": "procedure",
+          "match": true
+        },
+        "operations": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "parameters": {
+          "actual": [
+            [
+              "@ACCOUNTID",
+              "in",
+              "int"
+            ],
+            [
+              "@TABLENAME",
+              "in",
+              "sysname"
+            ]
+          ],
+          "expected": [
+            [
+              "@ACCOUNTID",
+              "in",
+              "int"
+            ],
+            [
+              "@TABLENAME",
+              "in",
+              "sysname"
+            ]
+          ],
+          "f1": 1.0,
+          "matches": [
+            [
+              "@ACCOUNTID",
+              "in",
+              "int"
+            ],
+            [
+              "@TABLENAME",
+              "in",
+              "sysname"
+            ]
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "tables_read": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "tables_written": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        }
+      },
+      "mode": "live",
+      "notes": [
+        "Expected output is marked for manual confirmation."
+      ],
+      "status": "PASS"
+    },
+    {
+      "actual_available": true,
+      "case_id": "edge.unknown_dialect",
+      "checks": {
+        "ambiguities": {
+          "actual": [
+            "insufficient evidence to determine a supported sql dialect."
+          ],
+          "expected": [
+            "insufficient evidence to determine a supported sql dialect."
+          ],
+          "f1": 1.0,
+          "matches": [
+            "insufficient evidence to determine a supported sql dialect."
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "business_rules": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "dialect": {
+          "actual": "UNKNOWN",
+          "expected": "UNKNOWN",
+          "match": true
+        },
+        "important_fields": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "object_type": {
+          "actual": "unknown",
+          "expected": "unknown",
+          "match": true
+        },
+        "operations": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "parameters": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "tables_read": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "tables_written": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        }
+      },
+      "mode": "live",
+      "notes": [
+        "Expected output is marked for manual confirmation."
+      ],
+      "status": "PASS"
+    },
+    {
+      "actual_available": true,
+      "case_id": "edge.postgres_unsupported",
+      "checks": {
+        "ambiguities": {
+          "actual": [
+            "postgresql features detected; unsupported by the current parser layer."
+          ],
+          "expected": [
+            "postgresql features detected; unsupported by the current parser layer."
+          ],
+          "f1": 1.0,
+          "matches": [
+            "postgresql features detected; unsupported by the current parser layer."
+          ],
+          "missing": [],
+          "precision": 1.0,
+          "recall": 1.0,
+          "unexpected": []
+        },
+        "business_rules": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "dialect": {
+          "actual": "UNSUPPORTED",
+          "expected": "UNSUPPORTED",
+          "match": true
+        },
+        "important_fields": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "object_type": {
+          "actual": "unknown",
+          "expected": "unknown",
+          "match": true
+        },
+        "operations": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "parameters": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "tables_read": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        },
+        "tables_written": {
+          "actual": [],
+          "expected": [],
+          "f1": null,
+          "matches": [],
+          "missing": [],
+          "precision": null,
+          "recall": null,
+          "unexpected": []
+        }
+      },
+      "mode": "live",
+      "notes": [
+        "Expected output is marked for manual confirmation."
+      ],
+      "status": "PASS"
+    }
+  ],
+  "summary": {
+    "case_count": 13,
+    "changed_count": 0,
+    "fail_count": 9,
+    "metrics": {},
+    "overall_status": "FAIL",
+    "pass_count": 4,
+    "skipped_count": 0
+  }
+}

@@ -3,32 +3,45 @@ dialect_detector.py
 --------------------
 Deterministic SQL dialect detector.
 
-Distinguishes Oracle SQL/PL-SQL from SQL Server T-SQL using structural
-signals (never a single keyword in isolation), so downstream stages
-(ingestion parsing, sqlglot validation, prompt selection) can apply the
-correct dialect-specific rules. Runs before preprocessing/parsing in the
-pipeline, as required by the overall flow:
-
-    Input -> Guardrails -> Dialect Detection -> Preprocessing -> ...
-
-Only two dialects are supported by design: "oracle" and "tsql".
-PostgreSQL and other dialects are intentionally out of scope; inputs
-that look like PostgreSQL are rejected rather than silently misrouted.
+Detects Oracle SQL/PL-SQL, SQL Server T-SQL, PostgreSQL, and ambiguous
+or unsupported inputs using structural signals. Only Oracle and T-SQL
+are currently supported for parsing/extraction. PostgreSQL is detected
+explicitly so it never gets misclassified as Oracle/T-SQL.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
-ORACLE = "oracle"
-TSQL = "tsql"
+ORACLE = "ORACLE"
+TSQL = "TSQL"
+POSTGRES = "POSTGRES"
+UNKNOWN = "UNKNOWN"
+AMBIGUOUS = "AMBIGUOUS"
+UNSUPPORTED = "UNSUPPORTED"
+
 SUPPORTED_DIALECTS = (ORACLE, TSQL)
+DETECTABLE_DIALECTS = (ORACLE, TSQL, POSTGRES)
+
+_PROMPT_DIALECT_MAP = {ORACLE: "oracle", TSQL: "tsql"}
 
 
 class UnsupportedDialectError(ValueError):
     """Raised when the source appears to use an unsupported dialect."""
+
+
+def normalize_dialect_name(dialect: str) -> str:
+    value = str(dialect or "").strip().upper()
+    if value in {"ORACLE", "TSQL", POSTGRES, UNKNOWN, AMBIGUOUS, UNSUPPORTED}:
+        return value
+    return value
+
+
+def prompt_dialect_for_state(dialect: str) -> Optional[str]:
+    return _PROMPT_DIALECT_MAP.get(normalize_dialect_name(dialect))
+
 
 # Each signal is (dialect, weight, compiled_pattern). Weight reflects how
 # strongly the signal implies that dialect on its own (a "GO" batch
@@ -36,7 +49,7 @@ class UnsupportedDialectError(ValueError):
 # terminator is near-conclusive for Oracle SQL*Plus style scripts).
 _SIGNALS: List[tuple] = [
     # --- Oracle / PL-SQL signals -------------------------------------------------
-    (ORACLE, 3, re.compile(r"^\s*/\s*$", re.MULTILINE)),  # SQL*Plus "/" terminator
+    (ORACLE, 3, re.compile(r"^\s*/\s*$", re.MULTILINE)),
     (ORACLE, 3, re.compile(r"\bCREATE\s+OR\s+REPLACE\b", re.IGNORECASE)),
     (ORACLE, 2, re.compile(r"\bEXCEPTION\s*\n?\s*WHEN\b", re.IGNORECASE)),
     (ORACLE, 2, re.compile(r"\bDBMS_[A-Z_]+\b", re.IGNORECASE)),
@@ -45,14 +58,14 @@ _SIGNALS: List[tuple] = [
     (ORACLE, 1, re.compile(r"\bVARCHAR2\b|\bNUMBER\s*\(", re.IGNORECASE)),
     (ORACLE, 1, re.compile(r"\bROWNUM\b", re.IGNORECASE)),
     (ORACLE, 1, re.compile(r"\bNVL\s*\(", re.IGNORECASE)),
-    (ORACLE, 1, re.compile(r":=", re.MULTILINE)),  # PL/SQL assignment operator
+    (ORACLE, 1, re.compile(r":=", re.MULTILINE)),
     # --- T-SQL / SQL Server signals ----------------------------------------------
-    (TSQL, 3, re.compile(r"^\s*GO\s*$", re.IGNORECASE | re.MULTILINE)),  # batch separator
+    (TSQL, 3, re.compile(r"^\s*GO\s*$", re.IGNORECASE | re.MULTILINE)),
     (TSQL, 3, re.compile(r"\bBEGIN\s+TRY\b", re.IGNORECASE)),
     (TSQL, 2, re.compile(r"\bCREATE\s+(OR\s+ALTER\s+)?PROC(EDURE)?\b", re.IGNORECASE)),
-    (TSQL, 2, re.compile(r"@\w+", re.MULTILINE)),  # @variable / @parameter syntax
+    (TSQL, 2, re.compile(r"@\w+", re.MULTILINE)),
     (TSQL, 2, re.compile(r"\bSP_EXECUTESQL\b", re.IGNORECASE)),
-    (TSQL, 2, re.compile(r"\[[A-Za-z0-9_ ]+\]"), ),  # bracketed identifiers
+    (TSQL, 2, re.compile(r"\[(?:[A-Za-z0-9_ ]+)\]")),
     (TSQL, 1, re.compile(r"\bNVARCHAR\b|\bDATETIME2?\b|\bBIT\b", re.IGNORECASE)),
     (TSQL, 1, re.compile(r"\bTOP\s*\(?\s*\d+\)?", re.IGNORECASE)),
     (TSQL, 1, re.compile(r"\bISNULL\s*\(", re.IGNORECASE)),
@@ -144,29 +157,37 @@ def _mask_strings_and_comments(code: str) -> str:
 
 @dataclass
 class DialectDetectionResult:
-    dialect: str  # "oracle" | "tsql"
-    confidence: str  # "high" | "medium" | "low"
+    dialect: str
+    confidence: str
     oracle_score: int = 0
     tsql_score: int = 0
     signals_matched: List[str] = field(default_factory=list)
+    concrete_dialect: Optional[str] = None
+    user_specified: bool = False
+    source: str = "auto"
+
+
+def _strongly_ambiguous(oracle_score: int, tsql_score: int) -> bool:
+    return oracle_score > 0 and tsql_score > 0 and abs(oracle_score - tsql_score) <= 1
 
 
 def detect_dialect(code: str, hint: str = "auto") -> DialectDetectionResult:
     """Detect whether `code` is Oracle SQL/PL-SQL or SQL Server T-SQL.
 
-    Args:
-        code: the raw source text.
-        hint: "auto" (default) to detect from content, or an explicit
-            "oracle" / "tsql" override supplied by the caller (e.g. a
-            CLI flag or UI selector) which is trusted as-is and returned
-            with "high" confidence without running the heuristics.
+    Explicit user hints are trusted when they are Oracle/T-SQL. Automatic
+    detection never silently defaults to Oracle when evidence is weak.
     """
-    normalized_hint = (hint or "auto").strip().lower()
+    normalized_hint = normalize_dialect_name(hint)
     if normalized_hint in SUPPORTED_DIALECTS:
         return DialectDetectionResult(
-            dialect=normalized_hint, confidence="high", signals_matched=["explicit override"]
+            dialect=normalized_hint,
+            concrete_dialect=normalized_hint.lower(),
+            confidence="high",
+            signals_matched=["explicit override"],
+            user_specified=True,
+            source="user",
         )
-    if normalized_hint not in ("auto", ""):
+    if normalized_hint not in {"AUTO", ""}:
         raise UnsupportedDialectError(
             f"Unsupported SQL dialect hint '{hint}'. Only 'oracle' and 'tsql' are supported."
         )
@@ -178,8 +199,7 @@ def detect_dialect(code: str, hint: str = "auto") -> DialectDetectionResult:
     matched: List[str] = []
 
     for dialect, weight, pattern in _SIGNALS:
-        hits = pattern.findall(code)
-        if not hits:
+        if not pattern.search(code):
             continue
         if dialect == ORACLE:
             oracle_score += weight
@@ -190,45 +210,64 @@ def detect_dialect(code: str, hint: str = "auto") -> DialectDetectionResult:
     for weight, pattern in _POSTGRESQL_SIGNALS:
         if pattern.search(code):
             postgres_score += weight
-            matched.append(f"postgresql:{pattern.pattern[:40]}")
+            matched.append(f"{POSTGRES}:{pattern.pattern[:40]}")
 
-    if postgres_score >= 4 and postgres_score >= oracle_score and postgres_score >= tsql_score:
-        raise UnsupportedDialectError(
-            "The source appears to use PostgreSQL / PLpgSQL, which is not supported. "
-            "Please provide an Oracle PL/SQL or SQL Server T-SQL object."
+    if postgres_score >= 3 and postgres_score >= max(oracle_score, tsql_score):
+        return DialectDetectionResult(
+            dialect=UNSUPPORTED,
+            confidence="low",
+            oracle_score=oracle_score,
+            tsql_score=tsql_score,
+            signals_matched=matched,
+            concrete_dialect=None,
         )
 
     if oracle_score == 0 and tsql_score == 0:
-        # No structural signal either way - default to Oracle (the
-        # project's original/primary supported dialect) but say so
-        # plainly at low confidence rather than pretending certainty.
         return DialectDetectionResult(
-            dialect=ORACLE, confidence="low", oracle_score=0, tsql_score=0, signals_matched=[]
+            dialect=UNKNOWN,
+            confidence="low",
+            oracle_score=0,
+            tsql_score=0,
+            signals_matched=[],
+            concrete_dialect=None,
         )
 
-    if oracle_score > tsql_score:
-        dialect = ORACLE
-    elif tsql_score > oracle_score:
-        dialect = TSQL
-    else:
-        # Genuine tie - default to Oracle but flag low confidence.
-        dialect = ORACLE
+    if _strongly_ambiguous(oracle_score, tsql_score):
+        return DialectDetectionResult(
+            dialect=AMBIGUOUS,
+            confidence="low",
+            oracle_score=oracle_score,
+            tsql_score=tsql_score,
+            signals_matched=matched,
+            concrete_dialect=None,
+        )
 
-    margin = abs(oracle_score - tsql_score)
-    total = oracle_score + tsql_score
-    if total == 0:
-        confidence = "low"
-    elif margin / total >= 0.5:
-        confidence = "high"
-    elif margin / total >= 0.2:
-        confidence = "medium"
-    else:
-        confidence = "low"
+    if oracle_score >= 3 and oracle_score >= tsql_score + 2:
+        return DialectDetectionResult(
+            dialect=ORACLE,
+            confidence="high" if oracle_score >= 4 else "medium",
+            oracle_score=oracle_score,
+            tsql_score=tsql_score,
+            signals_matched=matched,
+            concrete_dialect="oracle",
+        )
+
+    if tsql_score >= 3 and tsql_score >= oracle_score + 2:
+        return DialectDetectionResult(
+            dialect=TSQL,
+            confidence="high" if tsql_score >= 4 else "medium",
+            oracle_score=oracle_score,
+            tsql_score=tsql_score,
+            signals_matched=matched,
+            concrete_dialect="tsql",
+        )
 
     return DialectDetectionResult(
-        dialect=dialect,
-        confidence=confidence,
+        dialect=UNKNOWN,
+        confidence="low",
         oracle_score=oracle_score,
         tsql_score=tsql_score,
         signals_matched=matched,
+        concrete_dialect=None,
     )
+

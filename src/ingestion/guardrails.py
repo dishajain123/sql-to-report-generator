@@ -44,6 +44,14 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple
 
+from src.validation.confidence import (
+    clamp_confidence,
+    derive_business_rule_confidence,
+    derive_chunk_support_confidence,
+    normalize_confidence,
+)
+from src.core.pipeline_utils import stable_id
+
 # --------------------------------------------------------------------------
 # Input guardrails
 # --------------------------------------------------------------------------
@@ -196,8 +204,7 @@ def _normalize_string_list(value: Any) -> List[str]:
 
 
 def _normalize_confidence(value: Any, default: str = "medium") -> str:
-    confidence = str(value or "").strip().lower()
-    return confidence if confidence in _ALLOWED_CONFIDENCE else default
+    return normalize_confidence(value, default=default)
 
 
 def _normalize_validation_status(value: Any, default: str = "unverified") -> str:
@@ -267,28 +274,40 @@ def ground_extraction_against_source(data: Dict[str, Any], source_text: str) -> 
         for item in data.get(section, []):
             if not isinstance(item, dict):
                 continue
+            item_warnings: List[str] = []
             table = str(item.get("table", "")).strip()
             confidence = _normalize_confidence(item.get("confidence", "medium"))
             table_found = bool(table) and _identifier_present(source_text, table)
+            columns = _normalize_string_list(item.get("columns", []))
+            direct_evidence = table_found and all(_identifier_present(source_text, col) for col in columns)
+            item["columns"] = columns
             if table and not table_found:
                 confidence = "low"
-                warnings.append(
+                item_warnings.append(
                     f"Table '{table}' named in the technical extraction ({section}) "
                     "could not be matched back to the source code for this chunk and "
                     "may not be accurate; flagged low-confidence rather than asserted."
                 )
-            columns = _normalize_string_list(item.get("columns", []))
-            item["columns"] = columns
             for col in columns:
                 if not _identifier_present(source_text, col):
                     confidence = "low"
-                    warnings.append(
+                    item_warnings.append(
                         f"Column '{col}' referenced for table '{table or 'unknown'}' "
                         "could not be matched back to the source code for this chunk; "
                         "treated as unverified and low-confidence."
                     )
-
-            item["confidence"] = confidence
+            item["confidence"] = derive_chunk_support_confidence(
+                parse_error="",
+                guardrail_warnings=item_warnings,
+                has_direct_evidence=direct_evidence or table_found,
+                has_embedded_sql=bool(section == "tables_written" and item.get("operation")),
+                ambiguity_count=0 if table_found else 1,
+                dynamic_sql_detected=False,
+                parser_unavailable=False,
+            )
+            if confidence == "low":
+                item["confidence"] = "low"
+            warnings.extend(item_warnings)
     return warnings
 
 
@@ -464,6 +483,93 @@ def _collect_technical_records(merged_extraction: Dict[str, Any]) -> List[Dict[s
     return records
 
 
+def _build_evidence_span(
+    record: Dict[str, Any],
+    chunk_meta: Dict[str, Any],
+    statement_meta: Dict[str, Any],
+) -> Dict[str, Any]:
+    source_file = (
+        str(record.get("source_file") or statement_meta.get("source_file") or chunk_meta.get("source_file") or "").strip()
+    )
+    chunk_id = (
+        str(record.get("source_chunk_id") or chunk_meta.get("chunk_id") or "").strip()
+    )
+    statement_id = (
+        str(
+            record.get("statement_id")
+            or record.get("source_statement_id")
+            or statement_meta.get("statement_id")
+            or statement_meta.get("source_statement_id")
+            or ""
+        ).strip()
+    )
+    char_start = record.get("source_char_start")
+    if not isinstance(char_start, int) or char_start < 0:
+        char_start = statement_meta.get("source_char_start")
+    if not isinstance(char_start, int) or char_start < 0:
+        char_start = chunk_meta.get("source_char_start", -1)
+    char_end = record.get("source_char_end")
+    if not isinstance(char_end, int) or char_end < 0:
+        char_end = statement_meta.get("source_char_end")
+    if not isinstance(char_end, int) or char_end < 0:
+        char_end = chunk_meta.get("source_char_end", -1)
+    line_start = record.get("source_line_start")
+    if not isinstance(line_start, int) or line_start < 0:
+        line_start = statement_meta.get("source_line_start")
+    if not isinstance(line_start, int) or line_start < 0:
+        line_start = chunk_meta.get("source_line_start", -1)
+    line_end = record.get("source_line_end")
+    if not isinstance(line_end, int) or line_end < 0:
+        line_end = statement_meta.get("source_line_end")
+    if not isinstance(line_end, int) or line_end < 0:
+        line_end = chunk_meta.get("source_line_end", -1)
+    location_status = str(
+        record.get("source_location_status")
+        or statement_meta.get("source_location_status")
+        or chunk_meta.get("source_location_status")
+        or "unavailable"
+    ).strip().lower()
+    evidence_type = str(
+        record.get("evidence_type")
+        or statement_meta.get("evidence_type")
+        or record.get("_section")
+        or "UNKNOWN"
+    ).strip().upper()
+
+    return {
+        "source_file": source_file,
+        "char_start": int(char_start) if isinstance(char_start, int) else -1,
+        "char_end": int(char_end) if isinstance(char_end, int) else -1,
+        "line_start": int(line_start) if isinstance(line_start, int) else -1,
+        "line_end": int(line_end) if isinstance(line_end, int) else -1,
+        "chunk_id": chunk_id,
+        "statement_id": statement_id,
+        "evidence_type": evidence_type,
+        "source_location_status": location_status,
+    }
+
+
+def _span_signature(span: Dict[str, Any]) -> Tuple[Any, ...]:
+    return (
+        str(span.get("source_file") or ""),
+        int(span.get("char_start") or -1),
+        int(span.get("char_end") or -1),
+        int(span.get("line_start") or -1),
+        int(span.get("line_end") or -1),
+        str(span.get("chunk_id") or ""),
+        str(span.get("statement_id") or ""),
+        str(span.get("evidence_type") or ""),
+        str(span.get("source_location_status") or ""),
+    )
+
+
+def _coerce_int(value: Any, default: int = -1) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _match_evidence_to_records(evidence: str, records: List[Dict[str, Any]], raw_source: str) -> List[Dict[str, Any]]:
     evidence_norm = _normalize_text(evidence)
     if not evidence_norm:
@@ -493,11 +599,25 @@ def ground_business_rules_against_extraction(
     """
     warnings: List[str] = []
     technical_records = _collect_technical_records(merged_extraction)
+    chunk_lookup: Dict[str, Dict[str, Any]] = {}
+    for chunk in merged_extraction.get("chunk_provenance", []) or []:
+        if not isinstance(chunk, dict):
+            continue
+        chunk_id = str(chunk.get("chunk_id", "")).strip()
+        if chunk_id:
+            chunk_lookup[chunk_id] = chunk
+    statement_lookup: Dict[str, Dict[str, Any]] = {}
+    for statement in merged_extraction.get("statement_provenance", []) or []:
+        if not isinstance(statement, dict):
+            continue
+        statement_id = str(statement.get("statement_id", "")).strip()
+        if statement_id:
+            statement_lookup[statement_id] = statement
     has_parser_failed_chunk = any(
         isinstance(chunk, dict) and str(chunk.get("parse_error", "")).strip()
         for chunk in merged_extraction.get("chunk_provenance", []) or []
     )
-    for rule in business_rules:
+    for index, rule in enumerate(business_rules, start=1):
         if not isinstance(rule, dict):
             continue
 
@@ -509,8 +629,6 @@ def ground_business_rules_against_extraction(
         rule["rule_type"] = rule_type
 
         # --- confidence: clamp to the fixed vocabulary ---
-        incoming_confidence = _normalize_confidence(rule.get("confidence", "medium"))
-
         # --- evidence grounding for fields_affected ---
         fields_affected = _normalize_string_list(rule.get("fields_affected", []))
         rule["fields_affected"] = fields_affected
@@ -522,6 +640,7 @@ def ground_business_rules_against_extraction(
         rule["dependencies"] = dependencies
 
         matched_records: List[Dict[str, Any]] = []
+        evidence_spans: List[Dict[str, Any]] = []
         unresolved_evidence: List[str] = []
         parser_failed_evidence: List[str] = []
         low_support_evidence: List[str] = []
@@ -557,8 +676,47 @@ def ground_business_rules_against_extraction(
                 if record.get("_section") == "ambiguities" or record.get("confidence") == "low":
                     ambiguous_evidence.append(evidence)
 
+                chunk_id = str(record.get("_chunk_id") or "").strip()
+                chunk_meta = chunk_lookup.get(chunk_id, {})
+                statement_id = str(record.get("statement_id") or record.get("source_statement_id") or "").strip()
+                statement_meta = statement_lookup.get(statement_id, {})
+                span = _build_evidence_span(record, chunk_meta, statement_meta)
+                if _span_signature(span) not in {_span_signature(existing) for existing in evidence_spans}:
+                    evidence_spans.append(span)
+
+        if not evidence_spans and source_evidence:
+            for chunk_id in source_chunks:
+                clean_chunk_id = chunk_id.split(":", 1)[0]
+                chunk_meta = chunk_lookup.get(clean_chunk_id, {})
+                if not chunk_meta:
+                    continue
+                span = {
+                    "source_file": str(chunk_meta.get("source_file") or ""),
+                    "char_start": _coerce_int(chunk_meta.get("source_char_start", -1)),
+                    "char_end": _coerce_int(chunk_meta.get("source_char_end", -1)),
+                    "line_start": _coerce_int(chunk_meta.get("source_line_start", -1)),
+                    "line_end": _coerce_int(chunk_meta.get("source_line_end", -1)),
+                    "chunk_id": clean_chunk_id,
+                    "statement_id": "",
+                    "evidence_type": "UNKNOWN",
+                    "source_location_status": str(chunk_meta.get("source_location_status") or "unavailable"),
+                }
+                if _span_signature(span) not in {_span_signature(existing) for existing in evidence_spans}:
+                    evidence_spans.append(span)
+
+        rule_id_seed = [
+            rule.get("rule_name") or "",
+            rule.get("output_field") or "",
+            rule.get("condition") or "",
+            rule.get("action") or "",
+            "|".join(source_evidence),
+            "|".join(fields_affected),
+            "|".join(source_chunks),
+        ]
+        rule["rule_id"] = stable_id("rule", *rule_id_seed, length=12)
         rule["source_chunks"] = source_chunks
         rule["technical_references"] = technical_refs
+        rule["evidence_spans"] = evidence_spans
 
         unresolved_issues: List[str] = []
         if unresolved_evidence:
@@ -600,21 +758,32 @@ def ground_business_rules_against_extraction(
 
         rule["validation_status"] = validation_status
 
-        if validation_status == "verified":
-            rule["confidence"] = incoming_confidence
-        elif validation_status == "unverified":
-            # Unverified means the rule could not be matched back to technical evidence,
-            # but that is distinct from a parser failure or a low-support technical hit.
-            # Preserve the model's normalized confidence unless there is no evidence at all.
-            rule["confidence"] = incoming_confidence if source_evidence else "low"
-            warnings.extend(unresolved_issues)
-        else:
-            rule["confidence"] = "low"
+        rule["confidence"] = derive_business_rule_confidence(
+            validation_status=validation_status,
+            source_evidence_count=len(source_evidence),
+            matched_record_count=len(matched_records),
+            source_chunk_count=len(source_chunks),
+            parser_failed=bool(parser_failed_evidence),
+            low_support=bool(low_support_evidence),
+            ambiguous=bool(ambiguous_evidence),
+            unresolved_evidence=bool(unresolved_evidence and not matched_records),
+            rule_type=rule_type,
+            llm_only=not source_evidence,
+        )
+        if validation_status == "unverified" or validation_status != "verified":
             warnings.extend(unresolved_issues)
 
         if validation_status in {"parser_failed", "insufficient_evidence", "ambiguous"}:
             rule["unresolved_ambiguities"] = unresolved_issues
+            rule["ambiguity_id"] = stable_id(
+                "amb",
+                rule["rule_id"],
+                validation_status,
+                "|".join(unresolved_issues) if unresolved_issues else "none",
+                length=12,
+            )
         else:
             rule["unresolved_ambiguities"] = []
+            rule["ambiguity_id"] = ""
 
     return warnings

@@ -24,8 +24,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
-from agents.ingestion import decode_sql_source_bytes
-from llm_client import LLMConfig, load_llm_config
+from src.ingestion.ingestion import decode_sql_source_bytes
+from src.core.llm_client import LLMConfig, load_llm_config
 from pipeline import LogicRulesExtractorPipeline, PipelineInputError
 
 load_dotenv(override=True)
@@ -34,7 +34,7 @@ APP_DIR = Path(__file__).resolve().parent
 SAMPLES_DIR = APP_DIR / "samples"
 OUTPUT_DIR = SAMPLES_DIR / "output"
 LOGS_DIR = OUTPUT_DIR / "logs"
-PIPELINE_CACHE_VERSION = "2026-08-24-report-format-v3"
+PIPELINE_CACHE_VERSION = "2026-08-26-phase1"
 DIALECT_OPTIONS = {
     "Auto-detect": "auto",
     "Oracle SQL / PL-SQL": "oracle",
@@ -134,6 +134,9 @@ def _pipeline_cache_signature() -> tuple[int, ...] | tuple[str, ...]:
     generation code rather than the app session lifetime.
     """
     source_files = [
+        APP_DIR / "dialect_detector.py",
+        APP_DIR / "confidence_utils.py",
+        APP_DIR / "pipeline_utils.py",
         APP_DIR / "pipeline.py",
         APP_DIR / "agents" / "ingestion.py",
         APP_DIR / "agents" / "logic_extractor.py",

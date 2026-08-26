@@ -12,9 +12,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import agents.logic_extractor as logic_module
-import agents.rule_synthesizer as synth_module
-from prompts.prompt_loader import get_prompt_set
+import src.extraction.logic_extractor as logic_module
+import src.synthesis.rule_synthesizer as synth_module
+from src.prompts.prompt_loader import get_prompt_set
 
 
 class _FakeMessage:

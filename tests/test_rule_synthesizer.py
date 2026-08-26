@@ -16,9 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
-from agents.report_formatter import ReportFormatterAgent
-from agents.rule_synthesizer import RuleSynthesizerAgent
-from guardrails import ground_business_rules_against_extraction
+from src.output.report_formatter import ReportFormatterAgent
+from src.synthesis.rule_synthesizer import RuleSynthesizerAgent
+from src.ingestion.guardrails import ground_business_rules_against_extraction
 
 
 class _FakeMessage:
@@ -214,7 +214,7 @@ def test_business_rule_provenance_fields_are_normalized():
     rule = result.data["business_rules"][0]
     assert rule["fields_affected"] == ["FIELD_A"]
     assert rule["rule_type"] == "inferred"
-    assert rule["confidence"] == "medium"
+    assert rule["confidence"] == "low"
     assert rule["validation_status"] in {"verified", "unverified", "ambiguous", "parser_failed", "insufficient_evidence"}
     assert rule["source_evidence"] == ["evidence text"]
     assert rule["source_chunks"] == []
@@ -378,6 +378,86 @@ def test_directly_supported_condition_can_remain_verified():
     assert rule["technical_references"] == ["conditions[0]"]
 
 
+def test_business_rule_grounding_attaches_evidence_spans():
+    merged_extraction = {
+        "conditions": [
+            {
+                "condition": "DPD_MAX > 90",
+                "true_branch": "Mark for review",
+                "false_branch": None,
+                "source_chunk_id": "CHUNK-01",
+                "source_chunk_kind": "main_body",
+                "statement_id": "STMT-01",
+                "source_statement_text": "IF DPD_MAX > 90 THEN ...",
+            }
+        ],
+        "tables_read": [
+            {
+                "table": "LOAN_ACCOUNT",
+                "columns": ["DPD_MAX"],
+                "filter_condition": "DPD_MAX > 90",
+                "source_chunk_id": "CHUNK-01",
+                "source_chunk_kind": "main_body",
+            }
+        ],
+        "tables_written": [],
+        "loops": [],
+        "calculations": [],
+        "exception_handling": [],
+        "ambiguities": [],
+        "chunk_provenance": [
+            {
+                "chunk_id": "CHUNK-01",
+                "chunk_kind": "main_body",
+                "chunk_context": ["main_body"],
+                "embedded_sql": [],
+                "parse_error": "",
+                "guardrail_warnings": [],
+                "support_confidence": "high",
+                "source_file": "demo.sql",
+                "source_char_start": 10,
+                "source_char_end": 80,
+                "source_line_start": 5,
+                "source_line_end": 9,
+                "source_location_status": "available",
+            }
+        ],
+        "statement_provenance": [
+            {
+                "statement_id": "STMT-01",
+                "source_chunk_id": "CHUNK-01",
+                "source_file": "demo.sql",
+                "source_char_start": 24,
+                "source_char_end": 40,
+                "source_line_start": 6,
+                "source_line_end": 6,
+                "source_location_status": "available",
+                "evidence_type": "CONDITION",
+            }
+        ],
+    }
+    rules = [
+        {
+            "condition": "DPD exceeds 90 days",
+            "action": "Treat the account as higher risk",
+            "fields_affected": [],
+            "rule_type": "inferred",
+            "confidence": "high",
+            "source_evidence": ["LOAN_ACCOUNT", "DPD_MAX > 90"],
+            "dependencies": [],
+        }
+    ]
+
+    ground_business_rules_against_extraction(rules, merged_extraction)
+
+    rule = rules[0]
+    spans = rule["evidence_spans"]
+    assert spans
+    assert any(span["chunk_id"] == "CHUNK-01" for span in spans)
+    assert any(span["statement_id"] == "STMT-01" for span in spans)
+    assert any(span["line_start"] == 6 for span in spans)
+
+
 def test_report_formatter_surfaces_provenance_fields():
     agent = _make_agent(
         json.dumps(
@@ -528,4 +608,4 @@ def test_report_formatter_surfaces_provenance_fields():
     assert "## Tables Read" in report
     assert "1. 1." not in report
     assert "business rules / validations" not in report.lower()
-    assert "confidence" not in report.lower()
+    assert "Dialect Confidence" in report

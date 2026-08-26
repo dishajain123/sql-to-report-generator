@@ -1,0 +1,26 @@
+{
+  "case_id": "oracle.npa_simple",
+  "dialect": "ORACLE",
+  "object_type": "PROCEDURE",
+  "object_name": "classify_npa_and_provision",
+  "parameters": [
+    {"name": "p_account_id", "direction": "IN", "datatype": "NUMBER"}
+  ],
+  "tables_read": ["LOAN_ACCOUNT"],
+  "tables_written": ["LOAN_ACCOUNT", "NPA_PROVISION", "NPA_AUDIT_LOG"],
+  "operations": [
+    {"operation": "READ", "table": "LOAN_ACCOUNT"},
+    {"operation": "UPDATE", "table": "LOAN_ACCOUNT"},
+    {"operation": "INSERT", "table": "NPA_PROVISION"},
+    {"operation": "INSERT", "table": "NPA_AUDIT_LOG"}
+  ],
+  "business_rules": [
+    {"condition": "v_overdue_days <= 90", "action": "Set STANDARD classification", "output_field": "v_classification"},
+    {"condition": "v_overdue_days BETWEEN 91 AND 365", "action": "Set SUBSTANDARD classification", "output_field": "v_classification"},
+    {"condition": "v_overdue_days BETWEEN 366 AND 1095", "action": "Set DOUBTFUL1 classification", "output_field": "v_classification"},
+    {"condition": "ELSE", "action": "Set LOSS classification", "output_field": "v_classification"}
+  ],
+  "important_fields": ["p_account_id", "v_overdue_days", "v_classification", "v_provision_pct"],
+  "ambiguities": [],
+  "review_required": false
+}

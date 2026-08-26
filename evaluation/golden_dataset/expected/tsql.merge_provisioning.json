@@ -1,0 +1,20 @@
+{
+  "case_id": "tsql.merge_provisioning",
+  "dialect": "TSQL",
+  "object_type": "PROCEDURE",
+  "object_name": "dbo.SyncProvisioning",
+  "parameters": [],
+  "tables_read": ["dbo.Staging_Provisioning", "dbo.NPA_Provision"],
+  "tables_written": ["dbo.NPA_Provision"],
+  "operations": [
+    {"operation": "MERGE", "table": "dbo.NPA_Provision"},
+    {"operation": "READ", "table": "dbo.Staging_Provisioning"}
+  ],
+  "business_rules": [
+    {"condition": "source row matches target", "action": "Update existing provision row"},
+    {"condition": "source row does not match target", "action": "Insert new provision row"}
+  ],
+  "important_fields": ["account_id", "provision_amount", "updated_at", "created_at"],
+  "ambiguities": [],
+  "review_required": true
+}

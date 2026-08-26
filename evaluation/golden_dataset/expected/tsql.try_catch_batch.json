@@ -1,0 +1,23 @@
+{
+  "case_id": "tsql.try_catch_batch",
+  "dialect": "TSQL",
+  "object_type": "PROCEDURE",
+  "object_name": "dbo.RecalculateRiskBand",
+  "parameters": [
+    {"name": "@AccountId", "direction": "IN", "datatype": "INT"}
+  ],
+  "tables_read": ["dbo.AccountRisk"],
+  "tables_written": ["dbo.AccountRisk", "dbo.RiskErrors"],
+  "operations": [
+    {"operation": "UPDATE", "table": "dbo.AccountRisk"},
+    {"operation": "INSERT", "table": "dbo.RiskErrors"}
+  ],
+  "business_rules": [
+    {"condition": "DpdDays <= 30", "action": "Set LOW risk band"},
+    {"condition": "DpdDays <= 90", "action": "Set MEDIUM risk band"},
+    {"condition": "ELSE", "action": "Set HIGH risk band"}
+  ],
+  "important_fields": ["@AccountId", "RiskBand", "DpdDays"],
+  "ambiguities": [],
+  "review_required": true
+}
