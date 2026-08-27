@@ -10,6 +10,7 @@ application code.
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 import os
 from typing import Optional
@@ -67,3 +68,10 @@ def create_llm_client(config: LLMConfig):
         client_kwargs["base_url"] = config.base_url
 
     return OpenAI(**client_kwargs)
+
+
+def supports_chat_completion_seed(client) -> bool:
+    try:
+        return "seed" in inspect.signature(client.chat.completions.create).parameters
+    except (AttributeError, TypeError, ValueError):
+        return False

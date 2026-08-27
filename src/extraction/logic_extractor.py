@@ -8,6 +8,13 @@ Pattern Retrieval Agent), this agent performs a *technical* pass that
 produces a structured, intermediate JSON extraction of:
 
     - conditions / branches (IF / CASE / WHEN)
+    - decision chains: multi-branch IF/ELSIF/ELSE (or equivalent CASE) ladders that test
+      the same subject and assign one or more fields per branch, captured as one linked
+      structure (subject + ordered branches + per-branch field assignments) rather than as
+      several disconnected "conditions" entries - this is what lets the downstream Rule
+      Synthesizer represent a classification/threshold ladder as one rule per output field
+      with correctly-ordered decision_logic_rows, instead of having to reverse-engineer the
+      ladder's structure from prose and risk misattributing an outcome to the wrong branch.
     - loops / cursors and what they iterate over
     - tables read (with columns + filter conditions + confidence)
     - tables written (with operation type + trigger condition + confidence)
@@ -41,12 +48,15 @@ import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
+from typing import Optional
 
 from src.ingestion.guardrails import ground_extraction_against_source, validate_extraction_shape
+from src.core.llm_client import supports_chat_completion_seed
 from src.prompts.prompt_loader import get_prompt_set, render_user_prompt
 
 _EMPTY_EXTRACTION: Dict[str, Any] = {
     "conditions": [],
+    "decision_chains": [],
     "loops": [],
     "tables_read": [],
     "tables_written": [],
@@ -73,7 +83,7 @@ class LogicExtractionAgent:
     the configured chat completion client directly.
     """
 
-    def __init__(self, client, model: str, temperature: float = 0.1):
+    def __init__(self, client, model: str, temperature: float = 0.0, seed: Optional[int] = 0):
         """
         Args:
             client: an initialized OpenAI-compatible chat client instance.
@@ -83,6 +93,7 @@ class LogicExtractionAgent:
         self.client = client
         self.model = model
         self.temperature = temperature
+        self.seed = seed
 
     def extract(
         self,
@@ -118,14 +129,17 @@ class LogicExtractionAgent:
             code_chunk=code_chunk,
         )
 
-        response = self.client.chat.completions.create(
-            model=model or self.model,
-            temperature=self.temperature,
-            messages=[
+        completion_kwargs = {
+            "model": model or self.model,
+            "temperature": self.temperature,
+            "messages": [
                 {"role": "system", "content": prompt_set["system"]},
                 {"role": "user", "content": user_prompt},
             ],
-        )
+        }
+        if self.seed is not None and supports_chat_completion_seed(self.client):
+            completion_kwargs["seed"] = self.seed
+        response = self.client.chat.completions.create(**completion_kwargs)
         raw_response = response.choices[0].message.content or ""
 
         data, error = self._parse_json(raw_response)

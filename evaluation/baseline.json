@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-26T10:25:01.880231+00:00",
+  "generated_at": "2026-08-27T07:38:43.329260+00:00",
   "mode": "live",
   "results": [
     {
@@ -19,6 +19,96 @@
         "business_rules": {
           "actual": [
             [
+              "91-365 days",
+              "set standard classification and 0.40 provision pct",
+              "v_classification"
+            ],
+            [
+              "91-365 days",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "else",
+              "set loss or doubtful3 based on doubtful_since",
+              "v_classification"
+            ],
+            [
+              "else",
+              "set loss or doubtful3 based on doubtful_since",
+              ""
+            ],
+            [
+              "v_doubtful_since > 1095",
+              "Set LOSS classification",
+              "v_classification"
+            ],
+            [
+              "v_doubtful_since > 1095",
+              "Set LOSS classification",
+              ""
+            ],
+            [
+              "v_doubtful_since <= 1095",
+              "Set DOUBTFUL3 classification",
+              "v_classification"
+            ],
+            [
+              "v_doubtful_since <= 1095",
+              "Set DOUBTFUL3 classification",
+              ""
+            ],
+            [
+              "ELSE",
+              "Set DOUBTFUL3 classification",
+              "v_classification"
+            ],
+            [
+              "ELSE",
+              "Set DOUBTFUL3 classification",
+              ""
+            ],
+            [
+              "latest calculated_date per account",
+              "set standard classification and 0.40 provision pct",
+              "v_classification"
+            ],
+            [
+              "latest calculated_date per account",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "",
+              "set standard classification and 0.40 provision pct",
+              "provision_amount"
+            ],
+            [
+              "",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "",
+              "set standard classification and 0.40 provision pct",
+              "audit log entry"
+            ],
+            [
+              "",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "try block succeeds",
+              "set standard classification and 0.40 provision pct",
+              "audit log entry"
+            ],
+            [
+              "try block succeeds",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
               "v_overdue_days <= 90",
               "set standard classification and 0.40 provision pct",
               "v_classification"
@@ -30,107 +120,27 @@
             ],
             [
               "v_overdue_days between 91 and 365",
-              "set substandard classification and 15 provision pct",
+              "set standard classification and 0.40 provision pct",
               "v_classification"
             ],
             [
               "v_overdue_days between 91 and 365",
-              "set substandard classification and 15 provision pct",
+              "set standard classification and 0.40 provision pct",
               ""
             ],
             [
               "v_overdue_days between 366 and 1095",
-              "assigns the account's asset classification and provisioning percentage based on the number of days in doubtful status",
+              "set standard classification and 0.40 provision pct",
               "v_classification"
             ],
             [
               "v_overdue_days between 366 and 1095",
-              "assigns the account's asset classification and provisioning percentage based on the number of days in doubtful status",
+              "set standard classification and 0.40 provision pct",
               ""
             ],
             [
-              "doubtful since is less than or equal to 365 days",
-              "Set DOUBTFUL1 classification",
-              "v_classification"
-            ],
-            [
-              "doubtful since is less than or equal to 365 days",
-              "Set DOUBTFUL1 classification",
-              ""
-            ],
-            [
-              "doubtful since is greater than 365 days and less than or equal to 1095 days",
-              "Set DOUBTFUL2 classification",
-              "v_classification"
-            ],
-            [
-              "doubtful since is greater than 365 days and less than or equal to 1095 days",
-              "Set DOUBTFUL2 classification",
-              ""
-            ],
-            [
-              "v_overdue_days > 1095",
-              "assigns the account's asset classification to loss or doubtful3 and sets the provisioning percentage to 100%",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days > 1095",
-              "assigns the account's asset classification to loss or doubtful3 and sets the provisioning percentage to 100%",
-              ""
-            ],
-            [
-              "doubtful since is greater than 1095 days",
-              "Set LOSS classification",
-              "v_classification"
-            ],
-            [
-              "doubtful since is greater than 1095 days",
-              "Set LOSS classification",
-              ""
-            ],
-            [
-              "doubtful since is less than or equal to 1095 days",
-              "Set DOUBTFUL3 classification",
-              "v_classification"
-            ],
-            [
-              "doubtful since is less than or equal to 1095 days",
-              "Set DOUBTFUL3 classification",
-              ""
-            ],
-            [
-              "after determining the new classification",
-              "updates the asset classification and last classified date fields for the loan account",
-              "v_classification"
-            ],
-            [
-              "after determining the new classification",
-              "updates the asset classification and last classified date fields for the loan account",
-              ""
-            ],
-            [
-              "after calculating the provision amount",
-              "inserts the account id, classification, provision amount, and calculation date into the npa provision records",
-              "v_provision_amt"
-            ],
-            [
-              "after calculating the provision amount",
-              "inserts the account id, classification, provision amount, and calculation date into the npa provision records",
-              ""
-            ],
-            [
-              "whenever the asset classification is updated",
-              "inserts the account id, previous classification, new classification, and change date into the audit log",
-              ""
-            ],
-            [
-              "the specified account does not exist",
-              "update account status and audit the change",
-              ""
-            ],
-            [
-              "an unexpected error occurs during processing",
-              "log error message",
+              "else",
+              "set standard classification and 0.40 provision pct",
               ""
             ]
           ],
@@ -156,20 +166,20 @@
               "v_classification"
             ]
           ],
-          "f1": 0.14814814814814817,
+          "f1": 0.06896551724137932,
           "matches": [
             [
               "v_overdue_days <= 90",
               "set standard classification and 0.40 provision pct",
               "v_classification"
-            ],
+            ]
+          ],
+          "missing": [
             [
               "v_overdue_days between 91 and 365",
               "set substandard classification and 15 provision pct",
               "v_classification"
-            ]
-          ],
-          "missing": [
+            ],
             [
               "v_overdue_days between 366 and 1095",
               "set doubtful1 or doubtful2 based on doubtful_since",
@@ -181,9 +191,99 @@
               "v_classification"
             ]
           ],
-          "precision": 0.08695652173913043,
-          "recall": 0.5,
+          "precision": 0.04,
+          "recall": 0.25,
           "unexpected": [
+            [
+              "91-365 days",
+              "set standard classification and 0.40 provision pct",
+              "v_classification"
+            ],
+            [
+              "91-365 days",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "else",
+              "set loss or doubtful3 based on doubtful_since",
+              "v_classification"
+            ],
+            [
+              "else",
+              "set loss or doubtful3 based on doubtful_since",
+              ""
+            ],
+            [
+              "v_doubtful_since > 1095",
+              "Set LOSS classification",
+              "v_classification"
+            ],
+            [
+              "v_doubtful_since > 1095",
+              "Set LOSS classification",
+              ""
+            ],
+            [
+              "v_doubtful_since <= 1095",
+              "Set DOUBTFUL3 classification",
+              "v_classification"
+            ],
+            [
+              "v_doubtful_since <= 1095",
+              "Set DOUBTFUL3 classification",
+              ""
+            ],
+            [
+              "ELSE",
+              "Set DOUBTFUL3 classification",
+              "v_classification"
+            ],
+            [
+              "ELSE",
+              "Set DOUBTFUL3 classification",
+              ""
+            ],
+            [
+              "latest calculated_date per account",
+              "set standard classification and 0.40 provision pct",
+              "v_classification"
+            ],
+            [
+              "latest calculated_date per account",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "",
+              "set standard classification and 0.40 provision pct",
+              "provision_amount"
+            ],
+            [
+              "",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "",
+              "set standard classification and 0.40 provision pct",
+              "audit log entry"
+            ],
+            [
+              "",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "try block succeeds",
+              "set standard classification and 0.40 provision pct",
+              "audit log entry"
+            ],
+            [
+              "try block succeeds",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
             [
               "v_overdue_days <= 90",
               "set standard classification and 0.40 provision pct",
@@ -191,102 +291,27 @@
             ],
             [
               "v_overdue_days between 91 and 365",
-              "set substandard classification and 15 provision pct",
+              "set standard classification and 0.40 provision pct",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 91 and 365",
+              "set standard classification and 0.40 provision pct",
               ""
             ],
             [
               "v_overdue_days between 366 and 1095",
-              "assigns the account's asset classification and provisioning percentage based on the number of days in doubtful status",
+              "set standard classification and 0.40 provision pct",
               "v_classification"
             ],
             [
               "v_overdue_days between 366 and 1095",
-              "assigns the account's asset classification and provisioning percentage based on the number of days in doubtful status",
+              "set standard classification and 0.40 provision pct",
               ""
             ],
             [
-              "doubtful since is less than or equal to 365 days",
-              "Set DOUBTFUL1 classification",
-              "v_classification"
-            ],
-            [
-              "doubtful since is less than or equal to 365 days",
-              "Set DOUBTFUL1 classification",
-              ""
-            ],
-            [
-              "doubtful since is greater than 365 days and less than or equal to 1095 days",
-              "Set DOUBTFUL2 classification",
-              "v_classification"
-            ],
-            [
-              "doubtful since is greater than 365 days and less than or equal to 1095 days",
-              "Set DOUBTFUL2 classification",
-              ""
-            ],
-            [
-              "v_overdue_days > 1095",
-              "assigns the account's asset classification to loss or doubtful3 and sets the provisioning percentage to 100%",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days > 1095",
-              "assigns the account's asset classification to loss or doubtful3 and sets the provisioning percentage to 100%",
-              ""
-            ],
-            [
-              "doubtful since is greater than 1095 days",
-              "Set LOSS classification",
-              "v_classification"
-            ],
-            [
-              "doubtful since is greater than 1095 days",
-              "Set LOSS classification",
-              ""
-            ],
-            [
-              "doubtful since is less than or equal to 1095 days",
-              "Set DOUBTFUL3 classification",
-              "v_classification"
-            ],
-            [
-              "doubtful since is less than or equal to 1095 days",
-              "Set DOUBTFUL3 classification",
-              ""
-            ],
-            [
-              "after determining the new classification",
-              "updates the asset classification and last classified date fields for the loan account",
-              "v_classification"
-            ],
-            [
-              "after determining the new classification",
-              "updates the asset classification and last classified date fields for the loan account",
-              ""
-            ],
-            [
-              "after calculating the provision amount",
-              "inserts the account id, classification, provision amount, and calculation date into the npa provision records",
-              "v_provision_amt"
-            ],
-            [
-              "after calculating the provision amount",
-              "inserts the account id, classification, provision amount, and calculation date into the npa provision records",
-              ""
-            ],
-            [
-              "whenever the asset classification is updated",
-              "inserts the account id, previous classification, new classification, and change date into the audit log",
-              ""
-            ],
-            [
-              "the specified account does not exist",
-              "update account status and audit the change",
-              ""
-            ],
-            [
-              "an unexpected error occurs during processing",
-              "log error message",
+              "else",
+              "set standard classification and 0.40 provision pct",
               ""
             ]
           ]
@@ -299,48 +324,34 @@
         "important_fields": {
           "actual": [
             "account_id",
-            "account_not_found",
-            "and",
             "asset_classification",
             "between",
             "calculated date",
             "calculated_date",
-            "classification",
-            "doubtful1",
-            "doubtful2",
-            "doubtful3",
+            "changed on",
             "doubtful_since_days",
-            "error",
-            "insert",
-            "into",
+            "elsif",
+            "end",
+            "if",
             "last classified date",
             "last_classified_date",
             "loan_account",
-            "loss",
             "new_classification",
-            "npa_audit_log",
+            "no_data_found",
             "npa_provision",
-            "null",
             "old_classification",
             "outstanding_amount",
             "overdue_days",
             "p_account_id",
-            "set",
-            "sqlerrm",
-            "standard",
-            "substandard",
+            "provision_amount",
             "sysdate",
             "unsecured_amount",
-            "update",
             "v_classification",
             "v_doubtful_since",
             "v_outstanding_amt",
             "v_overdue_days",
-            "v_provision_amt",
             "v_provision_pct",
-            "v_unsecured_amt",
-            "values",
-            "where"
+            "v_unsecured_amt"
           ],
           "expected": [
             "p_account_id",
@@ -349,56 +360,44 @@
             "v_provision_amt",
             "v_provision_pct"
           ],
-          "f1": 0.20833333333333334,
+          "f1": 0.2352941176470588,
           "matches": [
             "p_account_id",
             "v_classification",
             "v_overdue_days",
-            "v_provision_amt",
             "v_provision_pct"
           ],
-          "missing": [],
-          "precision": 0.11627906976744186,
-          "recall": 1.0,
+          "missing": [
+            "v_provision_amt"
+          ],
+          "precision": 0.13793103448275862,
+          "recall": 0.8,
           "unexpected": [
             "account_id",
-            "account_not_found",
-            "and",
             "asset_classification",
             "between",
             "calculated date",
             "calculated_date",
-            "classification",
-            "doubtful1",
-            "doubtful2",
-            "doubtful3",
+            "changed on",
             "doubtful_since_days",
-            "error",
-            "insert",
-            "into",
+            "elsif",
+            "end",
+            "if",
             "last classified date",
             "last_classified_date",
             "loan_account",
-            "loss",
             "new_classification",
-            "npa_audit_log",
+            "no_data_found",
             "npa_provision",
-            "null",
             "old_classification",
             "outstanding_amount",
             "overdue_days",
-            "set",
-            "sqlerrm",
-            "standard",
-            "substandard",
+            "provision_amount",
             "sysdate",
             "unsecured_amount",
-            "update",
             "v_doubtful_since",
             "v_outstanding_amt",
-            "v_unsecured_amt",
-            "values",
-            "where"
+            "v_unsecured_amt"
           ]
         },
         "object_type": {
@@ -555,43 +554,53 @@
         "business_rules": {
           "actual": [
             [
+              "91-365 days",
+              "set standard classification and 0.40 provision pct",
+              "v_classification"
+            ],
+            [
+              "91-365 days",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "v_overdue_days <= 90",
+              "Set STANDARD classification",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days <= 90",
+              "Set STANDARD classification",
+              ""
+            ],
+            [
               "v_overdue_days between 91 and 365",
-              "assigns the asset classification and provisioning percentage according to the overdue days band.",
+              "Set STANDARD classification",
               "v_classification"
             ],
             [
               "v_overdue_days between 91 and 365",
-              "assigns the asset classification and provisioning percentage according to the overdue days band.",
-              ""
-            ],
-            [
-              "overdue days is 90 or less",
-              "Set STANDARD classification",
-              "v_classification"
-            ],
-            [
-              "overdue days is 90 or less",
               "Set STANDARD classification",
               ""
             ],
             [
-              "overdue days is between 91 and 365",
-              "Set STANDARD classification",
-              "v_classification"
-            ],
-            [
-              "overdue days is between 91 and 365",
-              "Set STANDARD classification",
-              ""
-            ],
-            [
-              "overdue days is between 366 and 1095",
+              "v_overdue_days between 366 and 1095",
               "Set DOUBTFUL1 classification",
               "v_classification"
             ],
             [
-              "overdue days is between 366 and 1095",
+              "v_overdue_days between 366 and 1095",
               "Set DOUBTFUL1 classification",
+              ""
+            ],
+            [
+              "else",
+              "Set LOSS classification",
+              "v_classification"
+            ],
+            [
+              "else",
+              "Set LOSS classification",
               ""
             ],
             [
@@ -605,43 +614,68 @@
               ""
             ],
             [
-              "asset classification has been determined for the account",
-              "sets the asset classification field of the loan account to the assigned value",
+              "v_overdue_days > 1095",
+              "Set LOSS classification",
               "v_classification"
             ],
             [
-              "asset classification has been determined for the account",
-              "sets the asset classification field of the loan account to the assigned value",
+              "v_overdue_days > 1095",
+              "Set LOSS classification",
               ""
             ],
             [
-              "provisioning percentage and outstanding amount are available for the account",
-              "calculates the provision amount and records it in the npa provision records with the classification date",
+              "91-365 days",
+              "set loss classification",
               "provision_amount"
             ],
             [
-              "provisioning percentage and outstanding amount are available for the account",
-              "calculates the provision amount and records it in the npa provision records with the classification date",
+              "91-365 days",
+              "set loss classification",
               ""
             ],
             [
-              "asset classification has been updated for the account",
-              "inserts a record in the audit log with the account id, new classification, and change date",
-              "audit log entry"
+              "91-365 days",
+              "set standard classification and 0.40 provision pct",
+              "new_classification, change_date"
             ],
             [
-              "asset classification has been updated for the account",
-              "inserts a record in the audit log with the account id, new classification, and change date",
+              "91-365 days",
+              "set standard classification and 0.40 provision pct",
               ""
             ],
             [
-              "an error occurs during processing",
-              "log error message",
-              "audit log entry"
+              "v_overdue_days <= 90",
+              "set standard classification and 0.40 provision pct",
+              "v_classification"
             ],
             [
-              "an error occurs during processing",
-              "log error message",
+              "v_overdue_days <= 90",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "v_overdue_days between 91 and 365",
+              "set standard classification and 0.40 provision pct",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 91 and 365",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "v_overdue_days between 366 and 1095",
+              "set standard classification and 0.40 provision pct",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 366 and 1095",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "else",
+              "set standard classification and 0.40 provision pct",
               ""
             ]
           ],
@@ -695,43 +729,53 @@
           "recall": 0.0,
           "unexpected": [
             [
+              "91-365 days",
+              "set standard classification and 0.40 provision pct",
+              "v_classification"
+            ],
+            [
+              "91-365 days",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "v_overdue_days <= 90",
+              "Set STANDARD classification",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days <= 90",
+              "Set STANDARD classification",
+              ""
+            ],
+            [
               "v_overdue_days between 91 and 365",
-              "assigns the asset classification and provisioning percentage according to the overdue days band.",
+              "Set STANDARD classification",
               "v_classification"
             ],
             [
               "v_overdue_days between 91 and 365",
-              "assigns the asset classification and provisioning percentage according to the overdue days band.",
-              ""
-            ],
-            [
-              "overdue days is 90 or less",
-              "Set STANDARD classification",
-              "v_classification"
-            ],
-            [
-              "overdue days is 90 or less",
               "Set STANDARD classification",
               ""
             ],
             [
-              "overdue days is between 91 and 365",
-              "Set STANDARD classification",
-              "v_classification"
-            ],
-            [
-              "overdue days is between 91 and 365",
-              "Set STANDARD classification",
-              ""
-            ],
-            [
-              "overdue days is between 366 and 1095",
+              "v_overdue_days between 366 and 1095",
               "Set DOUBTFUL1 classification",
               "v_classification"
             ],
             [
-              "overdue days is between 366 and 1095",
+              "v_overdue_days between 366 and 1095",
               "Set DOUBTFUL1 classification",
+              ""
+            ],
+            [
+              "else",
+              "Set LOSS classification",
+              "v_classification"
+            ],
+            [
+              "else",
+              "Set LOSS classification",
               ""
             ],
             [
@@ -745,43 +789,68 @@
               ""
             ],
             [
-              "asset classification has been determined for the account",
-              "sets the asset classification field of the loan account to the assigned value",
+              "v_overdue_days > 1095",
+              "Set LOSS classification",
               "v_classification"
             ],
             [
-              "asset classification has been determined for the account",
-              "sets the asset classification field of the loan account to the assigned value",
+              "v_overdue_days > 1095",
+              "Set LOSS classification",
               ""
             ],
             [
-              "provisioning percentage and outstanding amount are available for the account",
-              "calculates the provision amount and records it in the npa provision records with the classification date",
+              "91-365 days",
+              "set loss classification",
               "provision_amount"
             ],
             [
-              "provisioning percentage and outstanding amount are available for the account",
-              "calculates the provision amount and records it in the npa provision records with the classification date",
+              "91-365 days",
+              "set loss classification",
               ""
             ],
             [
-              "asset classification has been updated for the account",
-              "inserts a record in the audit log with the account id, new classification, and change date",
-              "audit log entry"
+              "91-365 days",
+              "set standard classification and 0.40 provision pct",
+              "new_classification, change_date"
             ],
             [
-              "asset classification has been updated for the account",
-              "inserts a record in the audit log with the account id, new classification, and change date",
+              "91-365 days",
+              "set standard classification and 0.40 provision pct",
               ""
             ],
             [
-              "an error occurs during processing",
-              "log error message",
-              "audit log entry"
+              "v_overdue_days <= 90",
+              "set standard classification and 0.40 provision pct",
+              "v_classification"
             ],
             [
-              "an error occurs during processing",
-              "log error message",
+              "v_overdue_days <= 90",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "v_overdue_days between 91 and 365",
+              "set standard classification and 0.40 provision pct",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 91 and 365",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "v_overdue_days between 366 and 1095",
+              "set standard classification and 0.40 provision pct",
+              "v_classification"
+            ],
+            [
+              "v_overdue_days between 366 and 1095",
+              "set standard classification and 0.40 provision pct",
+              ""
+            ],
+            [
+              "else",
+              "set standard classification and 0.40 provision pct",
               ""
             ]
           ]
@@ -794,34 +863,24 @@
         "important_fields": {
           "actual": [
             "account_id",
-            "and",
             "asset_classification",
             "between",
             "change_date",
             "classification_date",
             "else",
-            "error",
-            "insert",
-            "into",
+            "elsif",
             "loan_account",
-            "loss",
             "new_classification",
-            "npa_audit_log",
+            "new_classification, change_date",
             "npa_provision",
             "outstanding_amount",
             "overdue_days",
             "p_account_id",
             "provision_amount",
-            "set",
-            "sqlerrm",
-            "sysdate",
-            "update",
             "v_classification",
             "v_outstanding",
             "v_overdue_days",
-            "v_provision_pct",
-            "values",
-            "where"
+            "v_provision_pct"
           ],
           "expected": [
             "p_account_id",
@@ -829,7 +888,7 @@
             "v_overdue_days",
             "v_provision_pct"
           ],
-          "f1": 0.2424242424242424,
+          "f1": 0.34782608695652173,
           "matches": [
             "p_account_id",
             "v_classification",
@@ -837,34 +896,24 @@
             "v_provision_pct"
           ],
           "missing": [],
-          "precision": 0.13793103448275862,
+          "precision": 0.21052631578947367,
           "recall": 1.0,
           "unexpected": [
             "account_id",
-            "and",
             "asset_classification",
             "between",
             "change_date",
             "classification_date",
             "else",
-            "error",
-            "insert",
-            "into",
+            "elsif",
             "loan_account",
-            "loss",
             "new_classification",
-            "npa_audit_log",
+            "new_classification, change_date",
             "npa_provision",
             "outstanding_amount",
             "overdue_days",
             "provision_amount",
-            "set",
-            "sqlerrm",
-            "sysdate",
-            "update",
-            "v_outstanding",
-            "values",
-            "where"
+            "v_outstanding"
           ]
         },
         "object_type": {
@@ -1025,113 +1074,123 @@
         "business_rules": {
           "actual": [
             [
-              "v_overdue_days between 91 and 365",
-              "set loss classification",
-              "asset_classification"
+              "source row does not match target",
+              "set standard classification and 15 provision pct",
+              "v_classification"
             ],
             [
-              "v_overdue_days between 91 and 365",
-              "set loss classification",
+              "source row does not match target",
+              "set standard classification and 15 provision pct",
               ""
             ],
             [
-              "91-365 days overdue",
+              "rec.overdue_days between 91 and 365",
               "Set STANDARD classification",
-              "asset_classification"
+              "v_classification"
             ],
             [
-              "91-365 days overdue",
+              "rec.overdue_days between 91 and 365",
               "Set STANDARD classification",
               ""
             ],
             [
-              "366-1095 days overdue",
+              "rec.overdue_days between 366 and 1095",
               "Set DOUBTFUL1 classification",
-              "asset_classification"
+              "v_classification"
             ],
             [
-              "366-1095 days overdue",
+              "rec.overdue_days between 366 and 1095",
               "Set DOUBTFUL1 classification",
               ""
             ],
             [
-              "more than 1095 days overdue",
+              "else",
               "Set LOSS classification",
-              "asset_classification"
+              "v_classification"
             ],
             [
-              "more than 1095 days overdue",
+              "else",
               "Set LOSS classification",
               ""
             ],
             [
-              "account is classified as sub-standard, doubtful-1, or loss",
-              "sets the provisioning percentage to 15%, 25%, or 100% based on the new classification",
-              "v_provision_pct"
+              "ELSE",
+              "Set LOSS classification",
+              "v_classification"
             ],
             [
-              "account is classified as sub-standard, doubtful-1, or loss",
-              "sets the provisioning percentage to 15%, 25%, or 100% based on the new classification",
+              "ELSE",
+              "Set LOSS classification",
               ""
             ],
             [
-              "sub-standard",
-              "Set 15% classification",
-              "v_provision_pct"
+              "v_overdue_days > 1095",
+              "Set LOSS classification",
+              "v_classification"
             ],
             [
-              "sub-standard",
-              "Set 15% classification",
+              "v_overdue_days > 1095",
+              "Set LOSS classification",
               ""
             ],
             [
-              "doubtful-1",
-              "Set 25% classification",
-              "v_provision_pct"
-            ],
-            [
-              "doubtful-1",
-              "Set 25% classification",
-              ""
-            ],
-            [
-              "loss",
-              "Set 100% classification",
-              "v_provision_pct"
-            ],
-            [
-              "loss",
-              "Set 100% classification",
-              ""
-            ],
-            [
-              "provisioning percentage is set for the account",
-              "sets the provisioning amount to outstanding amount multiplied by the provisioning percentage, and updates or inserts this value in the provisioning records",
+              "source row does not match target",
+              "set standard classification and 100 provision pct",
               "provision_amount"
             ],
             [
-              "provisioning percentage is set for the account",
-              "sets the provisioning amount to outstanding amount multiplied by the provisioning percentage, and updates or inserts this value in the provisioning records",
+              "source row does not match target",
+              "set standard classification and 100 provision pct",
               ""
             ],
             [
-              "asset classification is changed for an account",
-              "inserts a record in the audit log with the account id, new classification, and change date",
-              "audit log entry"
+              "source row does not match target",
+              "set standard classification and 100 provision pct",
+              "new_classification, change_date"
             ],
             [
-              "asset classification is changed for an account",
-              "inserts a record in the audit log with the account id, new classification, and change date",
+              "source row does not match target",
+              "set standard classification and 100 provision pct",
               ""
             ],
             [
-              "any error occurs during the batch process",
-              "log error message",
-              "audit log entry"
+              "rec.overdue_days between 91 and 365",
+              "set standard classification and 15 provision pct",
+              "v_classification"
             ],
             [
-              "any error occurs during the batch process",
-              "log error message",
+              "rec.overdue_days between 91 and 365",
+              "set standard classification and 15 provision pct",
+              ""
+            ],
+            [
+              "else",
+              "set standard classification and 25 provision pct",
+              ""
+            ],
+            [
+              "rec.overdue_days between 366 and 1095",
+              "set standard classification and 25 provision pct",
+              "v_classification"
+            ],
+            [
+              "rec.overdue_days between 366 and 1095",
+              "set standard classification and 25 provision pct",
+              ""
+            ],
+            [
+              "source row matches target",
+              "update existing provision row",
+              ""
+            ],
+            [
+              "source row does not match target",
+              "insert new provision row",
+              ""
+            ],
+            [
+              "overdue_days > 90",
+              "process only overdue accounts",
               ""
             ]
           ],
@@ -1157,14 +1216,15 @@
               ""
             ]
           ],
-          "f1": null,
-          "matches": [],
-          "missing": [
+          "f1": 0.07142857142857142,
+          "matches": [
             [
               "overdue_days > 90",
               "process only overdue accounts",
               ""
-            ],
+            ]
+          ],
+          "missing": [
             [
               "91-365 days",
               "set substandard and 15 pct",
@@ -1181,117 +1241,122 @@
               ""
             ]
           ],
-          "precision": 0.0,
-          "recall": 0.0,
+          "precision": 0.041666666666666664,
+          "recall": 0.25,
           "unexpected": [
             [
-              "v_overdue_days between 91 and 365",
-              "set loss classification",
-              "asset_classification"
+              "source row does not match target",
+              "set standard classification and 15 provision pct",
+              "v_classification"
             ],
             [
-              "v_overdue_days between 91 and 365",
-              "set loss classification",
+              "source row does not match target",
+              "set standard classification and 15 provision pct",
               ""
             ],
             [
-              "91-365 days overdue",
+              "rec.overdue_days between 91 and 365",
               "Set STANDARD classification",
-              "asset_classification"
+              "v_classification"
             ],
             [
-              "91-365 days overdue",
+              "rec.overdue_days between 91 and 365",
               "Set STANDARD classification",
               ""
             ],
             [
-              "366-1095 days overdue",
+              "rec.overdue_days between 366 and 1095",
               "Set DOUBTFUL1 classification",
-              "asset_classification"
+              "v_classification"
             ],
             [
-              "366-1095 days overdue",
+              "rec.overdue_days between 366 and 1095",
               "Set DOUBTFUL1 classification",
               ""
             ],
             [
-              "more than 1095 days overdue",
+              "else",
               "Set LOSS classification",
-              "asset_classification"
+              "v_classification"
             ],
             [
-              "more than 1095 days overdue",
+              "else",
               "Set LOSS classification",
               ""
             ],
             [
-              "account is classified as sub-standard, doubtful-1, or loss",
-              "sets the provisioning percentage to 15%, 25%, or 100% based on the new classification",
-              "v_provision_pct"
+              "ELSE",
+              "Set LOSS classification",
+              "v_classification"
             ],
             [
-              "account is classified as sub-standard, doubtful-1, or loss",
-              "sets the provisioning percentage to 15%, 25%, or 100% based on the new classification",
+              "ELSE",
+              "Set LOSS classification",
               ""
             ],
             [
-              "sub-standard",
-              "Set 15% classification",
-              "v_provision_pct"
+              "v_overdue_days > 1095",
+              "Set LOSS classification",
+              "v_classification"
             ],
             [
-              "sub-standard",
-              "Set 15% classification",
+              "v_overdue_days > 1095",
+              "Set LOSS classification",
               ""
             ],
             [
-              "doubtful-1",
-              "Set 25% classification",
-              "v_provision_pct"
-            ],
-            [
-              "doubtful-1",
-              "Set 25% classification",
-              ""
-            ],
-            [
-              "loss",
-              "Set 100% classification",
-              "v_provision_pct"
-            ],
-            [
-              "loss",
-              "Set 100% classification",
-              ""
-            ],
-            [
-              "provisioning percentage is set for the account",
-              "sets the provisioning amount to outstanding amount multiplied by the provisioning percentage, and updates or inserts this value in the provisioning records",
+              "source row does not match target",
+              "set standard classification and 100 provision pct",
               "provision_amount"
             ],
             [
-              "provisioning percentage is set for the account",
-              "sets the provisioning amount to outstanding amount multiplied by the provisioning percentage, and updates or inserts this value in the provisioning records",
+              "source row does not match target",
+              "set standard classification and 100 provision pct",
               ""
             ],
             [
-              "asset classification is changed for an account",
-              "inserts a record in the audit log with the account id, new classification, and change date",
-              "audit log entry"
+              "source row does not match target",
+              "set standard classification and 100 provision pct",
+              "new_classification, change_date"
             ],
             [
-              "asset classification is changed for an account",
-              "inserts a record in the audit log with the account id, new classification, and change date",
+              "source row does not match target",
+              "set standard classification and 100 provision pct",
               ""
             ],
             [
-              "any error occurs during the batch process",
-              "log error message",
-              "audit log entry"
+              "rec.overdue_days between 91 and 365",
+              "set standard classification and 15 provision pct",
+              "v_classification"
             ],
             [
-              "any error occurs during the batch process",
-              "log error message",
+              "rec.overdue_days between 91 and 365",
+              "set standard classification and 15 provision pct",
+              ""
+            ],
+            [
+              "else",
+              "set standard classification and 25 provision pct",
+              ""
+            ],
+            [
+              "rec.overdue_days between 366 and 1095",
+              "set standard classification and 25 provision pct",
+              "v_classification"
+            ],
+            [
+              "rec.overdue_days between 366 and 1095",
+              "set standard classification and 25 provision pct",
+              ""
+            ],
+            [
+              "source row matches target",
+              "update existing provision row",
+              ""
+            ],
+            [
+              "source row does not match target",
+              "insert new provision row",
               ""
             ]
           ]
@@ -1304,74 +1369,58 @@
         "important_fields": {
           "actual": [
             "account_id",
-            "and",
             "asset_classification",
-            "batch",
             "between",
             "change_date",
-            "classification date",
             "classification_date",
-            "error",
-            "insert",
-            "into",
+            "else",
+            "elsif",
             "loan_account",
-            "loss",
-            "merge",
+            "matched",
             "new_classification",
-            "npa_audit_log",
+            "new_classification, change_date",
+            "not",
             "npa_provision",
-            "null",
             "outstanding_amount",
             "overdue_days",
             "provision_amount",
-            "set",
-            "sqlerrm",
             "sysdate",
-            "update",
+            "v_classification",
             "v_new_classification",
-            "v_provision_pct",
-            "values"
+            "v_provision_pct"
           ],
           "expected": [
             "overdue_days",
             "v_new_classification",
             "v_provision_pct"
           ],
-          "f1": 0.19354838709677416,
+          "f1": 0.2608695652173913,
           "matches": [
             "overdue_days",
             "v_new_classification",
             "v_provision_pct"
           ],
           "missing": [],
-          "precision": 0.10714285714285714,
+          "precision": 0.15,
           "recall": 1.0,
           "unexpected": [
             "account_id",
-            "and",
             "asset_classification",
-            "batch",
             "between",
             "change_date",
-            "classification date",
             "classification_date",
-            "error",
-            "insert",
-            "into",
+            "else",
+            "elsif",
             "loan_account",
-            "loss",
-            "merge",
+            "matched",
             "new_classification",
-            "npa_audit_log",
+            "new_classification, change_date",
+            "not",
             "npa_provision",
-            "null",
             "outstanding_amount",
             "provision_amount",
-            "set",
-            "sqlerrm",
             "sysdate",
-            "update",
-            "values"
+            "v_classification"
           ]
         },
         "object_type": {
@@ -1391,10 +1440,6 @@
             ],
             [
               "read",
-              "DUAL"
-            ],
-            [
-              "read",
               "LOAN_ACCOUNT"
             ],
             [
@@ -1420,7 +1465,7 @@
               "LOAN_ACCOUNT"
             ]
           ],
-          "f1": 0.888888888888889,
+          "f1": 1.0,
           "matches": [
             [
               "insert",
@@ -1440,14 +1485,9 @@
             ]
           ],
           "missing": [],
-          "precision": 0.8,
+          "precision": 1.0,
           "recall": 1.0,
-          "unexpected": [
-            [
-              "read",
-              "DUAL"
-            ]
-          ]
+          "unexpected": []
         },
         "parameters": {
           "actual": [],
@@ -1461,22 +1501,20 @@
         },
         "tables_read": {
           "actual": [
-            "dual",
             "loan_account",
             "npa_provision"
           ],
           "expected": [
             "loan_account"
           ],
-          "f1": 0.5,
+          "f1": 0.6666666666666666,
           "matches": [
             "loan_account"
           ],
           "missing": [],
-          "precision": 0.3333333333333333,
+          "precision": 0.5,
           "recall": 1.0,
           "unexpected": [
-            "dual",
             "npa_provision"
           ]
         },
@@ -1516,8 +1554,9 @@
         "ambiguities": {
           "actual": [
             "could not deterministically identify the database object type from the raw source.",
-            "the extraction does not show the complete logic for the if statement, leaving its business effect unclear.",
-            "the source or definition of rec.account_id and v_ageing_bucket is not explicitly shown, but their business meaning is inferred from context."
+            "it is not clear why the old classification is always set to null in the audit log when a failure is logged.",
+            "the extraction does not show the full definition or source of the account record being processed, making it unclear how rec.account_id and rec.overdue_days are populated.",
+            "the if statement referenced in the extraction is incomplete and does not specify a condition or branches, so its business impact cannot be determined."
           ],
           "expected": [],
           "f1": null,
@@ -1527,80 +1566,101 @@
           "recall": null,
           "unexpected": [
             "could not deterministically identify the database object type from the raw source.",
-            "the extraction does not show the complete logic for the if statement, leaving its business effect unclear.",
-            "the source or definition of rec.account_id and v_ageing_bucket is not explicitly shown, but their business meaning is inferred from context."
+            "it is not clear why the old classification is always set to null in the audit log when a failure is logged.",
+            "the extraction does not show the full definition or source of the account record being processed, making it unclear how rec.account_id and rec.overdue_days are populated.",
+            "the if statement referenced in the extraction is incomplete and does not specify a condition or branches, so its business impact cannot be determined."
           ]
         },
         "business_rules": {
           "actual": [
             [
-              "<= 30 days",
-              "assigns the account's ageing bucket field to one of four categories based on overdue days",
-              "v_ageing_bucket"
-            ],
-            [
-              "<= 30 days",
-              "assigns the account's ageing bucket field to one of four categories based on overdue days",
+              "source row does not match target",
+              "set standard classification",
               ""
             ],
             [
-              "overdue days between 1 and 30",
-              "bucket_0_30",
-              "v_ageing_bucket"
+              "source row does not match target",
+              "assign bucket_0_30",
+              "ageing_bucket"
             ],
             [
-              "overdue days between 1 and 30",
-              "bucket_0_30",
+              "source row does not match target",
+              "assign bucket_0_30",
               ""
             ],
             [
-              "overdue days between 31 and 60",
-              "bucket_31_60",
-              "v_ageing_bucket"
+              "rec.overdue_days <= 30",
+              "Assign BUCKET_0_30",
+              "ageing_bucket"
             ],
             [
-              "overdue days between 31 and 60",
-              "bucket_31_60",
+              "rec.overdue_days <= 30",
+              "Assign BUCKET_0_30",
               ""
             ],
             [
-              "overdue days between 61 and 90",
-              "bucket_61_90",
-              "v_ageing_bucket"
+              "rec.overdue_days <= 60",
+              "Assign BUCKET_31_60",
+              "ageing_bucket"
             ],
             [
-              "overdue days between 61 and 90",
-              "bucket_61_90",
+              "rec.overdue_days <= 60",
+              "Assign BUCKET_31_60",
               ""
             ],
             [
-              "overdue days greater than 90",
-              "bucket_90_plus",
-              "v_ageing_bucket"
+              "rec.overdue_days <= 90",
+              "Assign BUCKET_61_90",
+              "ageing_bucket"
             ],
             [
-              "overdue days greater than 90",
-              "bucket_90_plus",
+              "rec.overdue_days <= 90",
+              "Assign BUCKET_61_90",
               ""
             ],
             [
-              "account exists in overdue ageing summary or not",
-              "updates the ageing bucket and last updated date if the account exists, or inserts a new record with these fields if it does not",
-              "v_ageing_bucket"
+              "else",
+              "Assign BUCKET_90_PLUS",
+              "ageing_bucket"
             ],
             [
-              "account exists in overdue ageing summary or not",
-              "updates the ageing bucket and last updated date if the account exists, or inserts a new record with these fields if it does not",
+              "else",
+              "Assign BUCKET_90_PLUS",
               ""
             ],
             [
-              "an error occurs during the update or insert of the overdue ageing summary",
-              "log error message",
-              "audit log entry"
+              "ELSE",
+              "Assign BUCKET_90_PLUS",
+              "ageing_bucket"
             ],
             [
-              "an error occurs during the update or insert of the overdue ageing summary",
-              "log error message",
+              "ELSE",
+              "Assign BUCKET_90_PLUS",
+              ""
+            ],
+            [
+              "rec.overdue_days <= 30",
+              "assign bucket_0_30",
+              ""
+            ],
+            [
+              "rec.overdue_days <= 60",
+              "assign bucket_0_30",
+              ""
+            ],
+            [
+              "rec.overdue_days <= 90",
+              "assign bucket_0_30",
+              ""
+            ],
+            [
+              "source row matches target",
+              "update existing provision row",
+              ""
+            ],
+            [
+              "source row does not match target",
+              "insert new provision row",
               ""
             ]
           ],
@@ -1654,73 +1714,93 @@
           "recall": 0.0,
           "unexpected": [
             [
-              "<= 30 days",
-              "assigns the account's ageing bucket field to one of four categories based on overdue days",
-              "v_ageing_bucket"
-            ],
-            [
-              "<= 30 days",
-              "assigns the account's ageing bucket field to one of four categories based on overdue days",
+              "source row does not match target",
+              "set standard classification",
               ""
             ],
             [
-              "overdue days between 1 and 30",
-              "bucket_0_30",
-              "v_ageing_bucket"
+              "source row does not match target",
+              "assign bucket_0_30",
+              "ageing_bucket"
             ],
             [
-              "overdue days between 1 and 30",
-              "bucket_0_30",
+              "source row does not match target",
+              "assign bucket_0_30",
               ""
             ],
             [
-              "overdue days between 31 and 60",
-              "bucket_31_60",
-              "v_ageing_bucket"
+              "rec.overdue_days <= 30",
+              "Assign BUCKET_0_30",
+              "ageing_bucket"
             ],
             [
-              "overdue days between 31 and 60",
-              "bucket_31_60",
+              "rec.overdue_days <= 30",
+              "Assign BUCKET_0_30",
               ""
             ],
             [
-              "overdue days between 61 and 90",
-              "bucket_61_90",
-              "v_ageing_bucket"
+              "rec.overdue_days <= 60",
+              "Assign BUCKET_31_60",
+              "ageing_bucket"
             ],
             [
-              "overdue days between 61 and 90",
-              "bucket_61_90",
+              "rec.overdue_days <= 60",
+              "Assign BUCKET_31_60",
               ""
             ],
             [
-              "overdue days greater than 90",
-              "bucket_90_plus",
-              "v_ageing_bucket"
+              "rec.overdue_days <= 90",
+              "Assign BUCKET_61_90",
+              "ageing_bucket"
             ],
             [
-              "overdue days greater than 90",
-              "bucket_90_plus",
+              "rec.overdue_days <= 90",
+              "Assign BUCKET_61_90",
               ""
             ],
             [
-              "account exists in overdue ageing summary or not",
-              "updates the ageing bucket and last updated date if the account exists, or inserts a new record with these fields if it does not",
-              "v_ageing_bucket"
+              "else",
+              "Assign BUCKET_90_PLUS",
+              "ageing_bucket"
             ],
             [
-              "account exists in overdue ageing summary or not",
-              "updates the ageing bucket and last updated date if the account exists, or inserts a new record with these fields if it does not",
+              "else",
+              "Assign BUCKET_90_PLUS",
               ""
             ],
             [
-              "an error occurs during the update or insert of the overdue ageing summary",
-              "log error message",
-              "audit log entry"
+              "ELSE",
+              "Assign BUCKET_90_PLUS",
+              "ageing_bucket"
             ],
             [
-              "an error occurs during the update or insert of the overdue ageing summary",
-              "log error message",
+              "ELSE",
+              "Assign BUCKET_90_PLUS",
+              ""
+            ],
+            [
+              "rec.overdue_days <= 30",
+              "assign bucket_0_30",
+              ""
+            ],
+            [
+              "rec.overdue_days <= 60",
+              "assign bucket_0_30",
+              ""
+            ],
+            [
+              "rec.overdue_days <= 90",
+              "assign bucket_0_30",
+              ""
+            ],
+            [
+              "source row matches target",
+              "update existing provision row",
+              ""
+            ],
+            [
+              "source row does not match target",
+              "insert new provision row",
               ""
             ]
           ]
@@ -1739,28 +1819,29 @@
             "bucket_31_60",
             "bucket_61_90",
             "bucket_90_plus",
-            "insert",
-            "into",
+            "else",
+            "elsif",
             "last_updated",
-            "merge",
+            "matched",
             "new_classification",
-            "npa_audit_log",
+            "not",
+            "null",
             "old_classification",
+            "outstanding_amount",
             "overdue_ageing_summary",
             "overdue_days",
-            "set",
             "sqlerrm",
+            "status",
             "sysdate",
-            "update",
-            "updatedat",
-            "v_ageing_bucket"
+            "v_ageing_bucket",
+            "values"
           ],
           "expected": [
             "overdue_days",
             "v_ageing_bucket",
             "v_processed_count"
           ],
-          "f1": 0.16,
+          "f1": 0.15384615384615383,
           "matches": [
             "overdue_days",
             "v_ageing_bucket"
@@ -1768,7 +1849,7 @@
           "missing": [
             "v_processed_count"
           ],
-          "precision": 0.09090909090909091,
+          "precision": 0.08695652173913043,
           "recall": 0.6666666666666666,
           "unexpected": [
             "account_id",
@@ -1778,19 +1859,20 @@
             "bucket_31_60",
             "bucket_61_90",
             "bucket_90_plus",
-            "insert",
-            "into",
+            "else",
+            "elsif",
             "last_updated",
-            "merge",
+            "matched",
             "new_classification",
-            "npa_audit_log",
+            "not",
+            "null",
             "old_classification",
+            "outstanding_amount",
             "overdue_ageing_summary",
-            "set",
             "sqlerrm",
+            "status",
             "sysdate",
-            "update",
-            "updatedat"
+            "values"
           ]
         },
         "object_type": {
@@ -1810,10 +1892,6 @@
             ],
             [
               "read",
-              "DUAL"
-            ],
-            [
-              "read",
               "LOAN_ACCOUNT"
             ]
           ],
@@ -1835,7 +1913,7 @@
               "OVERDUE_AGEING_SUMMARY"
             ]
           ],
-          "f1": 0.75,
+          "f1": 0.8571428571428571,
           "matches": [
             [
               "insert",
@@ -1856,14 +1934,9 @@
               "OVERDUE_AGEING_SUMMARY"
             ]
           ],
-          "precision": 0.75,
+          "precision": 1.0,
           "recall": 0.75,
-          "unexpected": [
-            [
-              "read",
-              "DUAL"
-            ]
-          ]
+          "unexpected": []
         },
         "parameters": {
           "actual": [],
@@ -1877,27 +1950,26 @@
         },
         "tables_read": {
           "actual": [
-            "dual",
             "loan_account",
             "overdue_ageing_summary"
           ],
           "expected": [
             "loan_account"
           ],
-          "f1": 0.5,
+          "f1": 0.6666666666666666,
           "matches": [
             "loan_account"
           ],
           "missing": [],
-          "precision": 0.3333333333333333,
+          "precision": 0.5,
           "recall": 1.0,
           "unexpected": [
-            "dual",
             "overdue_ageing_summary"
           ]
         },
         "tables_written": {
           "actual": [
+            "loan_account",
             "npa_audit_log",
             "overdue_ageing_summary"
           ],
@@ -1906,16 +1978,15 @@
             "npa_audit_log",
             "overdue_ageing_summary"
           ],
-          "f1": 0.8,
+          "f1": 1.0,
           "matches": [
+            "loan_account",
             "npa_audit_log",
             "overdue_ageing_summary"
           ],
-          "missing": [
-            "loan_account"
-          ],
+          "missing": [],
           "precision": 1.0,
-          "recall": 0.6666666666666666,
+          "recall": 1.0,
           "unexpected": []
         }
       },
@@ -1942,18 +2013,18 @@
         "business_rules": {
           "actual": [
             [
-              "the account's asset classification is not 'standard'.",
-              "set standard classification",
+              "latest classification_date per account",
+              "show only non-standard accounts",
               ""
             ],
             [
               "latest classification_date per account",
-              "set standard classification",
-              "classification_date, account_id, classification_date"
+              "keep only most recent provision row",
+              "classification_date, account_id"
             ],
             [
               "latest classification_date per account",
-              "set standard classification",
+              "keep only most recent provision row",
               ""
             ]
           ],
@@ -1969,36 +2040,32 @@
               ""
             ]
           ],
-          "f1": null,
-          "matches": [],
-          "missing": [
-            [
-              "asset_classification != standard",
-              "show only non-standard accounts",
-              ""
-            ],
+          "f1": 0.4,
+          "matches": [
             [
               "latest classification_date per account",
               "keep only most recent provision row",
               ""
             ]
           ],
-          "precision": 0.0,
-          "recall": 0.0,
+          "missing": [
+            [
+              "asset_classification != standard",
+              "show only non-standard accounts",
+              ""
+            ]
+          ],
+          "precision": 0.3333333333333333,
+          "recall": 0.5,
           "unexpected": [
             [
-              "the account's asset classification is not 'standard'.",
-              "set standard classification",
+              "latest classification_date per account",
+              "show only non-standard accounts",
               ""
             ],
             [
               "latest classification_date per account",
-              "set standard classification",
-              "classification_date, account_id, classification_date"
-            ],
-            [
-              "latest classification_date per account",
-              "set standard classification",
+              "keep only most recent provision row",
               ""
             ]
           ]
@@ -2013,16 +2080,10 @@
             "account_id",
             "asset_classification",
             "classification_date",
-            "classification_date, account_id, classification_date",
+            "classification_date, account_id",
             "customer_id",
-            "filter_condition",
-            "from",
             "max",
-            "npa_provision",
-            "provision_amount",
-            "select",
-            "standard",
-            "where"
+            "npa_provision"
           ],
           "expected": [
             "account_id",
@@ -2030,26 +2091,22 @@
             "customer_id",
             "provision_amount"
           ],
-          "f1": 0.47058823529411764,
+          "f1": 0.5454545454545454,
           "matches": [
             "account_id",
             "asset_classification",
-            "customer_id",
+            "customer_id"
+          ],
+          "missing": [
             "provision_amount"
           ],
-          "missing": [],
-          "precision": 0.3076923076923077,
-          "recall": 1.0,
+          "precision": 0.42857142857142855,
+          "recall": 0.75,
           "unexpected": [
             "classification_date",
-            "classification_date, account_id, classification_date",
-            "filter_condition",
-            "from",
+            "classification_date, account_id",
             "max",
-            "npa_provision",
-            "select",
-            "standard",
-            "where"
+            "npa_provision"
           ]
         },
         "object_type": {
@@ -2155,18 +2212,18 @@
         "business_rules": {
           "actual": [
             [
-              "the account has a non-null asset classification.",
-              "include the account in the summary calculations.",
+              "asset_classification is not null",
+              "include only classified accounts",
+              ""
+            ],
+            [
+              "asset_classification is not null",
+              "summarize latest provision values",
               ""
             ],
             [
               "latest calculated_date per account",
-              "include only the most recent provision amount for each account in the summary.",
-              "account_id"
-            ],
-            [
-              "latest calculated_date per account",
-              "include only the most recent provision amount for each account in the summary.",
+              "summarize latest provision values",
               ""
             ]
           ],
@@ -2182,9 +2239,8 @@
               ""
             ]
           ],
-          "f1": null,
-          "matches": [],
-          "missing": [
+          "f1": 0.8,
+          "matches": [
             [
               "asset_classification is not null",
               "include only classified accounts",
@@ -2196,22 +2252,13 @@
               ""
             ]
           ],
-          "precision": 0.0,
-          "recall": 0.0,
+          "missing": [],
+          "precision": 0.6666666666666666,
+          "recall": 1.0,
           "unexpected": [
             [
-              "the account has a non-null asset classification.",
-              "include the account in the summary calculations.",
-              ""
-            ],
-            [
-              "latest calculated_date per account",
-              "include only the most recent provision amount for each account in the summary.",
-              "account_id"
-            ],
-            [
-              "latest calculated_date per account",
-              "include only the most recent provision amount for each account in the summary.",
+              "asset_classification is not null",
+              "summarize latest provision values",
               ""
             ]
           ]
@@ -2227,17 +2274,14 @@
             "account_id",
             "asset_classification",
             "calculated_date",
-            "from",
             "is",
             "max",
             "not",
             "np2",
             "npa_provision",
             "null",
-            "select",
             "total_outstanding",
-            "total_provision",
-            "where"
+            "total_provision"
           ],
           "expected": [
             "account_count",
@@ -2246,7 +2290,7 @@
             "total_outstanding",
             "total_provision"
           ],
-          "f1": 0.4,
+          "f1": 0.47058823529411764,
           "matches": [
             "account_count",
             "asset_classification",
@@ -2256,20 +2300,17 @@
           "missing": [
             "branch_code"
           ],
-          "precision": 0.26666666666666666,
+          "precision": 0.3333333333333333,
           "recall": 0.8,
           "unexpected": [
             "account_id",
             "calculated_date",
-            "from",
             "is",
             "max",
             "not",
             "np2",
             "npa_provision",
-            "null",
-            "select",
-            "where"
+            "null"
           ]
         },
         "object_type": {
@@ -2356,7 +2397,7 @@
       },
       "mode": "live",
       "notes": [],
-      "status": "FAIL"
+      "status": "PASS"
     },
     {
       "actual_available": true,
@@ -2375,33 +2416,43 @@
         "business_rules": {
           "actual": [
             [
-              "a request is made to change the status of a specific account.",
+              "try block succeeds",
               "update account status and audit the change",
-              "status"
+              "status, accountid"
             ],
             [
-              "a request is made to change the status of a specific account.",
+              "try block succeeds",
               "update account status and audit the change",
               ""
             ],
             [
-              "an account's status is changed.",
+              "try block succeeds",
               "update account status and audit the change",
-              "accountaudit record"
+              "updatedat"
             ],
             [
-              "an account's status is changed.",
+              "try block succeeds",
               "update account status and audit the change",
               ""
             ],
             [
-              "an error occurs while updating the account status or recording the audit entry.",
+              "try block succeeds",
               "update account status and audit the change",
-              "errorlog record"
+              "accountaudit entry"
             ],
             [
-              "an error occurs while updating the account status or recording the audit entry.",
+              "try block succeeds",
               "update account status and audit the change",
+              ""
+            ],
+            [
+              "catch block",
+              "log error message",
+              "errorlog entry"
+            ],
+            [
+              "catch block",
+              "log error message",
               ""
             ]
           ],
@@ -2417,9 +2468,8 @@
               ""
             ]
           ],
-          "f1": null,
-          "matches": [],
-          "missing": [
+          "f1": 0.4,
+          "matches": [
             [
               "try block succeeds",
               "update account status and audit the change",
@@ -2431,37 +2481,38 @@
               ""
             ]
           ],
-          "precision": 0.0,
-          "recall": 0.0,
+          "missing": [],
+          "precision": 0.25,
+          "recall": 1.0,
           "unexpected": [
             [
-              "a request is made to change the status of a specific account.",
-              "update account status and audit the change",
-              "status"
-            ],
-            [
-              "a request is made to change the status of a specific account.",
+              "try block succeeds",
               "update account status and audit the change",
               ""
             ],
             [
-              "an account's status is changed.",
+              "try block succeeds",
               "update account status and audit the change",
-              "accountaudit record"
+              "updatedat"
             ],
             [
-              "an account's status is changed.",
+              "try block succeeds",
               "update account status and audit the change",
               ""
             ],
             [
-              "an error occurs while updating the account status or recording the audit entry.",
+              "try block succeeds",
               "update account status and audit the change",
-              "errorlog record"
+              "accountaudit entry"
             ],
             [
-              "an error occurs while updating the account status or recording the audit entry.",
+              "try block succeeds",
               "update account status and audit the change",
+              ""
+            ],
+            [
+              "catch block",
+              "log error message",
               ""
             ]
           ]
@@ -2476,21 +2527,15 @@
             "@accountid",
             "@newstatus",
             "account",
-            "accountaudit",
-            "accountaudit record",
-            "accountid",
+            "accountaudit entry",
+            "changedat",
             "createdat",
-            "errorlog",
-            "errorlog record",
+            "errorlog entry",
             "errormessage",
             "getdate",
-            "insert",
-            "into",
-            "set",
             "status",
-            "update",
-            "updatedat",
-            "where"
+            "status, accountid",
+            "updatedat"
           ],
           "expected": [
             "@accountid",
@@ -2499,7 +2544,7 @@
             "status",
             "updatedat"
           ],
-          "f1": 0.4347826086956522,
+          "f1": 0.5882352941176471,
           "matches": [
             "@accountid",
             "@newstatus",
@@ -2508,22 +2553,16 @@
             "updatedat"
           ],
           "missing": [],
-          "precision": 0.2777777777777778,
+          "precision": 0.4166666666666667,
           "recall": 1.0,
           "unexpected": [
             "account",
-            "accountaudit",
-            "accountaudit record",
-            "accountid",
+            "accountaudit entry",
+            "changedat",
             "createdat",
-            "errorlog",
-            "errorlog record",
+            "errorlog entry",
             "getdate",
-            "insert",
-            "into",
-            "set",
-            "update",
-            "where"
+            "status, accountid"
           ]
         },
         "object_type": {
@@ -2675,7 +2714,7 @@
       "notes": [
         "Expected output is marked for manual confirmation."
       ],
-      "status": "FAIL"
+      "status": "PASS"
     },
     {
       "actual_available": true,
@@ -2698,23 +2737,28 @@
         "business_rules": {
           "actual": [
             [
-              "source row matches target",
-              "updates the provisioning amount and the last updated timestamp for the account.",
+              "source row does not match target",
+              "update existing provision row",
               "provision_amount"
             ],
             [
-              "source row matches target",
-              "updates the provisioning amount and the last updated timestamp for the account.",
+              "source row does not match target",
+              "update existing provision row",
+              ""
+            ],
+            [
+              "source row does not match target",
+              "insert new provision row",
+              "provision_amount"
+            ],
+            [
+              "source row does not match target",
+              "insert new provision row",
               ""
             ],
             [
               "source row matches target",
-              "creates a new provisioning record with the account id, provisioning amount, and creation timestamp.",
-              "provision_amount"
-            ],
-            [
-              "source row matches target",
-              "creates a new provisioning record with the account id, provisioning amount, and creation timestamp.",
+              "update existing provision row",
               ""
             ]
           ],
@@ -2730,9 +2774,8 @@
               ""
             ]
           ],
-          "f1": null,
-          "matches": [],
-          "missing": [
+          "f1": 0.5714285714285715,
+          "matches": [
             [
               "source row matches target",
               "update existing provision row",
@@ -2744,27 +2787,23 @@
               ""
             ]
           ],
-          "precision": 0.0,
-          "recall": 0.0,
+          "missing": [],
+          "precision": 0.4,
+          "recall": 1.0,
           "unexpected": [
             [
-              "source row matches target",
-              "updates the provisioning amount and the last updated timestamp for the account.",
+              "source row does not match target",
+              "update existing provision row",
               "provision_amount"
             ],
             [
-              "source row matches target",
-              "updates the provisioning amount and the last updated timestamp for the account.",
+              "source row does not match target",
+              "update existing provision row",
               ""
             ],
             [
-              "source row matches target",
-              "creates a new provisioning record with the account id, provisioning amount, and creation timestamp.",
-              "provision_amount"
-            ],
-            [
-              "source row matches target",
-              "creates a new provisioning record with the account id, provisioning amount, and creation timestamp.",
+              "source row does not match target",
+              "insert new provision row",
               ""
             ]
           ]
@@ -2777,18 +2816,14 @@
         "important_fields": {
           "actual": [
             "account_id",
-            "createdat",
+            "created_at",
             "getdate",
-            "insert",
             "matched",
             "no",
             "not",
+            "npa_provision",
             "provision_amount",
-            "set",
-            "update",
-            "updatedat",
-            "values",
-            "when"
+            "updated_at"
           ],
           "expected": [
             "account_id",
@@ -2796,29 +2831,22 @@
             "provision_amount",
             "updated_at"
           ],
-          "f1": 0.23529411764705882,
+          "f1": 0.6153846153846153,
           "matches": [
             "account_id",
-            "provision_amount"
-          ],
-          "missing": [
             "created_at",
+            "provision_amount",
             "updated_at"
           ],
-          "precision": 0.15384615384615385,
-          "recall": 0.5,
+          "missing": [],
+          "precision": 0.4444444444444444,
+          "recall": 1.0,
           "unexpected": [
-            "createdat",
             "getdate",
-            "insert",
             "matched",
             "no",
             "not",
-            "set",
-            "update",
-            "updatedat",
-            "values",
-            "when"
+            "npa_provision"
           ]
         },
         "object_type": {
@@ -2913,7 +2941,7 @@
       "notes": [
         "Expected output is marked for manual confirmation."
       ],
-      "status": "FAIL"
+      "status": "PASS"
     },
     {
       "actual_available": true,
@@ -2932,48 +2960,73 @@
         "business_rules": {
           "actual": [
             [
-              "number of overdue days (dpd) for the account",
-              "set low risk band",
-              "riskband"
-            ],
-            [
-              "number of overdue days (dpd) for the account",
-              "set low risk band",
+              "else",
+              "set high risk band",
               ""
             ],
             [
-              "dpd is 30 days or less",
-              "Set LOW risk band",
-              "riskband"
-            ],
-            [
-              "dpd is 30 days or less",
-              "Set LOW risk band",
+              "dpddays <= 30",
+              "Set unchanged risk band",
               ""
             ],
             [
-              "dpd is greater than 30 days and up to 90 days",
-              "Set MEDIUM risk band",
-              "riskband"
-            ],
-            [
-              "dpd is greater than 30 days and up to 90 days",
-              "Set MEDIUM risk band",
+              "dpddays <= 90",
+              "Set unchanged risk band",
               ""
             ],
             [
-              "dpd is greater than 90 days",
-              "Set HIGH risk band",
-              "riskband"
-            ],
-            [
-              "dpd is greater than 90 days",
+              "else",
               "Set HIGH risk band",
               ""
             ],
             [
-              "an error occurs during the risk band update process",
+              "ELSE",
+              "Set HIGH risk band",
+              ""
+            ],
+            [
+              "DpdDays > 90",
+              "Set HIGH risk band",
+              ""
+            ],
+            [
+              "try block succeeds",
+              "set low risk band",
+              ""
+            ],
+            [
+              "dpddays <= 30",
+              "Set LOW risk band",
+              ""
+            ],
+            [
+              "dpddays <= 90",
+              "Set unchanged risk band",
+              ""
+            ],
+            [
+              "else",
+              "Set unchanged risk band",
+              ""
+            ],
+            [
+              "ELSE",
+              "Set unchanged risk band",
+              ""
+            ],
+            [
+              "try block succeeds",
               "log error message",
+              ""
+            ],
+            [
+              "dpddays <= 30",
+              "set low risk band",
+              ""
+            ],
+            [
+              "dpddays <= 90",
+              "set low risk band",
               ""
             ]
           ],
@@ -2994,17 +3047,11 @@
               ""
             ]
           ],
-          "f1": null,
-          "matches": [],
-          "missing": [
+          "f1": 0.23529411764705882,
+          "matches": [
             [
               "dpddays <= 30",
               "set low risk band",
-              ""
-            ],
-            [
-              "dpddays <= 90",
-              "set medium risk band",
               ""
             ],
             [
@@ -3013,52 +3060,74 @@
               ""
             ]
           ],
-          "precision": 0.0,
-          "recall": 0.0,
+          "missing": [
+            [
+              "dpddays <= 90",
+              "set medium risk band",
+              ""
+            ]
+          ],
+          "precision": 0.14285714285714285,
+          "recall": 0.6666666666666666,
           "unexpected": [
             [
-              "number of overdue days (dpd) for the account",
-              "set low risk band",
-              "riskband"
-            ],
-            [
-              "number of overdue days (dpd) for the account",
-              "set low risk band",
+              "dpddays <= 30",
+              "Set unchanged risk band",
               ""
             ],
             [
-              "dpd is 30 days or less",
-              "Set LOW risk band",
-              "riskband"
-            ],
-            [
-              "dpd is 30 days or less",
-              "Set LOW risk band",
+              "dpddays <= 90",
+              "Set unchanged risk band",
               ""
             ],
             [
-              "dpd is greater than 30 days and up to 90 days",
-              "Set MEDIUM risk band",
-              "riskband"
-            ],
-            [
-              "dpd is greater than 30 days and up to 90 days",
-              "Set MEDIUM risk band",
-              ""
-            ],
-            [
-              "dpd is greater than 90 days",
-              "Set HIGH risk band",
-              "riskband"
-            ],
-            [
-              "dpd is greater than 90 days",
+              "else",
               "Set HIGH risk band",
               ""
             ],
             [
-              "an error occurs during the risk band update process",
+              "ELSE",
+              "Set HIGH risk band",
+              ""
+            ],
+            [
+              "DpdDays > 90",
+              "Set HIGH risk band",
+              ""
+            ],
+            [
+              "try block succeeds",
+              "set low risk band",
+              ""
+            ],
+            [
+              "dpddays <= 30",
+              "Set LOW risk band",
+              ""
+            ],
+            [
+              "dpddays <= 90",
+              "Set unchanged risk band",
+              ""
+            ],
+            [
+              "else",
+              "Set unchanged risk band",
+              ""
+            ],
+            [
+              "ELSE",
+              "Set unchanged risk band",
+              ""
+            ],
+            [
+              "try block succeeds",
               "log error message",
+              ""
+            ],
+            [
+              "dpddays <= 90",
+              "set low risk band",
               ""
             ]
           ]
@@ -3071,48 +3140,40 @@
         "important_fields": {
           "actual": [
             "@accountid",
-            "accountid",
-            "block",
-            "catch",
+            "accountrisk",
+            "condition",
             "dpddays",
+            "else",
             "errormessage",
-            "exception",
-            "high",
-            "insert",
-            "into",
-            "low",
-            "medium",
-            "on",
+            "next",
             "riskband",
-            "riskerrors"
+            "riskerrors",
+            "see",
+            "unchanged"
           ],
           "expected": [
             "@accountid",
             "dpddays",
             "riskband"
           ],
-          "f1": 0.33333333333333337,
+          "f1": 0.42857142857142855,
           "matches": [
             "@accountid",
             "dpddays",
             "riskband"
           ],
           "missing": [],
-          "precision": 0.2,
+          "precision": 0.2727272727272727,
           "recall": 1.0,
           "unexpected": [
-            "accountid",
-            "block",
-            "catch",
+            "accountrisk",
+            "condition",
+            "else",
             "errormessage",
-            "exception",
-            "high",
-            "insert",
-            "into",
-            "low",
-            "medium",
-            "on",
-            "riskerrors"
+            "next",
+            "riskerrors",
+            "see",
+            "unchanged"
           ]
         },
         "object_type": {
@@ -3251,22 +3312,17 @@
           "actual": [
             [
               "dpddays > 90",
-              "sets the account's status to 'overdue'.",
-              "status"
-            ],
-            [
-              "dpddays > 90",
-              "sets the account's status to 'overdue'.",
+              "mark accounts overdue and audit the status change",
               ""
             ],
             [
               "dpddays > 90",
-              "mark accounts overdue and audit the status change",
-              "newstatus"
+              "update dbo.account set status = 'overdue'",
+              ""
             ],
             [
               "dpddays > 90",
-              "mark accounts overdue and audit the status change",
+              "accountid and 'overdue' are selected for insert into dbo.accountaudit",
               ""
             ]
           ],
@@ -3277,7 +3333,7 @@
               ""
             ]
           ],
-          "f1": 0.4,
+          "f1": 0.5,
           "matches": [
             [
               "dpddays > 90",
@@ -3286,22 +3342,17 @@
             ]
           ],
           "missing": [],
-          "precision": 0.25,
+          "precision": 0.3333333333333333,
           "recall": 1.0,
           "unexpected": [
             [
               "dpddays > 90",
-              "sets the account's status to 'overdue'.",
-              "status"
-            ],
-            [
-              "dpddays > 90",
-              "sets the account's status to 'overdue'.",
+              "update dbo.account set status = 'overdue'",
               ""
             ],
             [
               "dpddays > 90",
-              "mark accounts overdue and audit the status change",
+              "accountid and 'overdue' are selected for insert into dbo.accountaudit",
               ""
             ]
           ]
@@ -3314,26 +3365,20 @@
         "important_fields": {
           "actual": [
             "account",
-            "accountaudit",
             "accountid",
-            "and",
             "are",
             "dpddays",
             "for",
-            "insert",
-            "into",
             "overdue",
             "selected",
-            "set",
-            "status",
-            "update"
+            "status"
           ],
           "expected": [
             "accountid",
             "dpddays",
             "newstatus"
           ],
-          "f1": 0.23529411764705882,
+          "f1": 0.36363636363636365,
           "matches": [
             "accountid",
             "dpddays"
@@ -3341,21 +3386,15 @@
           "missing": [
             "newstatus"
           ],
-          "precision": 0.14285714285714285,
+          "precision": 0.25,
           "recall": 0.6666666666666666,
           "unexpected": [
             "account",
-            "accountaudit",
-            "and",
             "are",
             "for",
-            "insert",
-            "into",
             "overdue",
             "selected",
-            "set",
-            "status",
-            "update"
+            "status"
           ]
         },
         "object_type": {
@@ -3468,9 +3507,8 @@
         "ambiguities": {
           "actual": [
             "dynamic sql detected and cannot be fully statically resolved: sp_executesql @sql, n'@id int', @id = @accountid; end;...",
-            "the actual table and column being updated are determined at runtime and cannot be identified from the extraction, making it unclear which business field is affected.",
-            "the business meaning of the flagged indicator and the criteria for flagging are not defined in the extraction.",
-            "there is no information about what happens if the update fails or if the specified account does not exist in the target table."
+            "it is unclear whether the flagged status has a consistent business meaning across all possible target tables, or if the procedure could inadvertently affect unintended data.",
+            "the actual table and column being updated are determined by dynamic input and cannot be confirmed from the extraction, making the business effect dependent on how the procedure is invoked."
           ],
           "expected": [
             "dynamic sql cannot be statically resolved to a concrete table."
@@ -3484,9 +3522,8 @@
           "recall": 0.0,
           "unexpected": [
             "dynamic sql detected and cannot be fully statically resolved: sp_executesql @sql, n'@id int', @id = @accountid; end;...",
-            "the actual table and column being updated are determined at runtime and cannot be identified from the extraction, making it unclear which business field is affected.",
-            "the business meaning of the flagged indicator and the criteria for flagging are not defined in the extraction.",
-            "there is no information about what happens if the update fails or if the specified account does not exist in the target table."
+            "it is unclear whether the flagged status has a consistent business meaning across all possible target tables, or if the procedure could inadvertently affect unintended data.",
+            "the actual table and column being updated are determined by dynamic input and cannot be confirmed from the extraction, making the business effect dependent on how the procedure is invoked."
           ]
         },
         "business_rules": {
@@ -3494,7 +3531,7 @@
             [
               "dynamic sql is assembled at runtime",
               "flag for manual review instead of claiming a concrete table",
-              "flagged indicator (exact field and table not statically determined)"
+              "flagged, account_id"
             ],
             [
               "dynamic sql is assembled at runtime",
@@ -3835,10 +3872,10 @@
   "summary": {
     "case_count": 13,
     "changed_count": 0,
-    "fail_count": 9,
+    "fail_count": 6,
     "metrics": {},
     "overall_status": "FAIL",
-    "pass_count": 4,
+    "pass_count": 7,
     "skipped_count": 0
   }
 }

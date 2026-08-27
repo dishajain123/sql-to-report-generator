@@ -90,6 +90,7 @@ class ReportFormatterAgent:
         extraction_guardrail_warnings: Optional[List[str]] = None,
         run_metadata: Optional[RunMetadata] = None,
     ) -> str:
+        raw_business_rules = copy.deepcopy(list((synthesis.data or {}).get("business_rules") or []))
         run_metadata = run_metadata or getattr(ingestion, "run_metadata", None) or self._metadata_from_merged(
             merged_extraction
         )
@@ -97,6 +98,9 @@ class ReportFormatterAgent:
         merged_extraction = canonical_ir.to_legacy_merged_extraction(merged_extraction)
         synthesis = self._synthesis_view(synthesis, canonical_ir)
         rules: List[Dict[str, Any]] = [rule.to_dict() for rule in canonical_ir.business_rules]
+        business_rules_for_display = self._display_business_rules(
+            self._business_rules_for_display(raw_business_rules, rules)
+        )
 
         consolidated_reads = self._consolidate_rows(merged_extraction.get("tables_read", []) or [])
         consolidated_writes = self._consolidate_rows(merged_extraction.get("tables_written", []) or [])
@@ -104,23 +108,23 @@ class ReportFormatterAgent:
         sections = [
             self._title_block(ingestion, synthesis),
             self._run_metadata_section(ingestion, run_metadata),
-            self._at_a_glance(ingestion, synthesis, consolidated_reads, consolidated_writes, rules),
-            self._what_this_does(synthesis, rules),
+            self._at_a_glance(ingestion, synthesis, consolidated_reads, consolidated_writes, business_rules_for_display),
+            self._what_this_does(synthesis, business_rules_for_display),
             self._end_to_end_flow(synthesis),
-            self._eligibility_section(rules),
-            self._business_rules_section(rules),
-            self._decision_priority_section(synthesis, rules),
-            self._fallback_section(rules),
-            self._rollup_section(rules),
-            self._history_section(rules, consolidated_writes, consolidated_reads),
+            self._eligibility_section(business_rules_for_display),
+            self._business_rules_section(business_rules_for_display),
+            self._decision_priority_section(synthesis, business_rules_for_display),
+            self._fallback_section(business_rules_for_display),
+            self._rollup_section(business_rules_for_display),
+            self._history_section(business_rules_for_display, consolidated_writes, consolidated_reads),
             self._important_updates_section(consolidated_writes),
             self._technical_lineage_section(consolidated_reads, consolidated_writes),
-            self._important_fields_section(ingestion, rules),
-            self._business_rule_summary_table(rules),
+            self._important_fields_section(ingestion, business_rules_for_display),
+            self._business_rule_summary_table(business_rules_for_display),
             self._source_traceability_details(rules, merged_extraction),
             self._calculations(synthesis),
             self._exception_handling(synthesis),
-            self._validation_summary(rules, merged_extraction, synthesis),
+            self._validation_summary(business_rules_for_display, merged_extraction, synthesis),
             self._reconciliation_summary(merged_extraction, synthesis),
             self._quality_summary(merged_extraction, synthesis),
             self._ambiguities(ingestion, synthesis, extraction_guardrail_warnings or []),
@@ -180,6 +184,126 @@ class ReportFormatterAgent:
         view = copy.copy(synthesis)
         view.data = canonical_ir.to_legacy_synthesis_data(synthesis.data)
         return view
+
+    @staticmethod
+    def _business_rules_for_display(
+        raw_rules: List[Dict[str, Any]],
+        canonical_rules: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        raw_rules = [rule for rule in raw_rules if isinstance(rule, dict)]
+        canonical_rules = [rule for rule in canonical_rules if isinstance(rule, dict)]
+        if not raw_rules:
+            return canonical_rules
+        if len(raw_rules) > len(canonical_rules):
+            return raw_rules
+        raw_complexity = sum(
+            1 for rule in raw_rules if rule.get("decision_logic_rows") or rule.get("eligibility") or rule.get("condition")
+        )
+        canonical_complexity = sum(
+            1 for rule in canonical_rules if rule.get("decision_logic_rows") or rule.get("eligibility") or rule.get("condition")
+        )
+        if raw_complexity > canonical_complexity and len(raw_rules) >= len(canonical_rules):
+            return raw_rules
+        return canonical_rules
+
+    def _display_business_rules(self, rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        collapsed: List[Dict[str, Any]] = []
+        used_indices: set[int] = set()
+        for idx, rule in enumerate(rules):
+            if idx in used_indices:
+                continue
+            family_key = self._display_rule_family_key(rule)
+            if family_key == "reset_negative_dpd_zero":
+                group_indices = [
+                    other_idx
+                    for other_idx, other_rule in enumerate(rules)
+                    if other_idx not in used_indices
+                    and self._display_rule_family_key(other_rule) == family_key
+                ]
+                if len(group_indices) > 1:
+                    collapsed.append(self._merge_negative_dpd_reset_rules([rules[i] for i in group_indices]))
+                    used_indices.update(group_indices)
+                    continue
+            collapsed.append(dict(rule))
+            used_indices.add(idx)
+        return collapsed
+
+    @staticmethod
+    def _display_rule_family_key(rule: Dict[str, Any]) -> str:
+        blob = " ".join(
+            [
+                str(rule.get("rule_name") or ""),
+                str(rule.get("action") or ""),
+                str(rule.get("business_meaning") or ""),
+                str(rule.get("output_field") or ""),
+                " ".join(str(field) for field in rule.get("fields_affected") or []),
+            ]
+        ).lower()
+        blob = re.sub(r"dpd[_ ]?[a-z0-9]+", "dpd_field", blob)
+        blob = re.sub(r"\s+", " ", blob).strip()
+        if "reset" in blob and "zero" in blob and "dpd_field" in blob:
+            return "reset_negative_dpd_zero"
+        return blob
+
+    @staticmethod
+    def _merge_negative_dpd_reset_rules(rules: List[Dict[str, Any]]) -> Dict[str, Any]:
+        merged = dict(rules[0]) if rules else {}
+
+        def _append_unique(container: List[str], values: List[str]) -> None:
+            for value in values:
+                text = str(value or "").strip()
+                if text and text not in container:
+                    container.append(text)
+
+        def _extract_dpd_field(text: str) -> str:
+            match = re.search(r"(?i)\b(DPD(?:[_ ]?[A-Za-z0-9]+)?)\b", text or "")
+            return match.group(1).replace(" ", "_") if match else ""
+
+        field_order: List[str] = []
+        eligibility_order: List[str] = []
+        source_evidence: List[str] = []
+        source_chunks: List[str] = []
+        source_statements: List[str] = []
+
+        for rule in rules:
+            _append_unique(field_order, [field for field in (rule.get("fields_affected") or []) if str(field).strip()])
+            _append_unique(eligibility_order, [cond for cond in (rule.get("eligibility") or []) if str(cond).strip()])
+            _append_unique(source_evidence, [item for item in (rule.get("source_evidence") or []) if str(item).strip()])
+            _append_unique(source_chunks, [item for item in (rule.get("source_chunks") or []) if str(item).strip()])
+            _append_unique(source_statements, [item for item in (rule.get("source_statements") or []) if str(item).strip()])
+            for value in (rule.get("rule_name"), rule.get("condition"), rule.get("action")):
+                field = _extract_dpd_field(str(value or ""))
+                if field and field not in field_order:
+                    field_order.append(field)
+
+        merged["rule_name"] = "Reset negative DPD values to zero"
+        merged["business_meaning"] = (
+            "Any negative Days Past Due values are reset to zero to prevent invalid overdue calculations."
+        )
+        merged["output_field"] = ""
+        merged["fields_affected"] = field_order
+        summary_condition = ""
+        if field_order:
+            if len(field_order) == 1:
+                summary_condition = f"{field_order[0]} is less than zero"
+            else:
+                summary_condition = ", ".join(field_order[:-1]) + f", or {field_order[-1]} is less than zero"
+        merged["eligibility"] = [summary_condition] if summary_condition else eligibility_order or [
+            "DPD_IntService, DPD_NoCredit, DPD_Overdrawn, DPD_Overdue, DPD_Renewal, or DPD_StockStmt is less than zero"
+        ]
+        merged["condition"] = summary_condition or "DPD_IntService, DPD_NoCredit, DPD_Overdrawn, DPD_Overdue, DPD_Renewal, or DPD_StockStmt is less than zero"
+        merged["action"] = merged["business_meaning"]
+        merged["decision_logic_rows"] = [
+            {
+                "condition": merged["condition"],
+                "outcome": merged["business_meaning"],
+            }
+        ]
+        merged["source_evidence"] = source_evidence
+        merged["source_chunks"] = source_chunks
+        if source_statements:
+            merged["source_statements"] = source_statements
+        return merged
 
     def _run_metadata_section(self, ingestion: IngestionResult, run_metadata: Optional[RunMetadata]) -> str:
         data = run_metadata_to_dict(run_metadata)
@@ -401,9 +525,6 @@ class ReportFormatterAgent:
 
     def _render_business_rule_block(self, idx: int, rule: Dict[str, Any]) -> List[str]:
         rule_name = self._business_rule_name(rule, idx)
-        rule_id = str(rule.get("rule_id") or f"rule_{idx:02d}").strip()
-        status = str(rule.get("validation_status") or "unverified").strip().lower()
-        title_suffix = " [Needs Review]" if status != "verified" else ""
         output_field = self._business_rule_output(rule)
         business_meaning = self._business_rule_business_meaning(rule)
         eligibility = self._rule_text_lines(rule.get("eligibility") or rule.get("condition"))
@@ -412,14 +533,7 @@ class ReportFormatterAgent:
         default_value = self._rule_text_lines(rule.get("default"))
         when_not_eligible = self._rule_text_lines(rule.get("when_not_eligible"))
 
-        lines = [f"## Rule: {rule_name}{title_suffix}", "", f"**Rule ID:** `{rule_id}`"]
-        reconciliation_status = str(rule.get("reconciliation_status") or "").strip().upper()
-        if reconciliation_status:
-            lines.append(f"**Reconciliation status:** `{reconciliation_status}`")
-        evidence_spans = rule.get("evidence_spans") or []
-        source_location = self._format_evidence_spans(evidence_spans)
-        if source_location:
-            lines.append(f"**Source:** {source_location}")
+        lines = [f"## Rule: {rule_name}", ""]
         if output_field != "Not specified":
             lines.append(f"**Applies to:** `{output_field}`")
         lines.append(f"**Business meaning:** {business_meaning}")
@@ -1331,7 +1445,22 @@ class ReportFormatterAgent:
 
     @staticmethod
     def _business_rule_name(rule: Dict[str, Any], idx: int) -> str:
-        name = str(rule.get("rule_name") or rule.get("action") or rule.get("condition") or f"Rule {idx}").strip()
+        explicit = str(rule.get("rule_name") or "").strip()
+        condition = str(rule.get("condition") or "").strip()
+        action = str(rule.get("action") or "").strip()
+        if explicit:
+            if condition and re.search(r"[<>=]|\bbetween\b|\belse\b", condition, re.IGNORECASE):
+                if re.search(r"\bladder\b|\bclassification\b|\bbucket\b|\brisk\b", explicit, re.IGNORECASE):
+                    return condition
+            return explicit
+        if condition:
+            if not action:
+                return condition
+            if re.search(r"[<>=]|\bbetween\b|\belse\b", condition, re.IGNORECASE):
+                return condition
+            if len(condition) <= len(action):
+                return condition
+        name = action or condition or f"Rule {idx}"
         return name or f"Rule {idx}"
 
     @staticmethod
@@ -1348,7 +1477,71 @@ class ReportFormatterAgent:
     def _business_rule_business_meaning(rule: Dict[str, Any]) -> str:
         meaning = rule.get("business_meaning") or rule.get("action") or rule.get("condition")
         text = str(meaning or "").strip()
-        return text if text else "Not specified"
+        if text and ReportFormatterAgent._meaning_matches_rule_name(rule, text):
+            return text
+        derived = ReportFormatterAgent._meaning_from_rule_name(rule)
+        return derived or text or "Not specified"
+
+    @staticmethod
+    def _meaning_matches_rule_name(rule: Dict[str, Any], meaning: str) -> bool:
+        name = str(rule.get("rule_name") or "").strip().lower()
+        if not name or not meaning:
+            return False
+
+        stopwords = {
+            "the", "a", "an", "to", "of", "and", "or", "for", "if", "when", "by", "from",
+            "all", "any", "each", "this", "that", "is", "are", "be", "as", "with", "on",
+            "into", "in", "out", "based", "rule", "account", "accounts", "field", "fields",
+        }
+
+        def _tokens(text: str) -> set[str]:
+            return {
+                token
+                for token in re.findall(r"[A-Za-z0-9_]+", text.lower())
+                if token not in stopwords and not token.isdigit()
+            }
+
+        name_tokens = _tokens(name)
+        meaning_tokens = _tokens(str(meaning))
+        if not name_tokens or not meaning_tokens:
+            return False
+        overlap = name_tokens & meaning_tokens
+        return len(overlap) >= max(1, min(2, len(name_tokens) // 2))
+
+    @staticmethod
+    def _meaning_from_rule_name(rule: Dict[str, Any]) -> str:
+        name = str(rule.get("rule_name") or rule.get("action") or rule.get("condition") or "").strip()
+        if not name:
+            return ""
+        patterns = [
+            (r"(?i)^reset\s+(?P<body>.+?)\s+to\s+(?P<value>.+)$", "{body} are reset to {value}."),
+            (r"(?i)^calculate\s+(?P<body>.+)$", "The {body} is calculated."),
+            (r"(?i)^clear\s+(?P<body>.+)$", "Previous {body} is cleared."),
+            (r"(?i)^assign\s+(?P<body>.+)$", "The {body} is assigned."),
+            (r"(?i)^set\s+(?P<body>.+)$", "The {body} is set."),
+            (r"(?i)^flag\s+(?P<body>.+)$", "The {body} is flagged."),
+            (r"(?i)^update\s+(?P<body>.+)$", "The {body} is updated."),
+            (r"(?i)^default\s+(?P<body>.+)$", "The {body} is defaulted."),
+            (r"(?i)^show\s+(?P<body>.+)$", "The result set shows {body}."),
+            (r"(?i)^keep\s+(?P<body>.+)$", "The result set keeps {body}."),
+            (r"(?i)^include\s+(?P<body>.+)$", "The result set includes only {body}."),
+            (r"(?i)^process\s+(?P<body>.+)$", "The process handles {body}."),
+        ]
+        for pattern, template in patterns:
+            match = re.match(pattern, name)
+            if match:
+                body = match.groupdict().get("body", "").strip()
+                value = match.groupdict().get("value", "").strip()
+                if pattern.lower().startswith("(?i)^calculate") and body.lower().endswith(" for account"):
+                    body = body[: -len(" for account")].strip()
+                    if body:
+                        return f"The {body} is calculated for the account."
+                if value and body:
+                    return template.format(body=body, value=value).strip()
+                if body:
+                    return template.format(body=body).strip()
+        cleaned = name[:1].upper() + name[1:]
+        return cleaned if cleaned.endswith(".") else cleaned + "."
 
     @staticmethod
     def _rule_text_lines(value: Any) -> List[str]:
@@ -1387,7 +1580,7 @@ class ReportFormatterAgent:
                         "outcome": outcome or "Not specified",
                     }
                 )
-        return normalized if len(normalized) >= 2 else []
+        return normalized
 
     def _decision_logic_block(self, rows: List[Dict[str, str]]) -> List[str]:
         lines = ["| Condition | Outcome |", "|---|---|"]

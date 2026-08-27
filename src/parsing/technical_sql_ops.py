@@ -21,6 +21,29 @@ from src.ingestion.ingestion import CodeChunk, CodeIngestionAgent
 from src.parsing.statement_boundaries import split_top_level_statement_spans, split_top_level_statements
 
 
+# `split_top_level_statement_spans` is a general-purpose boundary detector
+# shared with the LLM-chunking path: it deliberately gives *every* line of
+# source text somewhere to live, including pure procedural wrapper text
+# that carries no SQL of its own (`IF ...`, `BEGIN`, `BEGIN TRY`/`END TRY`,
+# `BEGIN CATCH`/`END CATCH`, `EXCEPTION`, `EXEC ...`, PL/SQL `:=`
+# assignments, bare `DECLARE`/cursor headers, ...). Those wrapper spans
+# were never valid standalone SQL, so handing them to
+# `sqlglot.parse_one()` here can only ever do one of two things: silently
+# succeed as a meaningless `Command`/misc node (contributing zero real
+# table operations, since there's no table reference in them to extract)
+# or trigger sqlglot's "unsupported syntax ... falling back to parsing as
+# a 'Command'" warning. Either way nothing downstream is gained, and the
+# warning is pure noise. `_PARSEABLE_SPAN_RE` restricts the sqlglot call
+# to spans that actually start with a real top-level SQL keyword, so
+# control-flow-only fragments are skipped up front - no parse attempt, no
+# warning - while every genuine embedded SQL statement (regardless of
+# which Oracle/T-SQL procedural construct surrounds it) still gets
+# structurally parsed exactly as before.
+_PARSEABLE_SPAN_RE = re.compile(
+    r"(?i)^(WITH|SELECT|INSERT|UPDATE|DELETE|MERGE|TRUNCATE|SET)\b"
+)
+
+
 _TABLE_REF_PATTERN = r"(?:\[(?:[^\]]|\]\])+\]|[#A-Za-z_][\w$#]*)(?:\s*\.\s*(?:\[(?:[^\]]|\]\])+\]|[#A-Za-z_][\w$#]*))*"
 _TABLE_ALIAS_STOPWORDS = {
     "WHERE",
@@ -136,6 +159,36 @@ def extract_table_operations_from_chunks(
                 )
 
                 parse_source = _strip_sql_comments(statement_text)
+                if not _PARSEABLE_SPAN_RE.match(parse_source.lstrip()):
+                    # Procedural wrapper text (IF/BEGIN/BEGIN TRY/END TRY/
+                    # BEGIN CATCH/END CATCH/EXCEPTION/EXEC/PL-SQL `:=`
+                    # assignments/bare DECLARE-cursor headers/...) never
+                    # contains a standalone SQL statement of its own - any
+                    # embedded SELECT/INSERT/UPDATE/DELETE/MERGE inside it
+                    # already got its own span above. Skip sqlglot for it
+                    # entirely (no meaningful table operation to extract,
+                    # and no benefit to the spurious "unsupported syntax"
+                    # warning it would otherwise produce); still run the
+                    # cheap regex fallback as a safety net in case a table
+                    # reference is present in a shape the span detector
+                    # didn't carve out on its own.
+                    statement_prov.parse_status = "skipped_non_sql"
+                    fallback_ops = _regex_fallback_table_operations(
+                        statement_text=statement_text,
+                        statement_id=statement_id,
+                        chunk=chunk,
+                        dialect=sqlglot_dialect,
+                    )
+                    statement_prov.operation_count = len(fallback_ops)
+                    for candidate in fallback_ops:
+                        key = _operation_dedupe_key(candidate)
+                        if key in seen_operation_keys:
+                            continue
+                        seen_operation_keys.add(key)
+                        operations.append(candidate)
+                    provenance.append(statement_prov.__dict__)
+                    continue
+
                 try:
                     tree = sqlglot.parse_one(parse_source, read=sqlglot_dialect)
                 except Exception as exc:
@@ -271,6 +324,17 @@ def _strip_sql_comments(text: str) -> str:
     return stripped
 
 
+def _select_has_update_lock(tree: exp.Expression) -> bool:
+    """True when a SELECT carries a row-locking clause (Oracle `FOR
+    UPDATE`; sqlglot's generic `Lock(update=True)` node also covers
+    dialect equivalents), independent of which table/columns are locked.
+    """
+    for lock in tree.args.get("locks") or []:
+        if isinstance(lock, exp.Lock) and lock.args.get("update"):
+            return True
+    return False
+
+
 def _extract_table_ops_from_tree(
     tree: exp.Expression,
     statement_text: str,
@@ -309,6 +373,34 @@ def _extract_table_ops_from_tree(
                     table_occurrence=occurrence_index,
                 )
             )
+        # `SELECT ... FOR UPDATE` (Oracle) / `SELECT ... WITH (UPDLOCK)`
+        # style row-locking reads are read-and-lock, not read-only: the
+        # locked rows are held for a subsequent write, so any table
+        # referenced by a locking SELECT is write-intent evidence too,
+        # independent of what specific columns/tables are involved.
+        # sqlglot represents this generically as a `Lock` node with
+        # `update=True` on the SELECT, regardless of dialect.
+        if _select_has_update_lock(tree):
+            for occurrence_index, table in enumerate(table_nodes, start=1):
+                operations.append(
+                    _build_operation_record(
+                        operation="LOCK",
+                        table=table,
+                        target_columns=[],
+                        source_columns=all_columns,
+                        where_predicate=where_predicate,
+                        having_predicate=having_predicate,
+                        join_predicates=join_predicates,
+                        exists_predicates=exists_predicates,
+                        constants=constants,
+                        statement_kind=statement_kind,
+                        statement_text=statement_text,
+                        statement_id=statement_id,
+                        chunk=chunk,
+                        dialect=dialect,
+                        table_occurrence=occurrence_index,
+                    )
+                )
         return operations
 
     if isinstance(tree, exp.Insert):

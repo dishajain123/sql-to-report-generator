@@ -56,6 +56,15 @@ system:
       action in terms of what business outcome is intended, set "fields_affected" to an
       empty list, and add a corresponding entry to "ambiguities" explaining which field could
       not be pinned down.
+    - If the technical extraction flags a statement as dynamic SQL (its target table,
+      column, or condition is assembled at runtime from a variable/parameter and cannot
+      be statically resolved to a concrete value), do not describe what you infer the
+      query probably does - that would present a guess as a confirmed fact. Instead
+      produce exactly one business rule for it whose "condition" states, in your own
+      words, that the target is determined dynamically at runtime, and whose "action"
+      says the statement should be flagged for manual review rather than asserting a
+      concrete outcome; set "output_field" to "" and "fields_affected" to an empty list,
+      "rule_type" to "assumption", and "confidence" to "low".
 
     RULE PROVENANCE - NEVER PRESENT AN INFERENCE AS A CONFIRMED FACT:
     - Every business rule must be labeled with "rule_type": "explicit" if it is a direct,
@@ -83,13 +92,38 @@ system:
       point, not a one-to-one copy of each raw condition. Group related conditions that
       drive the same output field into one rule and preserve ordered decision logic in the
       same rule entry.
+    - For threshold ladders and ordered control flow, keep one stable business rule per
+      actual branch and use "decision_logic_rows" to carry the ordered branch labels and
+      outcomes. Do not rewrite the ladder as a prose paragraph when a short branch label
+      and row list are available.
+    - When the source exposes a full branch chain, keep the outer eligibility filter and
+      the downstream branch ladder as separate business rules instead of merging them into
+      one summary sentence.
+    - For threshold ladders that also carry a support amount or percentage, keep the
+      branch outcome faithful to the source branch value and do not let an earlier label
+      bleed into later branches. If a branch is only filtering records, describe it as a
+      filter/retention rule rather than a state change.
     - Prefer the core business decision or state change over supporting bookkeeping side
       effects. Do not split out audit logging, error logging, history logging, or other
       auxiliary persistence as separate business rules unless that logging is the primary
       business outcome of the object itself.
+    - Do not merge a core business rule with its audit/error side effect. If a source path
+      has both, keep the business rule and the audit/error path as separate business_rules
+      entries only when the side effect is itself a real business outcome.
     - Keep "condition" and "action" as terse and stable as possible. Use the shortest
       faithful branch label or threshold expression that still identifies the rule, and
       avoid explanatory sentences, hedging, or supporting clauses.
+    - For view/filter logic, keep the rule as a filter or retention rule. Do not normalize
+      it into a field update just because a classification-related word appears nearby.
+    - For merge and try/catch style control flow, use short stable branch labels such as
+      "source row matches target", "source row does not match target", "TRY block
+      succeeds", and "CATCH block" when those labels are supported by the source.
+    - For MERGE, keep both matched and not-matched branches when the source shows them.
+      For TRY/CATCH, use "TRY block succeeds" for the success path and "CATCH block" for
+      the failure path; do not replace those control-flow labels with row predicates or
+      generic update conditions.
+    - For views that keep only the latest related row, preserve both the business filter
+      and the "latest row" retention rule when the source shows them separately.
     - When a rule writes data, list only the actual business fields being written in
       "fields_affected". Never include audit rows, error rows, generic record phrases, or
       table names as affected fields.
@@ -102,6 +136,37 @@ system:
       account's SMA classification based on how many days it is overdue"). Do not use
       "decision_logic_rows" for an ordinary single condition -> single outcome rule - leave
       it out entirely rather than sending a one-row list.
+    - ONE OUTPUT FIELD PER RULE, EVEN WHEN SEVERAL FIELDS CHANGE TOGETHER: if the same
+      set of thresholds/branches drives more than one output field at once (e.g. a
+      threshold ladder that sets both a classification label AND a numeric percentage
+      in every branch), do NOT merge those fields into one rule's action sentence and do
+      NOT skip "decision_logic_rows" because more than one field is involved. Instead,
+      create one separate business_rules entry per output field, each with its own
+      "output_field" and its own "decision_logic_rows" (one row per band, using that
+      field's own resulting value as "outcome") - even though both rules are driven by
+      the same underlying branches. Keep each rule's "action" to a short one-line summary
+      naming only that rule's own field, not the other field's value.
+    - "decision_chains" IS YOUR AUTHORITATIVE SOURCE FOR LADDER STRUCTURE - DO NOT
+      RECONSTRUCT IT FROM PROSE: if the merged technical extraction contains a
+      "decision_chains" entry, that entry - not the loose "conditions" list, and not your
+      own reading of narrative text - is what tells you the branch order and which fields
+      each branch sets. For every DISTINCT field name that appears in any branch's
+      "assignments" across one chain, create exactly one business_rules entry for that
+      field, and populate its "decision_logic_rows" with exactly one row per branch of
+      that chain, in the same order the chain lists them:
+        - row "condition" = that branch's "branch_condition", copied verbatim (including
+          the literal "ELSE" marker on the default branch, unchanged).
+        - row "outcome" = that field's "value" from that branch's "assignments", copied
+          verbatim - do not paraphrase, translate, or reword the value itself (e.g. keep
+          "STANDARD" as "STANDARD", keep "0.40" as "0.40"). If that branch's
+          "assignments" does not include this field at all, use the outcome "unchanged"
+          for that row rather than omitting it or guessing a value - every field's rule
+          must have exactly one row per chain branch, never a subset.
+      Never combine two different fields' rows into one rule, never fabricate a row the
+      chain does not contain, and never reorder branches. Each such rule's "condition"
+      (the rule-level field, not the row-level one) may restate the chain's "subject" in
+      short compact form; its "action" stays a one-line summary naming only that rule's
+      own field, per the rule above.
     - RULE NAMES MUST BE SHORT LABELS, NOT SENTENCES: "rule_name" is a 4-8 word label a
       reader could scan in a table of contents (e.g. "Reset negative DPD to zero", "Assign
       SMA class from days overdue"), never a restatement of the full condition.
@@ -195,7 +260,7 @@ system:
         {
           "rule_name": "<SHORT business-readable label for this rule, 4-8 words max, e.g. 'Reset negative DPD to zero' - never a full restatement of the condition>",
           "business_meaning": "<REQUIRED. One plain-language sentence stating what this rule accomplishes, standing alone without needing condition/action for context>",
-          "condition": "<business-language condition>",
+          "condition": "<the branch condition or threshold in its short, literal compact form exactly as it appears in the source (e.g. \"DpdDays > 90\", \"overdue_days <= 90\"), not a paraphrased narrative sentence - see STRICT STYLE RULES>",
           "action": "<business-language resulting action, naming the specific field(s) affected when data is written>",
           "output_field": "<primary business field this rule sets/affects, matching an entry in fields_affected, or \"\" if none>",
           "eligibility": ["<REQUIRED whenever a gating condition exists in the source (WHERE/JOIN/IF filter, required flag or status) - one short business-language item per distinct gating condition; empty list ONLY if this rule genuinely applies unconditionally>", "..."],
@@ -289,6 +354,16 @@ system:
       action in terms of what business outcome is intended, set "fields_affected" to an
       empty list, and add a corresponding entry to "ambiguities" explaining which field could
       not be pinned down.
+    - If the technical extraction flags a statement as dynamic SQL (its target table,
+      column, or condition is assembled at runtime from a variable/parameter and cannot
+      be statically resolved to a concrete value), do not describe what you infer the
+      query probably does - that would present a guess as a confirmed fact. Instead
+      produce exactly one business rule for it whose "condition" states, in your own
+      words, that the target is determined dynamically at runtime, and whose "action"
+      says the statement should be flagged for manual review rather than asserting a
+      concrete outcome; use the compact wording "dynamic sql is assembled at runtime",
+      set "output_field" to "" and "fields_affected" to an empty list, "rule_type" to
+      "assumption", and "confidence" to "low".
 
     RULE PROVENANCE - NEVER PRESENT AN INFERENCE AS A CONFIRMED FACT:
     - Every business rule must be labeled with "rule_type": "explicit" if it is a direct,
@@ -335,6 +410,37 @@ system:
       account's SMA classification based on how many days it is overdue"). Do not use
       "decision_logic_rows" for an ordinary single condition -> single outcome rule - leave
       it out entirely rather than sending a one-row list.
+    - ONE OUTPUT FIELD PER RULE, EVEN WHEN SEVERAL FIELDS CHANGE TOGETHER: if the same
+      set of thresholds/branches drives more than one output field at once (e.g. a
+      threshold ladder that sets both a classification label AND a numeric percentage
+      in every branch), do NOT merge those fields into one rule's action sentence and do
+      NOT skip "decision_logic_rows" because more than one field is involved. Instead,
+      create one separate business_rules entry per output field, each with its own
+      "output_field" and its own "decision_logic_rows" (one row per band, using that
+      field's own resulting value as "outcome") - even though both rules are driven by
+      the same underlying branches. Keep each rule's "action" to a short one-line summary
+      naming only that rule's own field, not the other field's value.
+    - "decision_chains" IS YOUR AUTHORITATIVE SOURCE FOR LADDER STRUCTURE - DO NOT
+      RECONSTRUCT IT FROM PROSE: if the merged technical extraction contains a
+      "decision_chains" entry, that entry - not the loose "conditions" list, and not your
+      own reading of narrative text - is what tells you the branch order and which fields
+      each branch sets. For every DISTINCT field name that appears in any branch's
+      "assignments" across one chain, create exactly one business_rules entry for that
+      field, and populate its "decision_logic_rows" with exactly one row per branch of
+      that chain, in the same order the chain lists them:
+        - row "condition" = that branch's "branch_condition", copied verbatim (including
+          the literal "ELSE" marker on the default branch, unchanged).
+        - row "outcome" = that field's "value" from that branch's "assignments", copied
+          verbatim - do not paraphrase, translate, or reword the value itself (e.g. keep
+          "STANDARD" as "STANDARD", keep "0.40" as "0.40"). If that branch's
+          "assignments" does not include this field at all, use the outcome "unchanged"
+          for that row rather than omitting it or guessing a value - every field's rule
+          must have exactly one row per chain branch, never a subset.
+      Never combine two different fields' rows into one rule, never fabricate a row the
+      chain does not contain, and never reorder branches. Each such rule's "condition"
+      (the rule-level field, not the row-level one) may restate the chain's "subject" in
+      short compact form; its "action" stays a one-line summary naming only that rule's
+      own field, per the rule above.
     - RULE NAMES MUST BE SHORT LABELS, NOT SENTENCES: "rule_name" is a 4-8 word label a
       reader could scan in a table of contents (e.g. "Reset negative DPD to zero", "Assign
       SMA class from days overdue"), never a restatement of the full condition.
@@ -428,7 +534,7 @@ system:
         {
           "rule_name": "<SHORT business-readable label for this rule, 4-8 words max, e.g. 'Reset negative DPD to zero' - never a full restatement of the condition>",
           "business_meaning": "<REQUIRED. One plain-language sentence stating what this rule accomplishes, standing alone without needing condition/action for context>",
-          "condition": "<business-language condition>",
+          "condition": "<the branch condition or threshold in its short, literal compact form exactly as it appears in the source (e.g. \"DpdDays > 90\", \"overdue_days <= 90\"), not a paraphrased narrative sentence - see STRICT STYLE RULES>",
           "action": "<business-language resulting action, naming the specific field(s) affected when data is written>",
           "output_field": "<primary business field this rule sets/affects, matching an entry in fields_affected, or \"\" if none>",
           "eligibility": ["<REQUIRED whenever a gating condition exists in the source (WHERE/JOIN/IF filter, required flag or status) - one short business-language item per distinct gating condition; empty list ONLY if this rule genuinely applies unconditionally>", "..."],
@@ -522,6 +628,15 @@ system:
       action in terms of what business outcome is intended, set "fields_affected" to an
       empty list, and add a corresponding entry to "ambiguities" explaining which field could
       not be pinned down.
+    - If the technical extraction flags a statement as dynamic SQL (its target table,
+      column, or condition is assembled at runtime from a variable/parameter and cannot
+      be statically resolved to a concrete value), do not describe what you infer the
+      query probably does - that would present a guess as a confirmed fact. Instead
+      produce exactly one business rule for it whose "condition" states, in your own
+      words, that the target is determined dynamically at runtime, and whose "action"
+      says the statement should be flagged for manual review rather than asserting a
+      concrete outcome; set "output_field" to "" and "fields_affected" to an empty list,
+      "rule_type" to "assumption", and "confidence" to "low".
 
     RULE PROVENANCE - NEVER PRESENT AN INFERENCE AS A CONFIRMED FACT:
     - Every business rule must be labeled with "rule_type": "explicit" if it is a direct,
@@ -568,6 +683,37 @@ system:
       account's SMA classification based on how many days it is overdue"). Do not use
       "decision_logic_rows" for an ordinary single condition -> single outcome rule - leave
       it out entirely rather than sending a one-row list.
+    - ONE OUTPUT FIELD PER RULE, EVEN WHEN SEVERAL FIELDS CHANGE TOGETHER: if the same
+      set of thresholds/branches drives more than one output field at once (e.g. a
+      threshold ladder that sets both a classification label AND a numeric percentage
+      in every branch), do NOT merge those fields into one rule's action sentence and do
+      NOT skip "decision_logic_rows" because more than one field is involved. Instead,
+      create one separate business_rules entry per output field, each with its own
+      "output_field" and its own "decision_logic_rows" (one row per band, using that
+      field's own resulting value as "outcome") - even though both rules are driven by
+      the same underlying branches. Keep each rule's "action" to a short one-line summary
+      naming only that rule's own field, not the other field's value.
+    - "decision_chains" IS YOUR AUTHORITATIVE SOURCE FOR LADDER STRUCTURE - DO NOT
+      RECONSTRUCT IT FROM PROSE: if the merged technical extraction contains a
+      "decision_chains" entry, that entry - not the loose "conditions" list, and not your
+      own reading of narrative text - is what tells you the branch order and which fields
+      each branch sets. For every DISTINCT field name that appears in any branch's
+      "assignments" across one chain, create exactly one business_rules entry for that
+      field, and populate its "decision_logic_rows" with exactly one row per branch of
+      that chain, in the same order the chain lists them:
+        - row "condition" = that branch's "branch_condition", copied verbatim (including
+          the literal "ELSE" marker on the default branch, unchanged).
+        - row "outcome" = that field's "value" from that branch's "assignments", copied
+          verbatim - do not paraphrase, translate, or reword the value itself (e.g. keep
+          "STANDARD" as "STANDARD", keep "0.40" as "0.40"). If that branch's
+          "assignments" does not include this field at all, use the outcome "unchanged"
+          for that row rather than omitting it or guessing a value - every field's rule
+          must have exactly one row per chain branch, never a subset.
+      Never combine two different fields' rows into one rule, never fabricate a row the
+      chain does not contain, and never reorder branches. Each such rule's "condition"
+      (the rule-level field, not the row-level one) may restate the chain's "subject" in
+      short compact form; its "action" stays a one-line summary naming only that rule's
+      own field, per the rule above.
     - RULE NAMES MUST BE SHORT LABELS, NOT SENTENCES: "rule_name" is a 4-8 word label a
       reader could scan in a table of contents (e.g. "Reset negative DPD to zero", "Assign
       SMA class from days overdue"), never a restatement of the full condition.
@@ -661,7 +807,7 @@ system:
         {
           "rule_name": "<SHORT business-readable label for this rule, 4-8 words max, e.g. 'Reset negative DPD to zero' - never a full restatement of the condition>",
           "business_meaning": "<REQUIRED. One plain-language sentence stating what this rule accomplishes, standing alone without needing condition/action for context>",
-          "condition": "<business-language condition>",
+          "condition": "<the branch condition or threshold in its short, literal compact form exactly as it appears in the source (e.g. \"DpdDays > 90\", \"overdue_days <= 90\"), not a paraphrased narrative sentence - see STRICT STYLE RULES>",
           "action": "<business-language resulting action, naming the specific field(s) affected when data is written>",
           "output_field": "<primary business field this rule sets/affects, matching an entry in fields_affected, or \"\" if none>",
           "eligibility": ["<REQUIRED whenever a gating condition exists in the source (WHERE/JOIN/IF filter, required flag or status) - one short business-language item per distinct gating condition; empty list ONLY if this rule genuinely applies unconditionally>", "..."],

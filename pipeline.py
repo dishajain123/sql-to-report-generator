@@ -50,7 +50,8 @@ from src.core.pipeline_utils import PIPELINE_VERSION, RunMetadata, build_run_met
 
 logger = logging.getLogger("logic_rules_extractor.pipeline")
 
-DEFAULT_TEMPERATURE = 0.1  # low temperature: this is an extraction task, not creative writing
+DEFAULT_TEMPERATURE = 0.0  # deterministic extraction task
+DEFAULT_SEED = 0
 
 # Stage 4 (embedded SQL / per-chunk technical extraction) is the slowest
 # stage because it makes one LLM call per chunk. Chunks are independent, so
@@ -84,6 +85,7 @@ class LogicRulesExtractorPipeline:
         self,
         llm_config: Optional[LLMConfig] = None,
         temperature: float = DEFAULT_TEMPERATURE,
+        seed: Optional[int] = DEFAULT_SEED,
         persist_directory: str = "chroma_store",
         knowledge_base_dir: str = "knowledge_base",
         max_chunk_chars: int = 6000,
@@ -96,6 +98,7 @@ class LogicRulesExtractorPipeline:
         self.retrieval_k = retrieval_k
         self.chunk_workers = self._resolve_chunk_workers(chunk_workers)
         self.dialect = dialect
+        self.seed = seed
         self.project_root = Path(__file__).resolve().parent
         self.pipeline_version = PIPELINE_VERSION
         self.provider = self.llm_config.provider
@@ -108,11 +111,11 @@ class LogicRulesExtractorPipeline:
             knowledge_base_dir=knowledge_base_dir,
         )
         self.extraction_agent = LogicExtractionAgent(
-            client=self.client, model=self.model_name, temperature=temperature
+            client=self.client, model=self.model_name, temperature=temperature, seed=seed
         )
 
         self.synthesizer_agent = RuleSynthesizerAgent(
-            client=self.client, model=self.model_name, temperature=temperature
+            client=self.client, model=self.model_name, temperature=temperature, seed=seed
         )
         self.formatter_agent = ReportFormatterAgent()
 
@@ -546,6 +549,7 @@ class LogicRulesExtractorPipeline:
     ) -> Dict[str, Any]:
         merged: Dict[str, Any] = {
             "conditions": [],
+            "decision_chains": [],
             "loops": [],
             "tables_read": [],
             "tables_written": [],

@@ -474,4 +474,6 @@ def test_business_rule_block_shows_compact_source_location():
         synthesis=_synthesis_stub(rules),
         extraction_guardrail_warnings=[],
     )
-    assert "**Source:** demo.sql | Lines 12-14 | Chunk 01_main | Statement STMT-01" in report
+    assert "**Source:**" not in report
+    assert "## Source Traceability" in report
+    assert "demo.sql \\| Lines 12-14 \\| Chunk 01_main \\| Statement STMT-01" in report

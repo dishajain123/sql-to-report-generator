@@ -223,6 +223,61 @@ def test_business_rule_provenance_fields_are_normalized():
     assert rule["dependencies"] == ["dep text"]
 
 
+def test_normalization_preserves_distinct_rules_with_shared_branch_family():
+    raw_rules = [
+        {
+            "rule_name": "Clear prior classification",
+            "condition": "FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL",
+            "action": "Clear the SMA classification fields",
+            "output_field": "SMA_CLASS",
+            "business_meaning": "Clears the prior SMA status before recalculation.",
+            "fields_affected": ["SMA_CLASS"],
+            "rule_type": "explicit",
+            "confidence": "high",
+            "validation_status": "verified",
+            "source_evidence": ["FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL"],
+            "source_chunks": ["chunk_1"],
+            "technical_references": ["conditions[0]"],
+            "dependencies": [],
+        },
+        {
+            "rule_name": "Set SMA reason",
+            "condition": "FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL",
+            "action": "Set SMA reason from the triggering DPD bucket",
+            "output_field": "SMA_REASON",
+            "business_meaning": "Stores the reason for the SMA classification separately from the class itself.",
+            "fields_affected": ["SMA_REASON"],
+            "rule_type": "inferred",
+            "confidence": "high",
+            "validation_status": "verified",
+            "source_evidence": ["FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL"],
+            "source_chunks": ["chunk_1"],
+            "technical_references": ["conditions[0]"],
+            "dependencies": [],
+        },
+        {
+            "rule_name": "Set SMA date",
+            "condition": "FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL",
+            "action": "Set the SMA effective date",
+            "output_field": "SMA_DT",
+            "business_meaning": "Captures the effective date for the SMA marking.",
+            "fields_affected": ["SMA_DT"],
+            "rule_type": "explicit",
+            "confidence": "high",
+            "validation_status": "verified",
+            "source_evidence": ["FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL"],
+            "source_chunks": ["chunk_1"],
+            "technical_references": ["conditions[0]"],
+            "dependencies": [],
+        },
+    ]
+
+    normalized = RuleSynthesizerAgent._normalize_business_rules(raw_rules)
+
+    assert len(normalized) == 3
+    assert {rule["output_field"] for rule in normalized} == {"SMA_CLASS", "SMA_REASON", "SMA_DT"}
+
+
 def test_parser_failed_evidence_stays_uncertain():
     merged_extraction = {
         "conditions": [
@@ -594,7 +649,7 @@ def test_report_formatter_surfaces_provenance_fields():
     )
     assert "# obj — Business Logic Report" in report
     assert "## Rule: overdue_days <= 90" in report
-    assert "## Rule: DPD_Max > 90 [Needs Review]" in report
+    assert "## Rule: DPD_Max > 90" in report
     assert "**Applies to:**" in report
     assert "### Decision Logic" in report
     assert "SMA-0" in report and "SMA-1" in report and "SMA-2" in report
@@ -609,3 +664,61 @@ def test_report_formatter_surfaces_provenance_fields():
     assert "1. 1." not in report
     assert "business rules / validations" not in report.lower()
     assert "Dialect Confidence" in report
+
+
+def test_report_formatter_prefers_richer_business_rules_for_display():
+    raw_rules = [
+        {"condition": "A", "action": "First", "decision_logic_rows": [{"condition": "A", "outcome": "X"}]},
+        {"condition": "B", "action": "Second", "decision_logic_rows": [{"condition": "B", "outcome": "Y"}]},
+        {"condition": "C", "action": "Third", "decision_logic_rows": [{"condition": "C", "outcome": "Z"}]},
+    ]
+    canonical_rules = [
+        {"condition": "A", "action": "First"},
+    ]
+
+    chosen = ReportFormatterAgent._business_rules_for_display(raw_rules, canonical_rules)
+    assert chosen == raw_rules
+
+
+def test_report_formatter_collapses_split_negative_dpd_rules_for_display():
+    rules = [
+        {
+            "rule_name": "Reset negative DPD_IntService to zero",
+            "business_meaning": "Any negative value in the DPD_IntService field is reset to zero to maintain data integrity.",
+            "output_field": "DPD_IntService",
+            "fields_affected": ["DPD_IntService"],
+            "eligibility": ["isnull(DPD_IntService,0)<0"],
+            "decision_logic_rows": [{"condition": "isnull(DPD_IntService,0)<0", "outcome": "0"}],
+        },
+        {
+            "rule_name": "Reset negative DPD_NoCredit to zero",
+            "business_meaning": "Any negative value in the DPD_NoCredit field is reset to zero to maintain data integrity.",
+            "output_field": "DPD_NoCredit",
+            "fields_affected": ["DPD_NoCredit"],
+            "eligibility": ["isnull(DPD_NoCredit,0)<0"],
+            "decision_logic_rows": [{"condition": "isnull(DPD_NoCredit,0)<0", "outcome": "0"}],
+        },
+    ]
+
+    display_rules = ReportFormatterAgent()._display_business_rules(rules)
+    assert len(display_rules) == 1
+    assert display_rules[0]["rule_name"] == "Reset negative DPD values to zero"
+    assert "DPD_IntService" in display_rules[0]["eligibility"][0]
+    assert "DPD_NoCredit" in display_rules[0]["eligibility"][0]
+
+
+def test_report_formatter_renders_single_decision_logic_row():
+    rows = ReportFormatterAgent()._decision_logic_rows(
+        {"decision_logic_rows": [{"condition": "DPD_Max > 90", "outcome": "SMA-2"}]}
+    )
+    assert rows == [{"condition": "DPD_Max > 90", "outcome": "SMA-2"}]
+
+
+def test_report_formatter_derives_business_meaning_from_rule_name_when_needed():
+    meaning = ReportFormatterAgent._business_rule_business_meaning(
+        {
+            "rule_name": "Calculate maximum DPD for account",
+            "business_meaning": "Set STANDARD classification and 15 provision pct",
+        }
+    )
+    assert meaning == "The maximum DPD is calculated for the account."

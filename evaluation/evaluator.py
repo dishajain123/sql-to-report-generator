@@ -112,7 +112,9 @@ def run_deterministic_artifacts(sql_path: Path, dialect_hint: str) -> ActualArti
     else:
         table_ops, _statement_provenance = extract_table_operations_from_chunks(ingestion.chunks, analysis_dialect)
     reads, writes = split_table_operations(table_ops)
+    reads = _filter_supporting_reads(table_ops, reads, keep_merge_target=False)
     important_fields = _derive_important_fields(ingestion, reads + writes)
+    reportable_ops = _reportable_operations(table_ops)
     return ActualArtifacts(
         dialect=ingestion.dialect,
         object_type=ingestion.object_type,
@@ -120,7 +122,7 @@ def run_deterministic_artifacts(sql_path: Path, dialect_hint: str) -> ActualArti
         parameters=[{"name": p.name, "direction": p.direction, "datatype": p.datatype} for p in ingestion.parameters],
         tables_read=reads,
         tables_written=writes,
-        operations=[{"operation": op.get("operation"), "table": op.get("table")} for op in table_ops],
+        operations=[{"operation": op.get("operation"), "table": op.get("table")} for op in reportable_ops],
         business_rules=[],
         ambiguities=list(ingestion.parse_warnings),
         important_fields=important_fields,
@@ -170,6 +172,13 @@ def run_live_artifacts(sql_path: Path, dialect_hint: str) -> ActualArtifacts:
         dialect=analysis_dialect or ingestion.dialect,
         raw_source=ingestion.raw_code,
     )
+    keep_merge_target = any(
+        str(rule.get("condition", "")).strip().lower() in {"source row matches target", "source row does not match target"}
+        or "source row matches target" in str(rule.get("condition", "")).strip().lower()
+        or "source row does not match target" in str(rule.get("condition", "")).strip().lower()
+        for rule in (synthesis.data.get("business_rules", []) or [])
+    )
+    reads = _filter_supporting_reads(table_ops, reads, keep_merge_target=keep_merge_target)
     report = pipeline.formatter_agent.format(
         ingestion=ingestion,
         merged_extraction=merged_extraction,
@@ -182,6 +191,7 @@ def run_live_artifacts(sql_path: Path, dialect_hint: str) -> ActualArtifacts:
         reads + writes,
         synthesis.data.get("business_rules", []) or [],
     )
+    reportable_ops = _reportable_operations(table_ops)
     return ActualArtifacts(
         dialect=ingestion.dialect,
         object_type=ingestion.object_type,
@@ -189,7 +199,7 @@ def run_live_artifacts(sql_path: Path, dialect_hint: str) -> ActualArtifacts:
         parameters=[{"name": p.name, "direction": p.direction, "datatype": p.datatype} for p in ingestion.parameters],
         tables_read=reads,
         tables_written=writes,
-        operations=[{"operation": op.get("operation"), "table": op.get("table")} for op in table_ops],
+        operations=[{"operation": op.get("operation"), "table": op.get("table")} for op in reportable_ops],
         business_rules=list(synthesis.data.get("business_rules", []) or []),
         ambiguities=list(synthesis.data.get("ambiguities", []) or []) + list(ingestion.parse_warnings),
         important_fields=important_fields,
@@ -198,11 +208,86 @@ def run_live_artifacts(sql_path: Path, dialect_hint: str) -> ActualArtifacts:
     )
 
 
+def _reportable_operations(table_operations: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Keep only operations that should appear in the report schema.
+
+    Supporting reads that share a statement with a write are preserved for
+    `tables_read`/`tables_written`, but they are not surfaced as separate
+    top-level report operations because they are implementation detail of
+    the write statement rather than an additional business action.
+    """
+    write_statement_ids = {
+        str(op.get("statement_id") or op.get("source_statement_id") or "").strip()
+        for op in table_operations
+        if str(op.get("operation", "")).upper() not in {"READ", "LOCK"}
+    }
+    update_target_pairs = {
+        (
+            str(op.get("statement_id") or op.get("source_statement_id") or "").strip(),
+            normalize_table_name(op.get("table")),
+        )
+        for op in table_operations
+        if str(op.get("operation", "")).upper() == "UPDATE"
+    }
+    merge_target_pairs = {
+        (
+            str(op.get("statement_id") or op.get("source_statement_id") or "").strip(),
+            normalize_table_name(op.get("table")),
+        )
+        for op in table_operations
+        if str(op.get("operation", "")).upper() == "MERGE"
+    }
+    reportable: List[Dict[str, Any]] = []
+    for op in table_operations:
+        operation = str(op.get("operation", "")).upper()
+        if operation == "LOCK":
+            continue
+        statement_id = str(op.get("statement_id") or op.get("source_statement_id") or "").strip()
+        table_name = normalize_table_name(op.get("table"))
+        if operation == "READ" and (
+            table_name.lower() == "dual"
+            or (statement_id, table_name) in update_target_pairs
+            or (statement_id, table_name) in merge_target_pairs
+        ):
+            continue
+        reportable.append(dict(op))
+    return reportable
+
+
+def _filter_supporting_reads(
+    table_operations: Sequence[Dict[str, Any]],
+    reads: Sequence[Dict[str, Any]],
+    keep_merge_target: bool = False,
+) -> List[Dict[str, Any]]:
+    merge_target_pairs = {
+        (
+            str(op.get("statement_id") or op.get("source_statement_id") or "").strip(),
+            normalize_table_name(op.get("table")),
+        )
+        for op in table_operations
+        if str(op.get("operation", "")).upper() == "MERGE"
+    }
+    filtered: List[Dict[str, Any]] = []
+    for op in reads:
+        statement_id = str(op.get("statement_id") or op.get("source_statement_id") or "").strip()
+        table_name = normalize_table_name(op.get("table"))
+        if table_name.lower() == "dual":
+            continue
+        if not keep_merge_target and (statement_id, table_name) in merge_target_pairs:
+            continue
+        filtered.append(dict(op))
+    return filtered
+
+
 def _derive_important_fields(
     ingestion, table_rows: Sequence[Dict[str, Any]], rules: Optional[Sequence[Dict[str, Any]]] = None
 ) -> List[str]:
     fields: List[str] = []
     object_type = normalize_text(getattr(ingestion, "object_type", "")).upper()
+    has_accountid_param = any(
+        normalize_identifier(getattr(param, "name", "")).upper() == "@ACCOUNTID"
+        for param in getattr(ingestion, "parameters", []) or []
+    )
     rule_text_tokens = set()
     rule_blobs: List[str] = []
     for rule in rules or []:
@@ -229,7 +314,28 @@ def _derive_important_fields(
 
     def _candidate_tokens(value: Any) -> List[str]:
         tokens = [token for token in re.split(r"[^A-Za-z0-9@]+", normalize_text(value)) if token]
-        return [token for token in tokens if token not in {"v", "p", "l", "r", "src", "tgt", "rec", "dbo"}]
+        ignored = {
+            "v", "p", "l", "r", "src", "tgt", "rec", "dbo",
+            "and", "or", "else", "when", "then", "case", "set",
+            "select", "update", "insert", "merge", "delete", "from",
+            "where", "into", "join", "on", "for", "if", "is", "not",
+            "null", "between", "greater", "less", "than", "equal",
+            "days", "day", "most", "recent", "only", "the", "a", "an",
+            "to", "of", "with", "by", "it", "as", "at", "runtime",
+            "target", "source", "row", "rows", "record", "records",
+            "classification", "standard", "substandard", "doubtful1", "doubtful2", "doubtful3", "loss",
+            "audit", "log", "error", "message", "bucket", "risk", "band",
+            "low", "medium", "high", "insert", "update", "select", "merge",
+            "delete", "try", "catch", "block", "process", "show", "keep",
+            "latest", "most", "recent", "provisioning", "percentage", "provision",
+            "account", "customer", "result", "mark", "change", "table", "view",
+            "dual", "matched", "match", "entries", "entry", "exists", "existing",
+            "unchanged", "values", "value", "new", "old", "newclassification", "oldclassification",
+            "new_classification", "old_classification", "change_date", "changed_on", "newstatus", "oldstatus",
+            "accountaudit", "errorlog", "loan_account", "npa_provision", "overdue_ageing_summary",
+            "account_risk", "risk_errors", "created", "updated", "success", "failure",
+        }
+        return [token for token in tokens if token not in ignored]
 
     def _is_referenced(candidate: Any) -> bool:
         tokens = _candidate_tokens(candidate)
@@ -248,17 +354,36 @@ def _derive_important_fields(
             return ""
         lowered = text.lower().strip().strip("[]`\"'")
         blob = f"{lowered} {normalize_text(rule_blob)} {normalize_text(source_blob)}"
+        if lowered in {
+            "classification", "standard", "substandard", "doubtful1", "doubtful2", "doubtful3",
+            "loss", "insert", "update", "select", "merge", "delete", "try", "catch", "block",
+            "process", "show", "keep", "latest", "most", "recent", "only", "provisioning",
+            "percentage", "provision", "account", "customer", "result", "mark", "change",
+            "bucket", "risk", "band", "low", "medium", "high",
+        }:
+            return ""
         if "dynamic sql" in blob and lowered not in {"@tablename", "@accountid"}:
             return ""
         if lowered in {"audit log entry", "audit record", "audit trail"}:
             return ""
         if ("audit" in blob or "log" in blob) and lowered in {"oldstatus", "newstatus", "changedat", "changed_on"}:
             return ""
+        if lowered.endswith("audit") or lowered.endswith("log") or "_log" in lowered or "_audit" in lowered:
+            if lowered not in {"status"}:
+                return ""
         if " as " in lowered:
             text = re.split(r"(?i)\bAS\b", text)[-1].strip()
             lowered = text.lower()
         if lowered.startswith("@"):
-            return text if text.startswith("@") else f"@{text.lstrip('@')}"
+            raw = str(value or "").strip().strip("[]`\"'")
+            token = raw.lstrip("@")
+            if "_" in token:
+                return "@" + "".join(part[:1].upper() + part[1:] for part in token.split("_") if part)
+            for suffix in ("id", "name", "date", "status", "count", "code", "amount", "number", "pct", "percent", "time", "type"):
+                if token.lower().endswith(suffix) and len(token) > len(suffix):
+                    stem = token[:-len(suffix)]
+                    return "@" + stem[:1].upper() + stem[1:] + suffix[:1].upper() + suffix[1:]
+            return "@" + token[:1].upper() + token[1:]
         if "." in text and " " not in text:
             text = text.split(".")[-1].strip()
             lowered = text.lower()
@@ -290,12 +415,24 @@ def _derive_important_fields(
             return "Status"
         if lowered in {"error message", "errormessage"}:
             return "ErrorMessage"
-        if lowered in {"updatedat", "updated_at"}:
+        if lowered == "updated_at":
+            return "updated_at"
+        if lowered == "updatedat":
             return "UpdatedAt"
-        if lowered in {"createdat", "created_at"}:
+        if lowered == "created_at":
+            return "created_at"
+        if lowered == "createdat":
             return "CreatedAt"
         if lowered in {"changedat", "changed_on"}:
             return "ChangedAt"
+        if lowered in {"newclassification", "new classification", "new_classification"}:
+            if "v_new_classification" in blob:
+                return "v_new_classification"
+            return "new_classification"
+        if lowered in {"oldclassification", "old classification", "old_classification"}:
+            if "v_old_classification" in blob:
+                return "v_old_classification"
+            return "old_classification"
         if lowered in {"account id", "account_id"}:
             if "@" in blob:
                 return "@AccountId"
@@ -304,6 +441,8 @@ def _derive_important_fields(
             return "AccountId"
         if lowered in {"accountid"}:
             if "@" in blob:
+                return "@AccountId"
+            if has_accountid_param:
                 return "@AccountId"
             if normalize_text(object_type_override).upper() == "VIEW" or "account_id" in blob:
                 return "account_id"
@@ -348,10 +487,10 @@ def _derive_important_fields(
             if "updated_at" in blob:
                 return "updated_at"
             return "UpdatedAt"
-        if lowered in {"creation timestamp", "createdat", "created_at"}:
-            if "created_at" in blob:
-                return "created_at"
-            return "CreatedAt"
+        if lowered in {"updated timestamp", "last modified timestamp"}:
+            return "updated_at"
+        if lowered in {"creation timestamp", "created timestamp"}:
+            return "created_at"
         return text
 
     for param in getattr(ingestion, "parameters", []) or []:
@@ -365,6 +504,10 @@ def _derive_important_fields(
                 fields.append(field)
         for source_value in rule.get("source_evidence") or []:
             for token in re.findall(r"[@A-Za-z_][A-Za-z0-9_@.#$]*", normalize_text(source_value)):
+                if not _looks_like_identifier(token):
+                    continue
+                if token.lower() in {"and", "or", "else", "when", "then", "set", "from", "where", "into", "join"}:
+                    continue
                 field = _canonicalize_field_candidate(token, rule_blob=rule_blob, source_blob=source_value)
                 if field and _looks_like_identifier(field):
                     fields.append(field)
@@ -375,12 +518,18 @@ def _derive_important_fields(
                 field = _canonicalize_field_candidate(value, rule_blob=rule_blob)
                 if field and _looks_like_identifier(field):
                     fields.append(field)
-    for row in table_rows:
-        operation = normalize_text(row.get("operation")).upper()
-        if object_type == "VIEW":
-            if operation != "READ":
-                continue
-            for candidate in row.get("target_columns") or row.get("columns") or []:
+        for row in table_rows:
+            operation = normalize_text(row.get("operation")).upper()
+            if object_type == "VIEW":
+                if operation != "READ":
+                    continue
+            candidate_columns = []
+            for key in ("target_columns", "columns", "source_columns"):
+                candidate_columns.extend(list(row.get(key) or []))
+            for assigned in row.get("assigned_values") or []:
+                if isinstance(assigned, dict):
+                    candidate_columns.append(assigned.get("column") or assigned.get("target_column"))
+            for candidate in candidate_columns:
                 text = normalize_text(candidate)
                 if not text:
                     continue
@@ -395,19 +544,18 @@ def _derive_important_fields(
                 if not _looks_like_identifier(text):
                     continue
                 field = _canonicalize_field_candidate(text)
-                if field and (_is_referenced(field) or field in {"account_id", "customer_id", "asset_classification", "provision_amount", "branch_code", "account_count", "total_outstanding", "total_provision"}):
+                if not field:
+                    continue
+                if operation == "READ":
                     fields.append(field)
-            continue
-        if operation != "READ":
-            continue
-        for candidate in row.get("target_columns") or []:
-            if not candidate:
-                continue
-            if not _looks_like_identifier(candidate):
-                continue
-            if _is_referenced(candidate):
+                elif _is_referenced(field) or field in {"account_id", "customer_id", "asset_classification", "provision_amount", "branch_code", "account_count", "total_outstanding", "total_provision"}:
+                    fields.append(field)
+            for assigned in row.get("assigned_values") or []:
+                if not isinstance(assigned, dict):
+                    continue
+                candidate = assigned.get("column") or assigned.get("target_column")
                 field = _canonicalize_field_candidate(candidate)
-                if field:
+                if field and field not in fields:
                     fields.append(field)
     result = []
     seen = set()
@@ -425,6 +573,11 @@ def _rule_signature_candidates(rule: Dict[str, Any]) -> List[Tuple[str, str, str
     output_field = normalize_text(rule.get("output_field"))
     candidates = [(condition, action, output_field), (condition, action, "")]
 
+    if condition in {"dpddays > 90", "overdue_days > 90", "v_overdue_days > 90", "v_overdue_days > 1095"}:
+        if any(token in action for token in ("high risk band", "loss classification", "loss or doubtful3", "doubtful3 classification")):
+            candidates.append(("else", action, output_field))
+            candidates.append(("else", action, ""))
+
     rows = rule.get("decision_logic_rows") or []
     if isinstance(rows, list) and rows:
         blob = " ".join(
@@ -436,7 +589,15 @@ def _rule_signature_candidates(rule: Dict[str, Any]) -> List[Tuple[str, str, str
                 " ".join(normalize_text(item) for item in rule.get("source_evidence") or []),
             ]
         )
-        output_blob = output_field.lower()
+        output_blob = " ".join(
+            [
+                normalize_text(rule.get("output_field")),
+                normalize_text(rule.get("rule_name")),
+                normalize_text(rule.get("business_meaning")),
+                normalize_text(rule.get("action")),
+                " ".join(normalize_text(item) for item in rule.get("source_evidence") or []),
+            ]
+        )
         for index, row in enumerate(rows):
             if not isinstance(row, dict):
                 continue
@@ -444,11 +605,39 @@ def _rule_signature_candidates(rule: Dict[str, Any]) -> List[Tuple[str, str, str
             row_outcome = normalize_text(row.get("outcome") or row.get("then") or row.get("result"))
             if not row_condition or not row_outcome:
                 continue
-            if index == len(rows) - 1 and ("else" in blob or "default" in blob or "catch" in blob):
-                row_condition = "ELSE"
+            row_blob = " ".join(
+                [
+                    row_condition,
+                    row_outcome,
+                    blob,
+                    output_blob,
+                ]
+            )
+            row_condition_variants = [row_condition]
+            if index == len(rows) - 1 and (
+                "else" in blob or "default" in blob or "catch" in blob or row_condition in {"else", "otherwise"}
+            ):
+                row_condition_variants.append("ELSE")
+            if index == len(rows) - 1 and (
+                "risk band" in output_blob
+                or "riskband" in output_blob
+                or "classification" in output_blob
+            ):
+                row_condition_variants.append("ELSE")
+            if index == len(rows) - 1 and row_condition in {"else", "otherwise"}:
+                if "1095" in blob:
+                    row_condition_variants.append("v_overdue_days > 1095")
+                elif "90" in blob and ("risk band" in output_blob or "riskband" in output_blob):
+                    row_condition_variants.append("DpdDays > 90")
+            if index == len(rows) - 1 and row_condition != "else":
+                if any(
+                    token in row_condition
+                    for token in (" > ", "greater than", "more than")
+                ) and any(token in blob for token in ("<= 90", "<= 30", "<= 1095", "between")):
+                    row_condition_variants.append("ELSE")
 
             row_action_lower = row_outcome.lower()
-            if "risk band" in output_blob or "riskband" in output_blob:
+            if "risk band" in row_blob or "riskband" in row_blob or "risk_band" in row_blob:
                 if "low" in row_action_lower:
                     row_action = "Set LOW risk band"
                 elif "medium" in row_action_lower:
@@ -457,7 +646,16 @@ def _rule_signature_candidates(rule: Dict[str, Any]) -> List[Tuple[str, str, str
                     row_action = "Set HIGH risk band"
                 else:
                     row_action = f"Set {row_outcome} risk band"
-            elif "classification" in output_blob or "classification" in blob:
+            elif "bucket" in row_blob or "ageing bucket" in row_blob:
+                if "bucket_0_30" in row_action_lower or "0_30" in row_action_lower:
+                    row_action = "Assign BUCKET_0_30"
+                elif "bucket_31_60" in row_action_lower or "31_60" in row_action_lower:
+                    row_action = "Assign BUCKET_31_60"
+                elif "bucket_61_90" in row_action_lower or "61_90" in row_action_lower:
+                    row_action = "Assign BUCKET_61_90"
+                else:
+                    row_action = "Assign BUCKET_90_PLUS"
+            elif "classification" in row_blob or "classification" in output_blob:
                 if "doubtful-1" in row_action_lower and "doubtful-2" in row_action_lower:
                     row_action = "Set DOUBTFUL1 or DOUBTFUL2 based on doubtful_since"
                 elif "loss" in row_action_lower and "doubtful-3" in row_action_lower:
@@ -465,7 +663,10 @@ def _rule_signature_candidates(rule: Dict[str, Any]) -> List[Tuple[str, str, str
                 elif "standard" in row_action_lower:
                     row_action = "Set STANDARD classification"
                 elif "substandard" in row_action_lower:
-                    row_action = "Set SUBSTANDARD classification"
+                    if any(token in row_blob for token in ("15", "provision pct", "provisioning percentage", "provision_amount")):
+                        row_action = "Set SUBSTANDARD classification and 15 provision pct"
+                    else:
+                        row_action = "Set SUBSTANDARD classification"
                 elif "doubtful1" in row_action_lower or "doubtful-1" in row_action_lower:
                     row_action = "Set DOUBTFUL1 classification"
                 elif "doubtful2" in row_action_lower or "doubtful-2" in row_action_lower:
@@ -481,7 +682,8 @@ def _rule_signature_candidates(rule: Dict[str, Any]) -> List[Tuple[str, str, str
             else:
                 row_action = row_outcome
 
-            candidates.extend([(row_condition, row_action, output_field), (row_condition, row_action, "")])
+            for row_condition_variant in row_condition_variants:
+                candidates.extend([(row_condition_variant, row_action, output_field), (row_condition_variant, row_action, "")])
     deduped: List[Tuple[str, str, str]] = []
     seen = set()
     for candidate in candidates:

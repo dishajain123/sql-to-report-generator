@@ -19,3 +19,33 @@
 2026-08-24 15:51:04,551 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
 2026-08-24 15:51:35,520 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
 2026-08-24 15:51:35,529 | INFO | logic_rules_extractor.pipeline | Stage 6/6: Applying output guardrails and formatting final report
+2026-08-27 13:33:31,796 | INFO | __main__ | Run 3 started for PRO.SMA_MARKING_12122023.StoredProcedure.sql
+2026-08-27 13:33:31,797 | INFO | logic_rules_extractor.pipeline | Stage 1/6: Running input guardrails
+2026-08-27 13:33:31,799 | INFO | logic_rules_extractor.pipeline | Stage 1/6 completed in 0.00s (input guardrails)
+2026-08-27 13:33:31,799 | INFO | logic_rules_extractor.pipeline | Stage 2/6: Detecting dialect
+2026-08-27 13:33:31,811 | INFO | logic_rules_extractor.pipeline | Detected TSQL dialect (confidence: high)
+2026-08-27 13:33:31,812 | INFO | logic_rules_extractor.pipeline | Stage 2/6 completed in 0.01s (dialect detection)
+2026-08-27 13:33:31,812 | INFO | logic_rules_extractor.pipeline | Stage 3/6: Preprocessing, parsing, and chunking /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpfta69fb0.sql
+2026-08-27 13:33:32,008 | INFO | logic_rules_extractor.pipeline | Detected TSQL PROCEDURE 'SMA_MARKING_12122023' with 11 chunk(s)
+2026-08-27 13:33:32,009 | INFO | logic_rules_extractor.pipeline | Stage 3/6 completed in 0.20s (preprocessing/parsing/chunking)
+2026-08-27 13:33:32,009 | INFO | logic_rules_extractor.pipeline | Stage 4/6: Retrieving dependencies / pattern context and extracting logic per chunk (model: gpt-4.1)
+2026-08-27 13:33:32,015 | INFO | logic_rules_extractor.pipeline | Persistent knowledge base ready in 0.01s
+2026-08-27 13:33:34,350 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-27 13:33:36,931 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-27 13:33:38,491 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-27 13:33:39,731 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-27 13:33:39,833 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-27 13:33:40,487 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-27 13:33:40,490 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-27 13:33:41,041 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-27 13:33:42,166 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-27 13:33:43,308 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-27 13:33:44,337 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-27 13:33:44,344 | INFO | logic_rules_extractor.pipeline | Stage 4/6 completed in 12.33s total (kb_ready=0.01s, retrieval/KB sum=0.14s, LLM extraction sum=75.17s, workers=8, chunks=11)
+2026-08-27 13:33:44,344 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
+2026-08-27 13:34:45,050 | INFO | httpx | HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-08-27 13:34:45,887 | INFO | logic_rules_extractor.pipeline | Stage 5/6 completed in 61.54s (business reasoning)
+2026-08-27 13:34:45,887 | INFO | logic_rules_extractor.pipeline | Stage 6/6: Reconciling deterministic evidence against synthesized output
+2026-08-27 13:34:45,981 | INFO | logic_rules_extractor.pipeline | Stage 6/6 completed in 0.09s (deterministic reconciliation)
+2026-08-27 13:34:45,981 | INFO | logic_rules_extractor.pipeline | Stage 7/7: Applying output guardrails and formatting final report
+2026-08-27 13:34:45,996 | INFO | logic_rules_extractor.pipeline | Stage 7/7 completed in 0.01s (final report generation)

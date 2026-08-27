@@ -174,6 +174,7 @@ def _detect_prompt_injection(code: str) -> List[str]:
 
 _EXTRACTION_LIST_FIELDS = (
     "conditions",
+    "decision_chains",
     "loops",
     "tables_read",
     "tables_written",
@@ -235,6 +236,8 @@ def validate_extraction_shape(data: Any) -> Tuple[Dict[str, Any], List[str]]:
             value = []
         if key == "ambiguities":
             value = [str(v) for v in value if str(v).strip()]
+        elif key == "decision_chains":
+            value = _normalize_decision_chains(value)
         else:
             normalized_items = []
             for item in value:
@@ -255,6 +258,58 @@ def validate_extraction_shape(data: Any) -> Tuple[Dict[str, Any], List[str]]:
             value = normalized_items
         cleaned[key] = value
     return cleaned, warnings
+
+
+def _normalize_decision_chains(value: List[Any]) -> List[Dict[str, Any]]:
+    """Normalize the "decision_chains" field: each entry links a shared
+    "subject" to an ordered list of mutually-exclusive branches, each of
+    which may assign one or more fields. This has a different shape from
+    every other extraction field (no table/columns/confidence), so it
+    gets its own defensive coercion rather than reusing the generic
+    per-item loop above - malformed branches/assignments are dropped
+    quietly (never fabricated), the same "repair, don't trust blindly"
+    posture as the rest of this module.
+    """
+    normalized_chains: List[Dict[str, Any]] = []
+    for chain in value:
+        if not isinstance(chain, dict):
+            continue
+        raw_branches = chain.get("branches", [])
+        if not isinstance(raw_branches, list):
+            continue
+        branches: List[Dict[str, Any]] = []
+        for branch in raw_branches:
+            if not isinstance(branch, dict):
+                continue
+            branch_condition = str(branch.get("branch_condition", "") or "").strip()
+            if not branch_condition:
+                continue
+            raw_assignments = branch.get("assignments", [])
+            assignments: List[Dict[str, str]] = []
+            if isinstance(raw_assignments, list):
+                for assignment in raw_assignments:
+                    if not isinstance(assignment, dict):
+                        continue
+                    field_name = str(assignment.get("field", "") or "").strip()
+                    value_text = str(assignment.get("value", "") or "").strip()
+                    if not field_name:
+                        continue
+                    assignments.append({"field": field_name, "value": value_text})
+            branches.append({"branch_condition": branch_condition, "assignments": assignments})
+        if len(branches) < 2:
+            # A "chain" of fewer than two branches isn't a decision ladder -
+            # it carries no structural information the flat "conditions"
+            # field doesn't already capture, so don't keep a degenerate
+            # single-branch entry around to confuse downstream synthesis.
+            continue
+        normalized_chains.append(
+            {
+                "chain_type": str(chain.get("chain_type", "") or "").strip(),
+                "subject": str(chain.get("subject", "") or "").strip(),
+                "branches": branches,
+            }
+        )
+    return normalized_chains
 
 
 def ground_extraction_against_source(data: Dict[str, Any], source_text: str) -> List[str]:
@@ -368,6 +423,7 @@ def validate_synthesis_shape(data: Any) -> Tuple[Dict[str, Any], List[str]]:
 
 _TECHNICAL_SECTIONS = (
     "conditions",
+    "decision_chains",
     "loops",
     "tables_read",
     "tables_written",
@@ -400,6 +456,34 @@ def _identifier_present(source_text: str, identifier: str) -> bool:
 
 def _record_text(record: Dict[str, Any]) -> str:
     parts: List[str] = []
+    # "decision_chains" records have a different shape (subject + ordered
+    # branches, each with its own assignments) than every other technical
+    # section, so they need their own flattening rather than the flat
+    # key list below - without this, a rule whose "source_evidence" quotes
+    # a branch condition or an assigned value verbatim (exactly what the
+    # extraction/synthesis prompts both ask for) would never be traceable
+    # back to its evidence, and would be wrongly downgraded to
+    # "unverified" even though it is fully grounded.
+    branches = record.get("branches")
+    if isinstance(branches, list):
+        subject = record.get("subject")
+        if subject:
+            parts.append(str(subject))
+        for branch in branches:
+            if not isinstance(branch, dict):
+                continue
+            branch_condition = branch.get("branch_condition")
+            if branch_condition:
+                parts.append(str(branch_condition))
+            for assignment in branch.get("assignments") or []:
+                if not isinstance(assignment, dict):
+                    continue
+                field_name = assignment.get("field")
+                value = assignment.get("value")
+                if field_name:
+                    parts.append(str(field_name))
+                if value:
+                    parts.append(str(value))
     for key in (
         "condition",
         "true_branch",

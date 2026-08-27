@@ -64,6 +64,22 @@ _TERMINATOR_RE = re.compile(
 )
 _CONTINUATION_KINDS = {"UPDATE", "INSERT", "DELETE", "MERGE"}
 
+# A `CASE ... END` expression is legal (and common) with no wrapping
+# parentheses at all, e.g. `SET RiskBand = CASE WHEN ... END`. Such a
+# construct never touches `paren_depth`, so without separately tracking
+# how many CASE expressions are currently open, a bare `END` line that is
+# only closing the CASE (not the enclosing statement) is indistinguishable
+# from a genuine block terminator - and gets misread as one, truncating
+# the statement before any trailing clause (WHERE/FROM/...) is reached.
+# `_CASE_TOKEN_RE` finds every CASE/END keyword occurrence, in order,
+# anywhere in a line (not just at the start, since `SET x = CASE ...`
+# opens a CASE mid-line); `_BARE_END_RE` is used to recognize an END that
+# is *not* part of one of the two-word terminators above (those close an
+# IF/LOOP/WHILE/TRY/CATCH block or a CASE *statement*, not a CASE
+# *expression*, and are left to the existing terminator handling).
+_CASE_TOKEN_RE = re.compile(r"(?i)\b(CASE|END)\b")
+_BLOCK_END_SUFFIX_RE = re.compile(r"(?i)^END\s*(CATCH|TRY|IF|LOOP|WHILE|CASE)\b")
+
 
 def split_top_level_statement_spans(text: str, masked_text: str) -> List[Tuple[int, int]]:
     """Return (start, end) character spans that partition `text` into
@@ -92,6 +108,7 @@ def split_top_level_statement_spans(text: str, masked_text: str) -> List[Tuple[i
     cte_main_consumed = False
     current_statement_kind: Optional[str] = None
     paren_depth = 0
+    case_depth = 0
     offset = 0
 
     for line in lines:
@@ -104,6 +121,21 @@ def split_top_level_statement_spans(text: str, masked_text: str) -> List[Tuple[i
         keyword_match = _KEYWORD_RE.match(stripped) if is_top_level else None
         set_match = _SET_RE.match(stripped) if is_top_level else None
         terminator_match = _TERMINATOR_RE.match(stripped) if is_top_level else None
+        # A bare "END" or "ELSE" line only closes the currently open
+        # statement when it isn't actually part of an unparenthesized
+        # CASE expression that's still open within that statement - CASE
+        # uses both keywords internally (`CASE WHEN ... ELSE ... END`) and
+        # is otherwise indistinguishable, line-by-line, from an IF block's
+        # own ELSE/END. When a CASE is open, such a line stays attached to
+        # the open span instead, and the CASE's own depth is decremented
+        # below once the line is scanned.
+        if (
+            terminator_match
+            and case_depth > 0
+            and not _BLOCK_END_SUFFIX_RE.match(stripped)
+            and terminator_match.group(1).upper() in {"END", "ELSE"}
+        ):
+            terminator_match = None
 
         if terminator_match and have_open_statement:
             # The terminator line (END/ELSE/EXCEPTION/GO) closes the
@@ -116,6 +148,7 @@ def split_top_level_statement_spans(text: str, masked_text: str) -> List[Tuple[i
             current_is_cte = False
             cte_main_consumed = False
             current_statement_kind = None
+            case_depth = 0
         elif keyword_match:
             keyword = keyword_match.group(1).upper()
             if not have_open_statement:
@@ -124,6 +157,7 @@ def split_top_level_statement_spans(text: str, masked_text: str) -> List[Tuple[i
                 current_is_cte = keyword == "WITH"
                 cte_main_consumed = False
                 current_statement_kind = keyword
+                case_depth = 0
             elif current_statement_kind == "MERGE" and keyword in {"UPDATE", "INSERT", "DELETE"}:
                 # A MERGE statement commonly contains WHEN MATCHED/WHEN
                 # NOT MATCHED branches whose body lines start with UPDATE
@@ -149,6 +183,7 @@ def split_top_level_statement_spans(text: str, masked_text: str) -> List[Tuple[i
                 current_is_cte = keyword == "WITH"
                 cte_main_consumed = False
                 current_statement_kind = keyword
+                case_depth = 0
         elif set_match and have_open_statement and current_statement_kind in _CONTINUATION_KINDS:
             # `SET` here is the enclosing UPDATE's own SET clause (or a
             # continuation of it across lines), not a new statement.
@@ -157,6 +192,7 @@ def split_top_level_statement_spans(text: str, masked_text: str) -> List[Tuple[i
             boundaries.append(line_start)
             have_open_statement = True
             current_statement_kind = "SET"
+            case_depth = 0
         elif not have_open_statement and stripped:
             # Real content with no recognized DML/SET keyword (BEGIN, IF,
             # WHILE, EXEC, PRINT, ...). Start a boundary anyway so no
@@ -164,15 +200,44 @@ def split_top_level_statement_spans(text: str, masked_text: str) -> List[Tuple[i
             boundaries.append(line_start)
             have_open_statement = True
             current_statement_kind = None
+            case_depth = 0
 
         # Carry the running paren depth forward to the next line so a
         # multi-line CASE/subquery is never mistaken for "top level"
-        # partway through.
+        # partway through. A top-level ';' (depth 0) closes whatever
+        # statement is currently open, exactly like an explicit terminator
+        # line would: without this, a DML statement that ends mid-line
+        # (the overwhelmingly common case) has nothing to stop trailing,
+        # unrelated procedural content - a following bare `IF ...`/`ELSIF
+        # ...`/assignment line with no recognized keyword of its own -
+        # from silently being swallowed into the same span. That glued-on
+        # tail is exactly what previously reached sqlglot bolted onto the
+        # end of a real SQL statement, corrupting the parse.
+        statement_closed_by_semicolon = False
         for ch in line_masked:
             if ch == "(":
                 paren_depth += 1
             elif ch == ")":
                 paren_depth = max(paren_depth - 1, 0)
+            elif ch == ";" and paren_depth == 0:
+                statement_closed_by_semicolon = True
+
+        # Carry the running CASE-expression depth forward too, in keyword
+        # order of appearance, so a same-line `CASE ... END` nets to zero
+        # and a still-open multi-line CASE correctly suppresses the next
+        # bare END from being read as a statement terminator.
+        for token in _CASE_TOKEN_RE.finditer(line_masked):
+            if token.group(1).upper() == "CASE":
+                case_depth += 1
+            elif case_depth > 0:
+                case_depth -= 1
+
+        if statement_closed_by_semicolon and have_open_statement:
+            have_open_statement = False
+            current_is_cte = False
+            cte_main_consumed = False
+            current_statement_kind = None
+            case_depth = 0
 
         offset += len(line)
 
