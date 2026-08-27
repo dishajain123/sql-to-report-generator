@@ -34,6 +34,26 @@ inferred, defaulted, or guessed - in particular, **rule priority is
 never inferred from extraction order**; a priority ordering is only
 shown when the synthesized rule actually carries explicit
 `tie_priority_handling` content.
+
+Two documents, one agent
+-------------------------
+`format()` produces the business-facing report: purpose, rules, decision
+logic, calculations, dependencies, exceptions - the things a business
+analyst needs to understand or review a rule. It never includes
+pipeline-internal detail (rule IDs, chunk/statement IDs, source file
+paths or line numbers, reconciliation status, quality/confidence
+scoring, run/model metadata).
+
+`format_verification()` produces the companion artifact that carries
+exactly that internal detail, so nothing is silently dropped - a
+reviewer can still trace any business rule back to the precise SQL
+lines, chunk, and statement that produced it, see its reconciliation
+status against the deterministic extraction, and see the run metadata
+the report was generated under. The two are meant to be written side by
+side (e.g. `<name>_report.md` and `<name>_verification.md`); `format()`
+ends with a short pointer to the companion file so a reader always knows
+where to look for provenance without that provenance cluttering the
+business document itself.
 """
 
 from __future__ import annotations
@@ -81,15 +101,18 @@ class ReportFormatterAgent:
     # Top-level assembly
     # ------------------------------------------------------------------
 
-    def format(
+    def _prepare(
         self,
         ingestion: IngestionResult,
         merged_extraction: Dict[str, Any],
         synthesis: SynthesisResult,
-        canonical_ir: Optional[CanonicalBusinessIR] = None,
-        extraction_guardrail_warnings: Optional[List[str]] = None,
-        run_metadata: Optional[RunMetadata] = None,
-    ) -> str:
+        canonical_ir: Optional[CanonicalBusinessIR],
+        run_metadata: Optional[RunMetadata],
+    ) -> Dict[str, Any]:
+        """Shared prep step for both `format()` and `format_verification()`
+        so the two documents are always built from exactly the same
+        reconciled data - nothing computed for one can silently drift
+        from the other."""
         raw_business_rules = copy.deepcopy(list((synthesis.data or {}).get("business_rules") or []))
         run_metadata = run_metadata or getattr(ingestion, "run_metadata", None) or self._metadata_from_merged(
             merged_extraction
@@ -101,13 +124,45 @@ class ReportFormatterAgent:
         business_rules_for_display = self._display_business_rules(
             self._business_rules_for_display(raw_business_rules, rules)
         )
-
         consolidated_reads = self._consolidate_rows(merged_extraction.get("tables_read", []) or [])
         consolidated_writes = self._consolidate_rows(merged_extraction.get("tables_written", []) or [])
+        return {
+            "run_metadata": run_metadata,
+            "canonical_ir": canonical_ir,
+            "merged_extraction": merged_extraction,
+            "synthesis": synthesis,
+            "rules": rules,
+            "business_rules_for_display": business_rules_for_display,
+            "consolidated_reads": consolidated_reads,
+            "consolidated_writes": consolidated_writes,
+        }
+
+    def format(
+        self,
+        ingestion: IngestionResult,
+        merged_extraction: Dict[str, Any],
+        synthesis: SynthesisResult,
+        canonical_ir: Optional[CanonicalBusinessIR] = None,
+        extraction_guardrail_warnings: Optional[List[str]] = None,
+        run_metadata: Optional[RunMetadata] = None,
+        verification_filename: Optional[str] = None,
+    ) -> str:
+        """Assembles the business-facing report only. Contains business
+        objective, rules, decision logic, inputs, calculations,
+        classifications, actions, dependencies, exceptions, and business
+        interpretation - and deliberately nothing from the pipeline's own
+        bookkeeping (run metadata, rule/chunk/statement IDs, source file
+        paths or line numbers, reconciliation status, quality/confidence
+        scoring). See `format_verification()` for that companion detail.
+        """
+        ctx = self._prepare(ingestion, merged_extraction, synthesis, canonical_ir, run_metadata)
+        synthesis = ctx["synthesis"]
+        business_rules_for_display = ctx["business_rules_for_display"]
+        consolidated_reads = ctx["consolidated_reads"]
+        consolidated_writes = ctx["consolidated_writes"]
 
         sections = [
             self._title_block(ingestion, synthesis),
-            self._run_metadata_section(ingestion, run_metadata),
             self._at_a_glance(ingestion, synthesis, consolidated_reads, consolidated_writes, business_rules_for_display),
             self._what_this_does(synthesis, business_rules_for_display),
             self._end_to_end_flow(synthesis),
@@ -121,13 +176,44 @@ class ReportFormatterAgent:
             self._technical_lineage_section(consolidated_reads, consolidated_writes),
             self._important_fields_section(ingestion, business_rules_for_display),
             self._business_rule_summary_table(business_rules_for_display),
-            self._source_traceability_details(rules, merged_extraction),
             self._calculations(synthesis),
             self._exception_handling(synthesis),
-            self._validation_summary(business_rules_for_display, merged_extraction, synthesis),
+            self._ambiguities(ingestion, synthesis, extraction_guardrail_warnings or []),
+            self._verification_pointer(verification_filename),
+        ]
+        sections = [s for s in sections if s and s.strip()]
+        return "\n\n".join(sections).strip() + "\n"
+
+    def format_verification(
+        self,
+        ingestion: IngestionResult,
+        merged_extraction: Dict[str, Any],
+        synthesis: SynthesisResult,
+        canonical_ir: Optional[CanonicalBusinessIR] = None,
+        run_metadata: Optional[RunMetadata] = None,
+        report_filename: Optional[str] = None,
+    ) -> str:
+        """Assembles the companion verification / traceability artifact:
+        run metadata, rule-to-source mapping (rule IDs, chunk IDs,
+        statement IDs, source file/line spans), reconciliation summary,
+        and quality/confidence scoring. None of this belongs in the
+        business report `format()` produces - it exists so that detail
+        isn't lost, just kept out of the document business users read.
+        """
+        ctx = self._prepare(ingestion, merged_extraction, synthesis, canonical_ir, run_metadata)
+        run_metadata_resolved = ctx["run_metadata"]
+        merged_extraction = ctx["merged_extraction"]
+        synthesis = ctx["synthesis"]
+        rules = ctx["rules"]
+
+        sections = [
+            self._verification_title_block(ingestion, report_filename),
+            self._run_metadata_section(ingestion, run_metadata_resolved),
+            self._business_rule_summary_table(rules, include_technical_ids=True),
+            self._source_traceability_details(rules, merged_extraction),
+            self._validation_summary(rules, merged_extraction, synthesis),
             self._reconciliation_summary(merged_extraction, synthesis),
             self._quality_summary(merged_extraction, synthesis),
-            self._ambiguities(ingestion, synthesis, extraction_guardrail_warnings or []),
         ]
         sections = [s for s in sections if s and s.strip()]
         return "\n\n".join(sections).strip() + "\n"
@@ -139,8 +225,50 @@ class ReportFormatterAgent:
     def _title_block(self, ingestion: IngestionResult, synthesis: SynthesisResult) -> str:
         object_name = self._display_object_name(ingestion)
         tagline = self._one_line_purpose(synthesis)
+        return f"# {object_name} — Business Logic Report\n\n> {tagline}"
+
+    @staticmethod
+    def _verification_pointer(verification_filename: Optional[str]) -> str:
+        """A short, business-safe pointer from the main report to its
+        companion traceability artifact - no IDs, statuses, or paths, just
+        a filename so a reviewer knows where to look."""
+        name = str(verification_filename or "").strip()
+        if not name:
+            return (
+                "---\n\n_Source traceability, rule IDs, reconciliation, and run "
+                "metadata are maintained separately in this object's verification "
+                "artifact rather than in this report._"
+            )
+        return (
+            "---\n\n_Source traceability, rule IDs, reconciliation, and run "
+            f"metadata for this report are maintained separately in `{name}`._"
+        )
+
+    @staticmethod
+    def _verification_title_block(ingestion: IngestionResult, report_filename: Optional[str]) -> str:
+        object_name = ReportFormatterAgent._display_object_name(ingestion)
         object_id = getattr(ingestion, "object_id", "") or "unassigned"
-        return f"# {object_name} — Business Logic Report\n\n> {tagline}\n\n> Object ID: `{object_id}`"
+        raw_name = str(getattr(ingestion, "object_name", "") or "").strip()
+        lines = [f"# {object_name} — Verification & Traceability", ""]
+        if report_filename:
+            lines.append(
+                f"> Companion artifact to `{report_filename}`. Everything here is "
+                "pipeline/source provenance for review and audit; none of it "
+                "appears in the business report."
+            )
+        else:
+            lines.append(
+                "> Companion traceability artifact. Everything here is "
+                "pipeline/source provenance for review and audit; none of it "
+                "appears in the business report."
+            )
+        lines.append("")
+        lines.append("| Item | Value |")
+        lines.append("|---|---|")
+        lines.append(f"| Object ID | `{object_id}` |")
+        if raw_name and raw_name.upper() not in {"UNKNOWN_OBJECT", "UNKNOWN"} and raw_name != object_name:
+            lines.append(f"| Raw technical object name (from source) | `{raw_name}` |")
+        return "\n".join(lines)
 
     @staticmethod
     def _metadata_from_merged(merged_extraction: Dict[str, Any]) -> Optional[RunMetadata]:
@@ -421,7 +549,7 @@ class ReportFormatterAgent:
         else:
             params_display = "None"
 
-        primary_tables = ", ".join(f"`{b['table']}`" for b in consolidated_writes[:6]) or "Not identified"
+        primary_tables = self._summarize_table_list(consolidated_writes)
         hierarchy_levels = self._detect_hierarchy_levels(rules)
         entity_display = " → ".join(level.title() for level in hierarchy_levels) if hierarchy_levels else "Not explicitly determined from source SQL"
 
@@ -930,7 +1058,7 @@ class ReportFormatterAgent:
     # 13. Business Rule Summary
     # ------------------------------------------------------------------
 
-    def _business_rule_summary_table(self, rules: List[Dict[str, Any]]) -> str:
+    def _business_rule_summary_table(self, rules: List[Dict[str, Any]], include_technical_ids: bool = False) -> str:
         header = ["| Priority | Rule | Output | Business Purpose |", "|---|---|---|---|"]
         if not rules:
             return "## Business Rule Summary\n\n" + "\n".join(header) + "\n_No business rules were identified._"
@@ -938,13 +1066,15 @@ class ReportFormatterAgent:
         for idx, rule in enumerate(rules, start=1):
             icon = self._review_priority_icon(rule)
             name = self._escape_table_cell(self._business_rule_name(rule, idx))
-            rule_id = self._escape_table_cell(str(rule.get("rule_id") or f"rule_{idx:02d}"))
             output = self._escape_table_cell(self._business_rule_output(rule))
             purpose = self._escape_table_cell(self._shorten_text(self._business_rule_business_meaning(rule), 140))
-            recon_status = str(rule.get("reconciliation_status") or "").strip().upper()
-            if recon_status:
-                name = f"{name} [{recon_status}]"
-            rows.append(f"| {icon} {idx} | {name} (`{rule_id}`) | `{output}` | {purpose} |")
+            if include_technical_ids:
+                rule_id = self._escape_table_cell(str(rule.get("rule_id") or f"rule_{idx:02d}"))
+                recon_status = str(rule.get("reconciliation_status") or "").strip().upper()
+                if recon_status:
+                    name = f"{name} [{recon_status}]"
+                name = f"{name} (`{rule_id}`)"
+            rows.append(f"| {icon} {idx} | {name} | `{output}` | {purpose} |")
         return "## Business Rule Summary\n\n" + self._render_split_table(header, rows)
 
     # ------------------------------------------------------------------
@@ -1413,6 +1543,31 @@ class ReportFormatterAgent:
         base = match.group(1) if match else text
         return base.upper()
 
+    # At-a-Glance table cap. This is a *display* cap only - unlike the
+    # previous `consolidated_writes[:6]` slice (which silently dropped
+    # every table past the 6th, local temp tables and history tables
+    # included, with no indication anything was hidden), going over the
+    # cap here always renders a "+N more" pointer to the full, complete
+    # "Tables Written" section rather than dropping tables invisibly.
+    _AT_A_GLANCE_TABLE_CAP = 10
+
+    @classmethod
+    def _summarize_table_list(cls, consolidated_writes: List[Dict[str, Any]]) -> str:
+        if not consolidated_writes:
+            return "Not identified"
+        names = [str(b.get("table") or "").strip() for b in consolidated_writes]
+        names = [n for n in names if n]
+        if not names:
+            return "Not identified"
+        if len(names) <= cls._AT_A_GLANCE_TABLE_CAP:
+            return ", ".join(f"`{n}`" for n in names)
+        shown = names[: cls._AT_A_GLANCE_TABLE_CAP]
+        remaining = len(names) - len(shown)
+        return (
+            ", ".join(f"`{n}`" for n in shown)
+            + f" _(+{remaining} more — see Tables Written below)_"
+        )
+
     @staticmethod
     def _unique_ordered(items: List[str]) -> List[str]:
         seen: set = set()
@@ -1427,6 +1582,9 @@ class ReportFormatterAgent:
 
     @staticmethod
     def _display_object_name(ingestion: IngestionResult) -> str:
+        canonical = str(getattr(ingestion, "canonical_object_name", "") or "").strip()
+        if canonical and canonical.upper() not in {"UNKNOWN_OBJECT", "UNKNOWN", "NONE"}:
+            return canonical
         object_name = str(getattr(ingestion, "object_name", "") or "").strip()
         if object_name and object_name.upper() not in {"UNKNOWN_OBJECT", "UNKNOWN", "NONE"}:
             return object_name

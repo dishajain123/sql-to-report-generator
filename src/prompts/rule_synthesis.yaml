@@ -32,6 +32,23 @@ system:
       uncertainty language for genuine gaps, and put those only in "ambiguities".
     - Never invent field names, thresholds, counts, table names, or examples that are not
       present in the technical extraction.
+    - NEVER PRINT A RAW SQL ALIAS (e.g. a bare "A", "B", "dpd", "x") ANYWHERE IN YOUR
+      OUTPUT as if it were a table name. The technical extraction's "tables_read" /
+      "tables_written" entries already carry the real, resolved table or temp-table name
+      (e.g. "#DPD", "PRO.AccountCal") for every operation - if you need to name a table in
+      "condition", "action", "business_meaning", "eligibility", or "source_evidence", use
+      that resolved name, never a short alias token copied from the raw SQL text. When in
+      doubt, prefer describing the business entity (e.g. "the account record") over naming
+      a table at all.
+    - DO NOT OVER-CONSOLIDATE: "group related conditions that drive the same output field"
+      means literally the same single output field - do not merge separate statements that
+      each set a *different* field (e.g. six separate resets of six different DPD fields)
+      into one rule's "action" sentence merely because they share a similar shape or
+      pattern; each distinct output field gets its own business_rules entry unless the
+      extraction's own "decision_chains" structure says otherwise (see below).
+    - When you do have a true multi-band threshold ladder, keep each output field in its
+      own business rule and preserve the ordered branch rows in "decision_logic_rows"
+      instead of flattening the ladder into one prose summary.
 
     FIELD-LEVEL PRECISION - NAME WHAT IS ACTUALLY CHANGED:
     - Whenever a business rule's "action" results in data being written or updated, name the
@@ -330,6 +347,23 @@ system:
       uncertainty language for genuine gaps, and put those only in "ambiguities".
     - Never invent field names, thresholds, counts, table names, or examples that are not
       present in the technical extraction.
+    - NEVER PRINT A RAW SQL ALIAS (e.g. a bare "A", "B", "dpd", "x") ANYWHERE IN YOUR
+      OUTPUT as if it were a table name. The technical extraction's "tables_read" /
+      "tables_written" entries already carry the real, resolved table or temp-table name
+      (e.g. "#DPD", "PRO.AccountCal") for every operation - if you need to name a table in
+      "condition", "action", "business_meaning", "eligibility", or "source_evidence", use
+      that resolved name, never a short alias token copied from the raw SQL text. When in
+      doubt, prefer describing the business entity (e.g. "the account record") over naming
+      a table at all.
+    - DO NOT OVER-CONSOLIDATE: "group related conditions that drive the same output field"
+      means literally the same single output field - do not merge separate statements that
+      each set a *different* field (e.g. six separate resets of six different DPD fields)
+      into one rule's "action" sentence merely because they share a similar shape or
+      pattern; each distinct output field gets its own business_rules entry unless the
+      extraction's own "decision_chains" structure says otherwise (see below).
+    - When you do have a true multi-band threshold ladder, keep each output field in its
+      own business rule and preserve the ordered branch rows in "decision_logic_rows"
+      instead of flattening the ladder into one prose summary.
 
     FIELD-LEVEL PRECISION - NAME WHAT IS ACTUALLY CHANGED:
     - Whenever a business rule's "action" results in data being written or updated, name the
@@ -604,6 +638,23 @@ system:
       uncertainty language for genuine gaps, and put those only in "ambiguities".
     - Never invent field names, thresholds, counts, table names, or examples that are not
       present in the technical extraction.
+    - NEVER PRINT A RAW SQL ALIAS (e.g. a bare "A", "B", "dpd", "x") ANYWHERE IN YOUR
+      OUTPUT as if it were a table name. The technical extraction's "tables_read" /
+      "tables_written" entries already carry the real, resolved table or temp-table name
+      (e.g. "#DPD", "PRO.AccountCal") for every operation - if you need to name a table in
+      "condition", "action", "business_meaning", "eligibility", or "source_evidence", use
+      that resolved name, never a short alias token copied from the raw SQL text. When in
+      doubt, prefer describing the business entity (e.g. "the account record") over naming
+      a table at all.
+    - DO NOT OVER-CONSOLIDATE: "group related conditions that drive the same output field"
+      means literally the same single output field - do not merge separate statements that
+      each set a *different* field (e.g. six separate resets of six different DPD fields)
+      into one rule's "action" sentence merely because they share a similar shape or
+      pattern; each distinct output field gets its own business_rules entry unless the
+      extraction's own "decision_chains" structure says otherwise (see below).
+    - When you do have a true multi-band threshold ladder, keep each output field in its
+      own business rule and preserve the ordered branch rows in "decision_logic_rows"
+      instead of flattening the ladder into one prose summary.
 
     FIELD-LEVEL PRECISION - NAME WHAT IS ACTUALLY CHANGED:
     - Whenever a business rule's "action" results in data being written or updated, name the

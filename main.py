@@ -29,6 +29,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from pipeline import LogicRulesExtractorPipeline, PipelineInputError
+from src.ingestion.ingestion import build_object_identity_stem
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -57,7 +58,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Path to write the generated Markdown report. Defaults to "
-        "samples/output/<object_name>.md",
+        "samples/output/<Schema>.<ObjectName>.<Type>_report.md, named from "
+        "the SQL object's own parsed identity (not the input filename). "
+        "A companion `..._verification.md` traceability artifact is "
+        "always written alongside it.",
     )
     parser.add_argument(
         "--dialect",
@@ -151,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         with _capture_run_logs(log_path):
-            report_markdown = pipeline.run(str(sql_path), dialect=args.dialect)
+            run_result = pipeline.run(str(sql_path), dialect=args.dialect)
     except PipelineInputError as exc:
         print(f"Error: input rejected by guardrails: {exc}", file=sys.stderr)
         return 1
@@ -159,17 +163,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: pipeline failed: {exc}", file=sys.stderr)
         return 1
 
+    report_stem = build_object_identity_stem(run_result.ingestion, fallback_stem=sql_path.stem)
+
     if args.output:
         output_path = Path(args.output)
+        verification_path = output_path.with_name(f"{output_path.stem}_verification{output_path.suffix}")
     else:
         output_dir = Path("samples/output")
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"{sql_path.stem}_report.md"
+        output_path = output_dir / f"{report_stem}_report.md"
+        verification_path = output_dir / f"{report_stem}_verification.md"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(report_markdown, encoding="utf-8")
+    output_path.write_text(run_result.report, encoding="utf-8")
+    verification_path.parent.mkdir(parents=True, exist_ok=True)
+    verification_path.write_text(run_result.verification_report, encoding="utf-8")
 
     print(f"Report written to: {output_path}")
+    print(f"Verification/traceability artifact written to: {verification_path}")
     print(f"Run log written to: {log_path}")
     return 0
 

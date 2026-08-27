@@ -363,9 +363,14 @@ def test_report_formatter_surfaces_reconciliation_summary():
         merged_extraction=merged,
         synthesis=synthesis,
     )
+    verification = ReportFormatterAgent().format_verification(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
 
-    assert "## Reconciliation Summary" in report
-    assert "Conflicts" in report
+    assert "## Reconciliation Summary" in verification
+    assert "Conflicts" in verification
 
 
 def test_condition_contradiction_forces_review_required():

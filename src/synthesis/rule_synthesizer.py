@@ -74,7 +74,7 @@ class RuleSynthesizerAgent:
     directly.
     """
 
-    def __init__(self, client, model: str, temperature: float = 0.0, seed: Optional[int] = 0):
+    def __init__(self, client, model: str, temperature: float = 0.1, seed: Optional[int] = 0):
         """
         Args:
             client: an initialized OpenAI-compatible chat client instance.

@@ -189,6 +189,12 @@ def test_report_formatter_accepts_canonical_ir():
         synthesis=synthesis,
         canonical_ir=ir,
     )
+    verification = ReportFormatterAgent().format_verification(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+        canonical_ir=ir,
+    )
     assert "## Business Rule Summary" in report
-    assert "## Source Traceability" in report
+    assert "## Source Traceability" in verification
     assert "STATUS" in report

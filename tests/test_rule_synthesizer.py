@@ -654,12 +654,7 @@ def test_report_formatter_surfaces_provenance_fields():
     assert "### Decision Logic" in report
     assert "SMA-0" in report and "SMA-1" in report and "SMA-2" in report
     assert "Business Rule Summary" in report
-    assert "<details>" in report
-    assert "Show rule-to-source mapping" in report
-    assert "02_main_body:main_body" in report
-    assert "03_main_body:main_body" in report
-    assert "conditions[0]" in report
-    assert "conditions[1]" in report
+    assert "verification artifact rather than in this report" in report
     assert "## Tables Read" in report
     assert "1. 1." not in report
     assert "business rules / validations" not in report.lower()

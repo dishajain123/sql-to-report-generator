@@ -380,6 +380,33 @@ def test_review_priority_icon_matches_validation_status(status, rule_type, expec
     assert ReportFormatterAgent._review_priority_icon(rule) == expected_icon
 
 
+def test_at_a_glance_lists_all_written_tables_not_just_first_six():
+    # Regression test: "Tables Updated" in At a Glance used to hard-slice
+    # to the first 6 consolidated writes (`consolidated_writes[:6]`),
+    # silently dropping every table past that - local (#) and history
+    # tables included - with no indication anything was hidden. It must
+    # now show every table when there are few, or an honest "+N more"
+    # pointer to the full "Tables Written" section rather than dropping
+    # rows invisibly.
+    table_names = [
+        "PRO.CUSTOMERCAL", "#DPD", "PRO.AccountCal", "PRO.ACCOUNT_MOVEMENT_HISTORY",
+        "PRO.CUSTOMER_MOVEMENT_HISTORY", "PRO.ACCOUNTCAL", "PRO.SMA_MOVEMENT_HISTORY",
+        "PRO.PREVSMASTATUS", "#SMACLASS", "#ACCOUNT_MOVEMENT_HISTORY",
+        "#Customer_MOVEMENT_HISTORY", "PRO.ACLRUNNINGPROCESSSTATUS",
+    ]
+    writes = [{"table": name} for name in table_names]
+    summary = ReportFormatterAgent._summarize_table_list(writes)
+    for name in table_names[:10]:
+        assert f"`{name}`" in summary
+    assert "+2 more" in summary
+
+    small_writes = [{"table": name} for name in table_names[:3]]
+    small_summary = ReportFormatterAgent._summarize_table_list(small_writes)
+    for name in table_names[:3]:
+        assert f"`{name}`" in small_summary
+    assert "more" not in small_summary
+
+
 def test_business_rule_summary_table_includes_priority_column():
     rules = [
         {"condition": "c1", "action": "a1", "rule_type": "explicit", "validation_status": "verified"},
@@ -475,5 +502,16 @@ def test_business_rule_block_shows_compact_source_location():
         extraction_guardrail_warnings=[],
     )
     assert "**Source:**" not in report
-    assert "## Source Traceability" in report
-    assert "demo.sql \\| Lines 12-14 \\| Chunk 01_main \\| Statement STMT-01" in report
+    # Source Traceability (chunk ids, statement ids, source line spans) is
+    # pipeline provenance and must not appear in the business report.
+    assert "## Source Traceability" not in report
+    assert "Chunk 01_main" not in report
+    assert "Statement STMT-01" not in report
+
+    verification = ReportFormatterAgent().format_verification(
+        ingestion=_ingestion_stub(),
+        merged_extraction={"tables_read": [], "tables_written": [], "conditions": []},
+        synthesis=_synthesis_stub(rules),
+    )
+    assert "## Source Traceability" in verification
+    assert "demo.sql \\| Lines 12-14 \\| Chunk 01_main \\| Statement STMT-01" in verification

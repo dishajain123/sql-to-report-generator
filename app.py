@@ -24,7 +24,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
-from src.ingestion.ingestion import decode_sql_source_bytes
+from src.ingestion.ingestion import decode_sql_source_bytes, build_object_identity_stem
 from src.core.llm_client import LLMConfig, load_llm_config
 from pipeline import LogicRulesExtractorPipeline, PipelineInputError
 
@@ -257,11 +257,19 @@ def _next_run_number(stem: str) -> int:
     return (max(existing_numbers) + 1) if existing_numbers else 1
 
 
-def _run_paths(stem: str) -> tuple[int, Path, Path]:
+def _run_paths(stem: str) -> tuple[int, Path, Path, Path]:
+    """Builds the run-numbered output paths for a report/verification/log
+    triple, all sharing one run number and one filename stem. `stem` is
+    expected to be the object's *parsed identity* stem (see
+    `build_object_identity_stem`), not the raw upload filename - that is
+    what keeps the numbering and naming stable across differently-named
+    uploads of the same underlying SQL object.
+    """
     run_number = _next_run_number(stem)
     report_path = OUTPUT_DIR / f"{run_number}_{stem}_report.md"
+    verification_path = OUTPUT_DIR / f"{run_number}_{stem}_verification.md"
     log_path = LOGS_DIR / f"{run_number}_{stem}_pipeline.log"
-    return run_number, report_path, log_path
+    return run_number, report_path, verification_path, log_path
 
 
 @contextmanager
@@ -406,8 +414,8 @@ if run_clicked:
     pipeline.synthesizer_agent.temperature = temperature
 
     tmp_path = None
+    tmp_log_path = None
     try:
-        run_number, report_path, log_path = _run_paths(Path(sql_filename).stem)
         run_state = {
             "messages": [],
             "current_stage": 0,
@@ -424,11 +432,9 @@ if run_clicked:
                     run_state["current_stage"],
                     run_state["latest_message"],
                     run_state["messages"],
-                    log_path,
+                    tmp_log_path,
                 )
             )
-
-        _refresh_status()
 
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".sql", delete=False, encoding="utf-8"
@@ -436,9 +442,22 @@ if run_clicked:
             tmp.write(sql_code)
             tmp_path = tmp.name
 
+        # The run log is captured to a temporary file while the object's
+        # identity (schema/name/type) is still unknown - it can only be
+        # named from the parsed SQL, not the upload - then renamed to its
+        # final `<run_number>_<Schema>.<Name>.<Type>_pipeline.log` path
+        # alongside the report once the pipeline has run.
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=LOGS_DIR, prefix="_run_", suffix=".log.tmp", delete=False, encoding="utf-8"
+        ) as tmp_log:
+            tmp_log_path = Path(tmp_log.name)
+
+        _refresh_status()
+
         with st.status("Running the pipeline…", expanded=False) as status:
-            with _capture_run_logs(log_path):
-                logging.getLogger(__name__).info("Run %s started for %s", run_number, sql_filename)
+            with _capture_run_logs(tmp_log_path):
+                logging.getLogger(__name__).info("Run started for %s", sql_filename)
 
                 def on_progress(message: str) -> None:
                     run_state["messages"].append(message)
@@ -450,21 +469,33 @@ if run_clicked:
                         run_state["latest_message"] = message
                     _refresh_status()
 
-                report = pipeline.run(tmp_path, dialect=dialect_choice, progress_callback=on_progress)
+                run_result = pipeline.run(tmp_path, dialect=dialect_choice, progress_callback=on_progress)
                 run_state["current_stage"] = 6
                 run_state["latest_message"] = "Extraction complete"
                 run_state["messages"].append("Pipeline completed successfully.")
                 _refresh_status()
                 status.update(label="Extraction complete ✅", state="complete")
 
-        report_path.write_text(report, encoding="utf-8")
+        # Filenames are derived from the object's own parsed identity
+        # (schema + canonical business name + object type), never from
+        # the uploaded file's name - see build_object_identity_stem.
+        report_stem = build_object_identity_stem(run_result.ingestion, fallback_stem=Path(sql_filename).stem)
+        run_number, report_path, verification_path, log_path = _run_paths(report_stem)
+
+        report_path.write_text(run_result.report, encoding="utf-8")
+        verification_path.write_text(run_result.verification_report, encoding="utf-8")
+        tmp_log_path.replace(log_path)
+        tmp_log_path = None
         logging.getLogger(__name__).info("Saved report to %s", report_path)
+        logging.getLogger(__name__).info("Saved verification artifact to %s", verification_path)
         logging.getLogger(__name__).info("Saved run log to %s", log_path)
 
-        st.session_state["last_report"] = report
-        st.session_state["last_stem"] = Path(sql_filename).stem
+        st.session_state["last_report"] = run_result.report
+        st.session_state["last_verification_report"] = run_result.verification_report
+        st.session_state["last_stem"] = report_stem
         st.session_state["last_model"] = pipeline.model_name
         st.session_state["last_saved_path"] = str(report_path)
+        st.session_state["last_verification_path"] = str(verification_path)
         st.session_state["last_log_path"] = str(log_path)
         st.session_state["last_run_number"] = run_number
         st.session_state["last_run_messages"] = run_state["messages"]
@@ -477,6 +508,8 @@ if run_clicked:
     finally:
         if tmp_path:
             Path(tmp_path).unlink(missing_ok=True)
+        if tmp_log_path:
+            Path(tmp_log_path).unlink(missing_ok=True)
 
 # --------------------------------------------------------------------------
 # Results
@@ -509,9 +542,24 @@ if "last_report" in st.session_state:
             use_container_width=True,
         )
 
+    if "last_verification_report" in st.session_state:
+        st.download_button(
+            "⬇️ Download verification / traceability artifact",
+            data=st.session_state["last_verification_report"],
+            file_name=f"{st.session_state.get('last_stem', 'report')}_verification.md",
+            mime="text/markdown",
+            help=(
+                "Source traceability, rule IDs, reconciliation status, and run "
+                "metadata for this report - kept separate from the business "
+                "document above."
+            ),
+        )
+
     st.caption(
         f"Saved to: `{st.session_state.get('last_saved_path', OUTPUT_DIR / (st.session_state.get('last_stem', 'report') + '_report.md'))}`"
     )
+    if "last_verification_path" in st.session_state:
+        st.caption(f"Verification artifact saved to: `{st.session_state['last_verification_path']}`")
     if "last_log_path" in st.session_state:
         st.caption(f"Run log saved to: `{st.session_state['last_log_path']}`")
 

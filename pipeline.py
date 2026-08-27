@@ -31,10 +31,11 @@ import copy
 import hashlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from src.ingestion.ingestion import CodeIngestionAgent, IngestionResult
+from src.ingestion.ingestion import CodeIngestionAgent, IngestionResult, build_object_identity_stem
 from src.retrieval.retriever import PatternRetrievalAgent
 from src.extraction.logic_extractor import LogicExtractionAgent, ChunkExtraction
 from src.synthesis.rule_synthesizer import RuleSynthesizerAgent, SynthesisResult
@@ -50,7 +51,7 @@ from src.core.pipeline_utils import PIPELINE_VERSION, RunMetadata, build_run_met
 
 logger = logging.getLogger("logic_rules_extractor.pipeline")
 
-DEFAULT_TEMPERATURE = 0.0  # deterministic extraction task
+DEFAULT_TEMPERATURE = 0.1  # low-temperature extraction / synthesis task
 DEFAULT_SEED = 0
 
 # Stage 4 (embedded SQL / per-chunk technical extraction) is the slowest
@@ -74,6 +75,30 @@ class PipelineInputError(ValueError):
     """Raised when the input source cannot be safely processed at all
     (fails input guardrails before any parsing or LLM call is made).
     """
+
+
+@dataclass
+class PipelineRunResult:
+    """Everything a caller (CLI, Streamlit app, tests) needs from one
+    pipeline run.
+
+    `report` is the clean, business-facing Markdown document.
+    `verification_report` is the companion traceability artifact (source
+    provenance, rule IDs, reconciliation, run metadata) that deliberately
+    does not appear in `report`. `ingestion` carries the parsed object
+    identity (`object_name`, `canonical_object_name`, `schema`,
+    `object_type`) so callers can derive output filenames from what the
+    SQL actually declares rather than from the input filename - see
+    `src.ingestion.ingestion.build_object_identity_stem`.
+
+    Kept as a small dataclass (rather than a bare string) specifically so
+    the business report and the verification artifact can never be
+    accidentally conflated into one file again.
+    """
+
+    report: str
+    verification_report: str
+    ingestion: IngestionResult
 
 
 class LogicRulesExtractorPipeline:
@@ -128,9 +153,12 @@ class LogicRulesExtractorPipeline:
         sql_file_path: str,
         dialect: Optional[str] = None,
         progress_callback: Optional[Callable[[str], None]] = None,
-    ) -> str:
+    ) -> PipelineRunResult:
         """Run the full pipeline against a single .sql input file and
-        return the final Markdown report as a string.
+        return a `PipelineRunResult` containing the business report, its
+        companion verification/traceability artifact, and the parsed
+        ingestion result (object identity) the caller can use to derive
+        output filenames.
 
         Args:
             sql_file_path: path to the input .sql file.
@@ -297,6 +325,10 @@ class LogicRulesExtractorPipeline:
 
         _report_progress("Stage 7/7: Applying output guardrails and formatting final report")
         stage_start = time.perf_counter()
+        report_filename = f"{build_object_identity_stem(ingestion, fallback_stem=Path(sql_file_path).stem)}_report.md"
+        verification_filename = (
+            f"{build_object_identity_stem(ingestion, fallback_stem=Path(sql_file_path).stem)}_verification.md"
+        )
         report = self.formatter_agent.format(
             ingestion=ingestion,
             merged_extraction=merged_extraction,
@@ -304,9 +336,18 @@ class LogicRulesExtractorPipeline:
             canonical_ir=canonical_ir,
             extraction_guardrail_warnings=extraction_guardrail_warnings,
             run_metadata=run_metadata,
+            verification_filename=verification_filename,
+        )
+        verification_report = self.formatter_agent.format_verification(
+            ingestion=ingestion,
+            merged_extraction=merged_extraction,
+            synthesis=synthesis,
+            canonical_ir=canonical_ir,
+            run_metadata=run_metadata,
+            report_filename=report_filename,
         )
         logger.info("Stage 7/7 completed in %.2fs (final report generation)", time.perf_counter() - stage_start)
-        return report
+        return PipelineRunResult(report=report, verification_report=verification_report, ingestion=ingestion)
 
     # ------------------------------------------------------------------
     # Internal helpers

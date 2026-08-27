@@ -30,9 +30,9 @@ def _ingestion(object_type: str = "PROCEDURE") -> IngestionResult:
     )
 
 
-def test_agents_default_to_zero_temperature():
-    assert LogicExtractionAgent(client=object(), model="demo").temperature == 0.0
-    assert RuleSynthesizerAgent(client=object(), model="demo").temperature == 0.0
+def test_agents_default_to_low_temperature():
+    assert LogicExtractionAgent(client=object(), model="demo").temperature == 0.1
+    assert RuleSynthesizerAgent(client=object(), model="demo").temperature == 0.1
 
 
 def test_view_filter_rule_stays_a_filter():

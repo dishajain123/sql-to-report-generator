@@ -178,6 +178,72 @@ class IngestionResult:
     parameter_parse_status: str = "parameterless"  # parameterized | parameterless | failed
     parse_warnings: List[str] = field(default_factory=list)
     run_metadata: Optional[RunMetadata] = None
+    # Schema/owner the object was declared under (e.g. "PRO" from
+    # "[PRO].[SMA_MARKING_12122023]"), when the source header was
+    # schema-qualified. Empty when the header had no qualifier. This is
+    # purely a delimiter split of the same header that produced
+    # `object_name` - never guessed or defaulted.
+    schema: str = ""
+    # The stable *business* identity for this object, derived from
+    # `object_name` by stripping generic, non-domain-specific trailing
+    # version/date/backup-style suffixes (see
+    # `CodeIngestionAgent.derive_canonical_business_name`). Used for
+    # report titles and filenames so that dated/versioned copies of the
+    # same procedure ("SMA_MARKING_12122023", "SMA_MARKING_v2", ...)
+    # are documented under one stable identity. `object_name` itself is
+    # left untouched and remains the exact technical identifier used
+    # for source-code matching/reconciliation.
+    canonical_object_name: str = ""
+
+
+# --------------------------------------------------------------------------
+# Object identity -> output filename
+# --------------------------------------------------------------------------
+
+# Display token used in report/output filenames for each object type,
+# matching the project's existing `<Schema>.<Name>.<Type>_report.md`
+# convention (e.g. "PRO.SMA_MARKING.StoredProcedure_report.md").
+_OBJECT_TYPE_FILENAME_TOKEN = {
+    "PROCEDURE": "StoredProcedure",
+    "FUNCTION": "Function",
+    "VIEW": "View",
+    "TRIGGER": "Trigger",
+    "PLSQL_BLOCK": "Block",
+    "TSQL_BLOCK": "Block",
+}
+
+
+def build_object_identity_stem(ingestion: "IngestionResult", fallback_stem: str = "") -> str:
+    """Builds the `<Schema>.<Name>.<Type>` filename stem for a report from
+    the object's *parsed* identity, not from whatever the input .sql file
+    happened to be named.
+
+    This is the single, generic place output naming is decided: it is
+    driven entirely by `IngestionResult` (schema qualifier + canonical
+    business name + object type, all derived from the SQL definition
+    itself), so it produces a stable name for any procedure, function,
+    view, or trigger - regardless of what the uploaded/source filename
+    was, and without any hardcoded object name or date. `fallback_stem`
+    (typically the source file's stem) is only used when the object
+    identity could not be determined at all (e.g. an unparseable or
+    anonymous block), preserving the previous behavior for that edge
+    case.
+    """
+    name = str(getattr(ingestion, "canonical_object_name", "") or "").strip()
+    if not name or name.upper() in {"UNKNOWN_OBJECT", "UNKNOWN"}:
+        name = str(getattr(ingestion, "object_name", "") or "").strip()
+    if not name or name.upper() in {"UNKNOWN_OBJECT", "UNKNOWN", "ANONYMOUS_BLOCK"}:
+        return fallback_stem or "UNKNOWN_OBJECT"
+
+    object_type = str(getattr(ingestion, "object_type", "") or "").strip().upper()
+    type_token = _OBJECT_TYPE_FILENAME_TOKEN.get(object_type)
+    if not type_token:
+        type_token = re.sub(r"[^A-Za-z0-9]+", "", object_type).title() or "Object"
+
+    schema = str(getattr(ingestion, "schema", "") or "").strip()
+    if schema:
+        return f"{schema}.{name}.{type_token}"
+    return f"{name}.{type_token}"
 
 
 # --------------------------------------------------------------------------
@@ -344,6 +410,8 @@ class CodeIngestionAgent:
                 parameter_parse_status="failed",
                 parse_warnings=warnings,
                 run_metadata=None,
+                schema="",
+                canonical_object_name="UNKNOWN_OBJECT",
             )
         prompt_dialect = detection.concrete_dialect or prompt_dialect_for_state(resolved_dialect) or "oracle"
         if detection.confidence == "low":
@@ -360,6 +428,17 @@ class CodeIngestionAgent:
             )
         )
         warnings.extend(metadata_warnings)
+
+        # Schema qualifier (if any) from the same header match, and the
+        # display/business identity derived from the raw object name -
+        # see `extract_object_schema` / `derive_canonical_business_name`.
+        # Only attempted when the name actually came from the SQL header
+        # itself (not a filename fallback), so a schema is never guessed
+        # from anything other than the object's own declaration.
+        object_schema = ""
+        if object_name_status == "verified" and object_name != "UNKNOWN_OBJECT":
+            object_schema = self.extract_object_schema(clean_code, object_type, dialect=prompt_dialect)
+        canonical_object_name = self.derive_canonical_business_name(object_name)
 
         chunks = self.chunk_code(
             clean_code,
@@ -389,6 +468,8 @@ class CodeIngestionAgent:
             parameter_parse_status=parameter_status,
             parse_warnings=warnings,
             run_metadata=run_metadata,
+            schema=object_schema,
+            canonical_object_name=canonical_object_name,
         )
 
     # ------------------------------------------------------------------
@@ -630,21 +711,116 @@ class CodeIngestionAgent:
             return "ANONYMOUS_BLOCK"
         return "UNKNOWN_OBJECT"
 
-    @staticmethod
-    def _normalize_object_name(raw_name: str, dialect: str) -> str:
+    def extract_object_schema(self, code: str, object_type: str, dialect: str = ORACLE) -> str:
+        """Returns the schema/owner qualifier from the same header match
+        `extract_object_name` uses (e.g. "PRO" from `[PRO].[SMA_MARKING]`),
+        or "" when the header wasn't schema-qualified or couldn't be
+        matched. Deliberately mirrors `extract_object_name`'s matching so
+        the two never disagree about which header they read."""
         dialect = normalize_dialect_name(dialect)
+        masked = self._mask_strings_and_comments(
+            code, mask_brackets=False, mask_double_quotes=False
+        )
+        pattern = _NAME_PATTERNS.get(dialect, _NAME_PATTERNS[ORACLE]).get(object_type)
+        if pattern:
+            match = pattern.search(masked)
+            if match:
+                schema, _ = self._split_qualified_name(match.group(1), dialect)
+                return schema
+        return ""
+
+    @staticmethod
+    def _clean_identifier_part(part: str, dialect: str) -> str:
+        """Strips T-SQL bracket / Oracle-and-T-SQL double-quote delimiters
+        from a single (already dot-split) identifier segment. Purely a
+        delimiter-normalization step - never changes the letters/digits of
+        the identifier itself."""
+        dialect = normalize_dialect_name(dialect)
+        if dialect == TSQL:
+            part = part.strip("[]")
+            if part.startswith('"') and part.endswith('"'):
+                part = part[1:-1]
+        else:
+            if part.startswith('"') and part.endswith('"'):
+                part = part[1:-1].replace('""', '"')
+        return part
+
+    @classmethod
+    def _split_qualified_name(cls, raw_name: str, dialect: str) -> Tuple[str, str]:
+        """Splits a possibly schema-qualified raw identifier (as captured
+        by `_NAME_PATTERNS`) into `(schema, tail)`, with delimiters
+        normalized for the given dialect. `schema` is `""` when the
+        identifier was not schema-qualified. This only re-shapes the
+        already-matched text from the SQL header; it never inspects the
+        object name's characters to decide what the "real" name is."""
         parts = [part.strip() for part in re.split(r"\s*\.\s*", raw_name) if part.strip()]
         if not parts:
-            return "UNKNOWN_OBJECT"
-        tail = parts[-1]
-        if dialect == TSQL:
-            tail = tail.strip("[]")
-            if tail.startswith('"') and tail.endswith('"'):
-                tail = tail[1:-1]
-        else:
-            if tail.startswith('"') and tail.endswith('"'):
-                tail = tail[1:-1].replace('""', '"')
+            return "", "UNKNOWN_OBJECT"
+        tail = cls._clean_identifier_part(parts[-1], dialect)
+        schema = cls._clean_identifier_part(parts[-2], dialect) if len(parts) > 1 else ""
+        return schema, (tail or "UNKNOWN_OBJECT")
+
+    @classmethod
+    def _normalize_object_name(cls, raw_name: str, dialect: str) -> str:
+        _, tail = cls._split_qualified_name(raw_name, dialect)
         return tail
+
+    # Generic, non-domain-specific trailing suffix patterns that teams
+    # commonly append to a live object's name when saving a dated,
+    # versioned, or backup copy of it (e.g. `SMA_MARKING_12122023`,
+    # `usp_calc_v2`, `rpt_summary_final2`, `proc_name_bak`). None of these
+    # reference a specific date, object, or procedure - the same pattern
+    # applies to any future object name. At most one such suffix is
+    # stripped (see `derive_canonical_business_name`) to recover the
+    # stable *business* identity used for report titles/filenames; the
+    # raw, unmodified name is always preserved separately for exact
+    # source traceability.
+    _CANONICAL_SUFFIX_RE = re.compile(
+        r"_(?:V|VER|VERSION)\d{1,3}$"          # _v2, _VER10, _VERSION3
+        r"|_\d{8}$"                             # 8-digit date, any order (12122023)
+        r"|_\d{6}$"                             # 6-digit date (121223)
+        r"|_\d{4}$"                             # bare 4-digit year (2023)
+        r"|_(?:BAK|BACKUP|OLD|COPY\d*|TEMP|TMP|"
+        r"FINAL\d*|NEW|ARCHIVE|ARCHIVED|DEPRECATED|DRAFT|WIP|REV\d*)$",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def derive_canonical_business_name(cls, raw_name: str) -> str:
+        """Best-effort, fully generic normalization of a technical object
+        name into the stable *business* identity used for report titles
+        and output filenames.
+
+        Teams frequently keep a "live" procedure/function/view under one
+        name and periodically save dated or versioned copies of it
+        (`_12122023`, `_v2`, `_backup`, `_final2`, ...). Those suffixes are
+        real characters in the SQL object name, but they identify a
+        *revision* of the object, not a different business object - so
+        two runs against `SMA_MARKING` and `SMA_MARKING_12122023` should
+        produce consistently-named business documentation.
+
+        This strips at most a few stacked trailing suffixes matching
+        `_CANONICAL_SUFFIX_RE` (e.g. `_v2_20231212`), purely by pattern -
+        never a hardcoded date, object, or procedure name - and only ever
+        when a non-empty, letter-containing base remains after stripping.
+        If nothing matches, or stripping would leave an empty/purely
+        numeric base, the original name is returned unchanged. This is a
+        display-only identity: `object_name` (the raw technical name) is
+        never modified and remains what reconciliation/traceability match
+        against the source SQL.
+        """
+        name = str(raw_name or "").strip()
+        if not name or name.upper() in {"UNKNOWN_OBJECT", "UNKNOWN", "ANONYMOUS_BLOCK"}:
+            return name
+        for _ in range(3):  # cap iterations against stacked suffixes
+            match = cls._CANONICAL_SUFFIX_RE.search(name)
+            if not match:
+                break
+            candidate = name[: match.start()]
+            if not candidate or not re.search(r"[A-Za-z]", candidate):
+                break
+            name = candidate
+        return name or str(raw_name or "").strip()
 
     def _extract_object_name_with_fallback(
         self, code: str, object_type: str, dialect: str

@@ -13,6 +13,8 @@ import pytest
 
 from src.ingestion.ingestion import CodeIngestionAgent
 from src.ingestion.ingestion import CodeChunk
+from src.ingestion.ingestion import IngestionResult
+from src.ingestion.ingestion import build_object_identity_stem
 from src.output.report_formatter import ReportFormatterAgent
 from src.ingestion.guardrails import run_input_guardrails
 from src.ingestion.guardrails import ground_extraction_against_source
@@ -788,3 +790,94 @@ def test_ingest_text_uses_prevalidated_input_without_rerunning_guardrails(monkey
     assert result.dialect == "ORACLE"
     assert "prevalidated warning" in result.parse_warnings
     assert "prevalidated flag" in result.parse_warnings
+
+
+# --------------------------------------------------------------------------
+# Canonical business-name normalization / output identity (generic,
+# pattern-based - never a hardcoded date or object name).
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw_name,expected",
+    [
+        ("SMA_MARKING_12122023", "SMA_MARKING"),  # DDMMYYYY date suffix
+        ("SMA_MARKING_20231212", "SMA_MARKING"),  # YYYYMMDD date suffix
+        ("usp_calc_v2", "usp_calc"),  # version suffix
+        ("usp_calc_VERSION12", "usp_calc"),
+        ("rpt_summary_final2", "rpt_summary"),  # "final" revision marker
+        ("proc_name_bak", "proc_name"),  # backup marker
+        ("proc_name_backup", "proc_name"),
+        ("proc_v2_20231212", "proc"),  # stacked suffixes
+        ("SMA_MARKING", "SMA_MARKING"),  # no suffix - unchanged
+        ("GET_STATUS", "GET_STATUS"),  # no suffix - unchanged
+        ("12122023", "12122023"),  # entirely numeric - left alone
+        ("UNKNOWN_OBJECT", "UNKNOWN_OBJECT"),  # sentinel - left alone
+    ],
+)
+def test_derive_canonical_business_name_is_generic(raw_name, expected):
+    assert CodeIngestionAgent.derive_canonical_business_name(raw_name) == expected
+
+
+def test_ingest_text_populates_schema_and_canonical_object_name(agent):
+    code = """
+    CREATE OR ALTER PROCEDURE [PRO].[SMA_MARKING_12122023]
+    @TIMEKEY INT
+    WITH RECOMPILE
+    AS
+    BEGIN
+        SELECT 1;
+    END
+    GO
+    """
+    result = agent.ingest_text(code, dialect="tsql")
+    # The raw technical name is exactly what the SQL header declares -
+    # this must never be altered, since reconciliation/traceability
+    # match against it.
+    assert result.object_name == "SMA_MARKING_12122023"
+    assert result.schema == "PRO"
+    # The canonical/business name has the generic date suffix stripped.
+    assert result.canonical_object_name == "SMA_MARKING"
+
+
+def test_build_object_identity_stem_uses_parsed_identity_not_filename():
+    ingestion = IngestionResult(
+        object_name="SMA_MARKING_12122023",
+        object_type="PROCEDURE",
+        parameters=[],
+        raw_code="",
+        chunks=[],
+        schema="PRO",
+        canonical_object_name="SMA_MARKING",
+    )
+    # Regardless of what the uploaded file happened to be named, the
+    # output identity comes from the parsed object.
+    stem = build_object_identity_stem(ingestion, fallback_stem="whatever_the_upload_was_called")
+    assert stem == "PRO.SMA_MARKING.StoredProcedure"
+
+
+def test_build_object_identity_stem_falls_back_when_object_unknown():
+    ingestion = IngestionResult(
+        object_name="UNKNOWN_OBJECT",
+        object_type="UNKNOWN",
+        parameters=[],
+        raw_code="",
+        chunks=[],
+        schema="",
+        canonical_object_name="UNKNOWN_OBJECT",
+    )
+    stem = build_object_identity_stem(ingestion, fallback_stem="my_upload")
+    assert stem == "my_upload"
+
+
+def test_build_object_identity_stem_generic_for_other_object_types():
+    ingestion = IngestionResult(
+        object_name="rpt_summary_final2",
+        object_type="VIEW",
+        parameters=[],
+        raw_code="",
+        chunks=[],
+        schema="dbo",
+        canonical_object_name="rpt_summary",
+    )
+    assert build_object_identity_stem(ingestion) == "dbo.rpt_summary.View"
