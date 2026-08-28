@@ -68,6 +68,13 @@ being dropped or backfilled with a plausible guess. The Report Formatter
 merges all of these into one explicit "Ambiguities / Needs Review"
 section — this was treated as a hard requirement (FR8), not a nice-to-have.
 
+**LLM telemetry is observability only.** The pipeline now records
+provider-neutral token usage and latency for extraction/synthesis calls
+through a small `src/telemetry/` module, then stores the aggregated
+result inside the existing run/verification metadata. This data is kept
+out of the business-facing Markdown report and never influences
+extraction, synthesis, confidence, reconciliation, or caching.
+
 ## Known Limitations
 
 - Dynamic SQL (`EXECUTE IMMEDIATE`) content is never resolved — always

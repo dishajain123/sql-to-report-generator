@@ -47,7 +47,15 @@ from src.core.llm_client import LLMConfig, create_llm_client, load_llm_config
 from src.validation.confidence import derive_chunk_support_confidence
 from src.validation.reconciliation import reconcile_deterministic_evidence
 from src.ir.canonical_ir import CanonicalBusinessIR
-from src.core.pipeline_utils import PIPELINE_VERSION, RunMetadata, build_run_metadata, run_metadata_to_dict, stable_id
+from src.core.pipeline_utils import (
+    PIPELINE_VERSION,
+    RunMetadata,
+    attach_run_telemetry,
+    build_run_metadata,
+    run_metadata_to_dict,
+    stable_id,
+)
+from src.telemetry.tracker import LLMTelemetryTracker
 
 logger = logging.getLogger("logic_rules_extractor.pipeline")
 
@@ -136,11 +144,19 @@ class LogicRulesExtractorPipeline:
             knowledge_base_dir=knowledge_base_dir,
         )
         self.extraction_agent = LogicExtractionAgent(
-            client=self.client, model=self.model_name, temperature=temperature, seed=seed
+            client=self.client,
+            model=self.model_name,
+            temperature=temperature,
+            seed=seed,
+            provider=self.provider,
         )
 
         self.synthesizer_agent = RuleSynthesizerAgent(
-            client=self.client, model=self.model_name, temperature=temperature, seed=seed
+            client=self.client,
+            model=self.model_name,
+            temperature=temperature,
+            seed=seed,
+            provider=self.provider,
         )
         self.formatter_agent = ReportFormatterAgent()
 
@@ -243,6 +259,7 @@ class LogicRulesExtractorPipeline:
             f"per chunk (model: {self.model_name})"
         )
         stage_start = time.perf_counter()
+        telemetry_tracker = LLMTelemetryTracker()
         kb_start = time.perf_counter()
         self.retrieval_agent.build_or_load()
         kb_seconds = time.perf_counter() - kb_start
@@ -250,7 +267,10 @@ class LogicRulesExtractorPipeline:
             logger.info("Persistent knowledge base ready in %.2fs", kb_seconds)
         analysis_dialect = supported_analysis_dialect(ingestion)
         chunk_extractions = self._extract_all_chunks(
-            ingestion, run_metadata=run_metadata, analysis_dialect=analysis_dialect
+            ingestion,
+            run_metadata=run_metadata,
+            analysis_dialect=analysis_dialect,
+            telemetry_tracker=telemetry_tracker,
         )
         extraction_guardrail_warnings = self._collect_extraction_guardrail_warnings(chunk_extractions)
         retrieval_seconds, extraction_seconds = self._chunk_timing_totals(chunk_extractions)
@@ -292,6 +312,7 @@ class LogicRulesExtractorPipeline:
             merged_extraction=merged_extraction,
             dialect=analysis_dialect or ingestion.dialect,
             raw_source=ingestion.raw_code,
+            telemetry_tracker=telemetry_tracker,
         )
         synthesis.data["run_metadata"] = run_metadata_to_dict(run_metadata)
         logger.info("Stage 5/6 completed in %.2fs (business reasoning)", time.perf_counter() - stage_start)
@@ -309,6 +330,17 @@ class LogicRulesExtractorPipeline:
         synthesis.data["reconciliation"] = reconciliation.to_dict()
         synthesis.data["coverage"] = reconciliation.coverage
         synthesis.data["quality"] = reconciliation.quality
+        telemetry_run_id = stable_id(
+            "telemetry",
+            run_metadata.source_hash if run_metadata else "",
+            run_metadata.configuration_version if run_metadata else "",
+            run_metadata.run_timestamp if run_metadata else "",
+        )
+        telemetry_payload = telemetry_tracker.snapshot(telemetry_run_id).to_dict()
+        run_metadata = attach_run_telemetry(run_metadata, telemetry_payload)
+        ingestion.run_metadata = run_metadata
+        merged_extraction["run_metadata"] = run_metadata_to_dict(run_metadata)
+        synthesis.data["run_metadata"] = run_metadata_to_dict(run_metadata)
         canonical_ir = CanonicalBusinessIR.from_pipeline(
             ingestion=ingestion,
             merged_extraction=merged_extraction,
@@ -365,6 +397,7 @@ class LogicRulesExtractorPipeline:
         ingestion: IngestionResult,
         run_metadata: Optional[RunMetadata] = None,
         analysis_dialect: Optional[str] = None,
+        telemetry_tracker: Optional[LLMTelemetryTracker] = None,
     ) -> list[ChunkExtraction]:
         if not ingestion.chunks:
             return []
@@ -388,6 +421,7 @@ class LogicRulesExtractorPipeline:
                     cache_lock=cache_lock,
                     in_flight=in_flight,
                     cache_namespace=self._chunk_cache_namespace(ingestion, run_metadata),
+                    telemetry_tracker=telemetry_tracker,
                 )
                 results.append(extraction)
             return results
@@ -403,6 +437,7 @@ class LogicRulesExtractorPipeline:
                     cache_lock,
                     in_flight,
                     self._chunk_cache_namespace(ingestion, run_metadata),
+                    telemetry_tracker,
                 )
                 for idx, chunk in enumerate(ingestion.chunks)
             ]
@@ -419,6 +454,7 @@ class LogicRulesExtractorPipeline:
         cache_lock: Optional[threading.Lock] = None,
         in_flight: Optional[Dict[str, threading.Event]] = None,
         cache_namespace: str = "",
+        telemetry_tracker: Optional[LLMTelemetryTracker] = None,
     ) -> tuple[int, ChunkExtraction]:
         timings: Dict[str, float] = {"retrieval": 0.0, "extraction": 0.0}
         query = self._build_retrieval_query(ingestion, chunk)
@@ -485,6 +521,7 @@ class LogicRulesExtractorPipeline:
                 chunk_context=chunk.context_path,
                 embedded_sql=chunk.embedded_sql,
                 dialect=ingestion.concrete_dialect or ingestion.fallback_dialect or "oracle",
+                telemetry_tracker=telemetry_tracker,
             )
         except Exception as exc:  # noqa: BLE001
             extraction = ChunkExtraction(

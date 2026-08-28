@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 from typing import Optional
@@ -53,6 +54,7 @@ from typing import Optional
 from src.ingestion.guardrails import ground_extraction_against_source, validate_extraction_shape
 from src.core.llm_client import supports_chat_completion_seed
 from src.prompts.prompt_loader import get_prompt_set, render_user_prompt
+from src.telemetry.tracker import LLMTelemetryTracker
 
 _EMPTY_EXTRACTION: Dict[str, Any] = {
     "conditions": [],
@@ -83,7 +85,15 @@ class LogicExtractionAgent:
     the configured chat completion client directly.
     """
 
-    def __init__(self, client, model: str, temperature: float = 0.1, seed: Optional[int] = 0):
+    def __init__(
+        self,
+        client,
+        model: str,
+        temperature: float = 0.1,
+        seed: Optional[int] = 0,
+        provider: str = "openai",
+        telemetry_tracker: Optional[LLMTelemetryTracker] = None,
+    ):
         """
         Args:
             client: an initialized OpenAI-compatible chat client instance.
@@ -94,6 +104,8 @@ class LogicExtractionAgent:
         self.model = model
         self.temperature = temperature
         self.seed = seed
+        self.provider = provider
+        self.telemetry_tracker = telemetry_tracker
 
     def extract(
         self,
@@ -107,6 +119,7 @@ class LogicExtractionAgent:
         embedded_sql: List[str] | None = None,
         dialect: str = "oracle",
         model: str | None = None,
+        telemetry_tracker: Optional[LLMTelemetryTracker] = None,
     ) -> ChunkExtraction:
         """`model`, if given, overrides the agent's configured model for
         just this call - lets callers pick a different model per run
@@ -139,7 +152,31 @@ class LogicExtractionAgent:
         }
         if self.seed is not None and supports_chat_completion_seed(self.client):
             completion_kwargs["seed"] = self.seed
-        response = self.client.chat.completions.create(**completion_kwargs)
+        tracker = telemetry_tracker or self.telemetry_tracker
+        response = None
+        call_success = False
+        call_error: Exception | None = None
+        start = time.perf_counter()
+        try:
+            response = self.client.chat.completions.create(**completion_kwargs)
+            call_success = True
+        except Exception as exc:  # noqa: BLE001
+            call_error = exc
+            raise
+        finally:
+            if tracker is not None:
+                try:
+                    tracker.record_call(
+                        stage="extraction",
+                        provider=self.provider,
+                        model_name=model or self.model,
+                        response=response,
+                        latency_seconds=time.perf_counter() - start,
+                        success=call_success,
+                        error=call_error,
+                    )
+                except Exception:
+                    pass
         raw_response = response.choices[0].message.content or ""
 
         data, error = self._parse_json(raw_response)

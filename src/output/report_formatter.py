@@ -209,6 +209,7 @@ class ReportFormatterAgent:
         sections = [
             self._verification_title_block(ingestion, report_filename),
             self._run_metadata_section(ingestion, run_metadata_resolved),
+            self._telemetry_section(run_metadata_resolved),
             self._business_rule_summary_table(rules, include_technical_ids=True),
             self._source_traceability_details(rules, merged_extraction),
             self._validation_summary(rules, merged_extraction, synthesis),
@@ -452,6 +453,45 @@ class ReportFormatterAgent:
         ]
         lines = ["## Run Metadata", "", "| Item | Value |", "|---|---|"]
         lines.extend(f"| {label} | `{value}` |" if value else f"| {label} |  |" for label, value in rows)
+        return "\n".join(lines)
+
+    def _telemetry_section(self, run_metadata: Optional[RunMetadata]) -> str:
+        data = run_metadata_to_dict(run_metadata)
+        telemetry = data.get("telemetry") if isinstance(data, dict) else {}
+        if not isinstance(telemetry, dict) or not telemetry:
+            return ""
+        totals = telemetry.get("totals") if isinstance(telemetry.get("totals"), dict) else {}
+        stage_breakdown = telemetry.get("stage_breakdown") if isinstance(telemetry.get("stage_breakdown"), dict) else {}
+        rows = [
+            ("Run ID", telemetry.get("run_id", "")),
+            ("Total LLM Calls", telemetry.get("call_count", "")),
+            ("Successful Calls", telemetry.get("success_count", "")),
+            ("Failed Calls", telemetry.get("failure_count", "")),
+            ("Prompt Tokens", totals.get("prompt_tokens", "")),
+            ("Completion Tokens", totals.get("completion_tokens", "")),
+            ("Total Tokens", totals.get("total_tokens", "")),
+            ("Telemetry Availability", totals.get("availability", "")),
+        ]
+        lines = ["## LLM Telemetry", "", "| Item | Value |", "|---|---|"]
+        lines.extend(
+            f"| {label} | `{value}` |" if value not in ("", None) else f"| {label} |  |"
+            for label, value in rows
+        )
+        if stage_breakdown:
+            lines.extend(["", "| Stage | Calls | Success | Failure | Tokens | Availability |", "|---|---:|---:|---:|---:|---|"])
+            for stage in sorted(stage_breakdown):
+                summary = stage_breakdown.get(stage, {})
+                tokens = summary.get("token_usage") if isinstance(summary.get("token_usage"), dict) else {}
+                lines.append(
+                    "| {stage} | {calls} | {success} | {failure} | {tokens_total} | {availability} |".format(
+                        stage=stage,
+                        calls=summary.get("call_count", 0),
+                        success=summary.get("success_count", 0),
+                        failure=summary.get("failure_count", 0),
+                        tokens_total=tokens.get("total_tokens", ""),
+                        availability=tokens.get("availability", ""),
+                    )
+                )
         return "\n".join(lines)
 
     @staticmethod

@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-08-27T07:38:43.329260+00:00",
-  "mode": "live",
+  "generated_at": "2026-08-28T07:33:55.472956+00:00",
+  "mode": "deterministic",
   "results": [
     {
       "actual_available": true,
@@ -17,304 +17,8 @@
           "unexpected": []
         },
         "business_rules": {
-          "actual": [
-            [
-              "91-365 days",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "91-365 days",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "else",
-              "set loss or doubtful3 based on doubtful_since",
-              "v_classification"
-            ],
-            [
-              "else",
-              "set loss or doubtful3 based on doubtful_since",
-              ""
-            ],
-            [
-              "v_doubtful_since > 1095",
-              "Set LOSS classification",
-              "v_classification"
-            ],
-            [
-              "v_doubtful_since > 1095",
-              "Set LOSS classification",
-              ""
-            ],
-            [
-              "v_doubtful_since <= 1095",
-              "Set DOUBTFUL3 classification",
-              "v_classification"
-            ],
-            [
-              "v_doubtful_since <= 1095",
-              "Set DOUBTFUL3 classification",
-              ""
-            ],
-            [
-              "ELSE",
-              "Set DOUBTFUL3 classification",
-              "v_classification"
-            ],
-            [
-              "ELSE",
-              "Set DOUBTFUL3 classification",
-              ""
-            ],
-            [
-              "latest calculated_date per account",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "latest calculated_date per account",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "",
-              "set standard classification and 0.40 provision pct",
-              "provision_amount"
-            ],
-            [
-              "",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "",
-              "set standard classification and 0.40 provision pct",
-              "audit log entry"
-            ],
-            [
-              "",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "try block succeeds",
-              "set standard classification and 0.40 provision pct",
-              "audit log entry"
-            ],
-            [
-              "try block succeeds",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "v_overdue_days <= 90",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days <= 90",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "v_overdue_days between 91 and 365",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 91 and 365",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "v_overdue_days between 366 and 1095",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 366 and 1095",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "else",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ]
-          ],
-          "expected": [
-            [
-              "v_overdue_days <= 90",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 91 and 365",
-              "set substandard classification and 15 provision pct",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 366 and 1095",
-              "set doubtful1 or doubtful2 based on doubtful_since",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days > 1095",
-              "set loss or doubtful3 based on doubtful_since",
-              "v_classification"
-            ]
-          ],
-          "f1": 0.06896551724137932,
-          "matches": [
-            [
-              "v_overdue_days <= 90",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ]
-          ],
-          "missing": [
-            [
-              "v_overdue_days between 91 and 365",
-              "set substandard classification and 15 provision pct",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 366 and 1095",
-              "set doubtful1 or doubtful2 based on doubtful_since",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days > 1095",
-              "set loss or doubtful3 based on doubtful_since",
-              "v_classification"
-            ]
-          ],
-          "precision": 0.04,
-          "recall": 0.25,
-          "unexpected": [
-            [
-              "91-365 days",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "91-365 days",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "else",
-              "set loss or doubtful3 based on doubtful_since",
-              "v_classification"
-            ],
-            [
-              "else",
-              "set loss or doubtful3 based on doubtful_since",
-              ""
-            ],
-            [
-              "v_doubtful_since > 1095",
-              "Set LOSS classification",
-              "v_classification"
-            ],
-            [
-              "v_doubtful_since > 1095",
-              "Set LOSS classification",
-              ""
-            ],
-            [
-              "v_doubtful_since <= 1095",
-              "Set DOUBTFUL3 classification",
-              "v_classification"
-            ],
-            [
-              "v_doubtful_since <= 1095",
-              "Set DOUBTFUL3 classification",
-              ""
-            ],
-            [
-              "ELSE",
-              "Set DOUBTFUL3 classification",
-              "v_classification"
-            ],
-            [
-              "ELSE",
-              "Set DOUBTFUL3 classification",
-              ""
-            ],
-            [
-              "latest calculated_date per account",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "latest calculated_date per account",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "",
-              "set standard classification and 0.40 provision pct",
-              "provision_amount"
-            ],
-            [
-              "",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "",
-              "set standard classification and 0.40 provision pct",
-              "audit log entry"
-            ],
-            [
-              "",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "try block succeeds",
-              "set standard classification and 0.40 provision pct",
-              "audit log entry"
-            ],
-            [
-              "try block succeeds",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "v_overdue_days <= 90",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "v_overdue_days between 91 and 365",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 91 and 365",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "v_overdue_days between 366 and 1095",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 366 and 1095",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "else",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ]
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "dialect": {
           "actual": "ORACLE",
@@ -322,83 +26,8 @@
           "match": true
         },
         "important_fields": {
-          "actual": [
-            "account_id",
-            "asset_classification",
-            "between",
-            "calculated date",
-            "calculated_date",
-            "changed on",
-            "doubtful_since_days",
-            "elsif",
-            "end",
-            "if",
-            "last classified date",
-            "last_classified_date",
-            "loan_account",
-            "new_classification",
-            "no_data_found",
-            "npa_provision",
-            "old_classification",
-            "outstanding_amount",
-            "overdue_days",
-            "p_account_id",
-            "provision_amount",
-            "sysdate",
-            "unsecured_amount",
-            "v_classification",
-            "v_doubtful_since",
-            "v_outstanding_amt",
-            "v_overdue_days",
-            "v_provision_pct",
-            "v_unsecured_amt"
-          ],
-          "expected": [
-            "p_account_id",
-            "v_classification",
-            "v_overdue_days",
-            "v_provision_amt",
-            "v_provision_pct"
-          ],
-          "f1": 0.2352941176470588,
-          "matches": [
-            "p_account_id",
-            "v_classification",
-            "v_overdue_days",
-            "v_provision_pct"
-          ],
-          "missing": [
-            "v_provision_amt"
-          ],
-          "precision": 0.13793103448275862,
-          "recall": 0.8,
-          "unexpected": [
-            "account_id",
-            "asset_classification",
-            "between",
-            "calculated date",
-            "calculated_date",
-            "changed on",
-            "doubtful_since_days",
-            "elsif",
-            "end",
-            "if",
-            "last classified date",
-            "last_classified_date",
-            "loan_account",
-            "new_classification",
-            "no_data_found",
-            "npa_provision",
-            "old_classification",
-            "outstanding_amount",
-            "overdue_days",
-            "provision_amount",
-            "sysdate",
-            "unsecured_amount",
-            "v_doubtful_since",
-            "v_outstanding_amt",
-            "v_unsecured_amt"
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "object_type": {
           "actual": "procedure",
@@ -533,9 +162,12 @@
           "unexpected": []
         }
       },
-      "mode": "live",
-      "notes": [],
-      "status": "FAIL"
+      "mode": "deterministic",
+      "notes": [
+        "Live LLM evaluation skipped; deterministic extraction only.",
+        "Business-rule metrics are unavailable in deterministic mode."
+      ],
+      "status": "CHANGED"
     },
     {
       "actual_available": true,
@@ -552,308 +184,8 @@
           "unexpected": []
         },
         "business_rules": {
-          "actual": [
-            [
-              "91-365 days",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "91-365 days",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "v_overdue_days <= 90",
-              "Set STANDARD classification",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days <= 90",
-              "Set STANDARD classification",
-              ""
-            ],
-            [
-              "v_overdue_days between 91 and 365",
-              "Set STANDARD classification",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 91 and 365",
-              "Set STANDARD classification",
-              ""
-            ],
-            [
-              "v_overdue_days between 366 and 1095",
-              "Set DOUBTFUL1 classification",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 366 and 1095",
-              "Set DOUBTFUL1 classification",
-              ""
-            ],
-            [
-              "else",
-              "Set LOSS classification",
-              "v_classification"
-            ],
-            [
-              "else",
-              "Set LOSS classification",
-              ""
-            ],
-            [
-              "ELSE",
-              "Set LOSS classification",
-              "v_classification"
-            ],
-            [
-              "ELSE",
-              "Set LOSS classification",
-              ""
-            ],
-            [
-              "v_overdue_days > 1095",
-              "Set LOSS classification",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days > 1095",
-              "Set LOSS classification",
-              ""
-            ],
-            [
-              "91-365 days",
-              "set loss classification",
-              "provision_amount"
-            ],
-            [
-              "91-365 days",
-              "set loss classification",
-              ""
-            ],
-            [
-              "91-365 days",
-              "set standard classification and 0.40 provision pct",
-              "new_classification, change_date"
-            ],
-            [
-              "91-365 days",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "v_overdue_days <= 90",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days <= 90",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "v_overdue_days between 91 and 365",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 91 and 365",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "v_overdue_days between 366 and 1095",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 366 and 1095",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "else",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ]
-          ],
-          "expected": [
-            [
-              "v_overdue_days <= 90",
-              "set standard classification",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 91 and 365",
-              "set substandard classification",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 366 and 1095",
-              "set doubtful1 classification",
-              "v_classification"
-            ],
-            [
-              "else",
-              "set loss classification",
-              "v_classification"
-            ]
-          ],
-          "f1": null,
-          "matches": [],
-          "missing": [
-            [
-              "v_overdue_days <= 90",
-              "set standard classification",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 91 and 365",
-              "set substandard classification",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 366 and 1095",
-              "set doubtful1 classification",
-              "v_classification"
-            ],
-            [
-              "else",
-              "set loss classification",
-              "v_classification"
-            ]
-          ],
-          "precision": 0.0,
-          "recall": 0.0,
-          "unexpected": [
-            [
-              "91-365 days",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "91-365 days",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "v_overdue_days <= 90",
-              "Set STANDARD classification",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days <= 90",
-              "Set STANDARD classification",
-              ""
-            ],
-            [
-              "v_overdue_days between 91 and 365",
-              "Set STANDARD classification",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 91 and 365",
-              "Set STANDARD classification",
-              ""
-            ],
-            [
-              "v_overdue_days between 366 and 1095",
-              "Set DOUBTFUL1 classification",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 366 and 1095",
-              "Set DOUBTFUL1 classification",
-              ""
-            ],
-            [
-              "else",
-              "Set LOSS classification",
-              "v_classification"
-            ],
-            [
-              "else",
-              "Set LOSS classification",
-              ""
-            ],
-            [
-              "ELSE",
-              "Set LOSS classification",
-              "v_classification"
-            ],
-            [
-              "ELSE",
-              "Set LOSS classification",
-              ""
-            ],
-            [
-              "v_overdue_days > 1095",
-              "Set LOSS classification",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days > 1095",
-              "Set LOSS classification",
-              ""
-            ],
-            [
-              "91-365 days",
-              "set loss classification",
-              "provision_amount"
-            ],
-            [
-              "91-365 days",
-              "set loss classification",
-              ""
-            ],
-            [
-              "91-365 days",
-              "set standard classification and 0.40 provision pct",
-              "new_classification, change_date"
-            ],
-            [
-              "91-365 days",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "v_overdue_days <= 90",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days <= 90",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "v_overdue_days between 91 and 365",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 91 and 365",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "v_overdue_days between 366 and 1095",
-              "set standard classification and 0.40 provision pct",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days between 366 and 1095",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ],
-            [
-              "else",
-              "set standard classification and 0.40 provision pct",
-              ""
-            ]
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "dialect": {
           "actual": "ORACLE",
@@ -861,60 +193,8 @@
           "match": true
         },
         "important_fields": {
-          "actual": [
-            "account_id",
-            "asset_classification",
-            "between",
-            "change_date",
-            "classification_date",
-            "else",
-            "elsif",
-            "loan_account",
-            "new_classification",
-            "new_classification, change_date",
-            "npa_provision",
-            "outstanding_amount",
-            "overdue_days",
-            "p_account_id",
-            "provision_amount",
-            "v_classification",
-            "v_outstanding",
-            "v_overdue_days",
-            "v_provision_pct"
-          ],
-          "expected": [
-            "p_account_id",
-            "v_classification",
-            "v_overdue_days",
-            "v_provision_pct"
-          ],
-          "f1": 0.34782608695652173,
-          "matches": [
-            "p_account_id",
-            "v_classification",
-            "v_overdue_days",
-            "v_provision_pct"
-          ],
-          "missing": [],
-          "precision": 0.21052631578947367,
-          "recall": 1.0,
-          "unexpected": [
-            "account_id",
-            "asset_classification",
-            "between",
-            "change_date",
-            "classification_date",
-            "else",
-            "elsif",
-            "loan_account",
-            "new_classification",
-            "new_classification, change_date",
-            "npa_provision",
-            "outstanding_amount",
-            "overdue_days",
-            "provision_amount",
-            "v_outstanding"
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "object_type": {
           "actual": "procedure",
@@ -1049,9 +329,12 @@
           "unexpected": []
         }
       },
-      "mode": "live",
-      "notes": [],
-      "status": "FAIL"
+      "mode": "deterministic",
+      "notes": [
+        "Live LLM evaluation skipped; deterministic extraction only.",
+        "Business-rule metrics are unavailable in deterministic mode."
+      ],
+      "status": "CHANGED"
     },
     {
       "actual_available": true,
@@ -1072,294 +355,8 @@
           ]
         },
         "business_rules": {
-          "actual": [
-            [
-              "source row does not match target",
-              "set standard classification and 15 provision pct",
-              "v_classification"
-            ],
-            [
-              "source row does not match target",
-              "set standard classification and 15 provision pct",
-              ""
-            ],
-            [
-              "rec.overdue_days between 91 and 365",
-              "Set STANDARD classification",
-              "v_classification"
-            ],
-            [
-              "rec.overdue_days between 91 and 365",
-              "Set STANDARD classification",
-              ""
-            ],
-            [
-              "rec.overdue_days between 366 and 1095",
-              "Set DOUBTFUL1 classification",
-              "v_classification"
-            ],
-            [
-              "rec.overdue_days between 366 and 1095",
-              "Set DOUBTFUL1 classification",
-              ""
-            ],
-            [
-              "else",
-              "Set LOSS classification",
-              "v_classification"
-            ],
-            [
-              "else",
-              "Set LOSS classification",
-              ""
-            ],
-            [
-              "ELSE",
-              "Set LOSS classification",
-              "v_classification"
-            ],
-            [
-              "ELSE",
-              "Set LOSS classification",
-              ""
-            ],
-            [
-              "v_overdue_days > 1095",
-              "Set LOSS classification",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days > 1095",
-              "Set LOSS classification",
-              ""
-            ],
-            [
-              "source row does not match target",
-              "set standard classification and 100 provision pct",
-              "provision_amount"
-            ],
-            [
-              "source row does not match target",
-              "set standard classification and 100 provision pct",
-              ""
-            ],
-            [
-              "source row does not match target",
-              "set standard classification and 100 provision pct",
-              "new_classification, change_date"
-            ],
-            [
-              "source row does not match target",
-              "set standard classification and 100 provision pct",
-              ""
-            ],
-            [
-              "rec.overdue_days between 91 and 365",
-              "set standard classification and 15 provision pct",
-              "v_classification"
-            ],
-            [
-              "rec.overdue_days between 91 and 365",
-              "set standard classification and 15 provision pct",
-              ""
-            ],
-            [
-              "else",
-              "set standard classification and 25 provision pct",
-              ""
-            ],
-            [
-              "rec.overdue_days between 366 and 1095",
-              "set standard classification and 25 provision pct",
-              "v_classification"
-            ],
-            [
-              "rec.overdue_days between 366 and 1095",
-              "set standard classification and 25 provision pct",
-              ""
-            ],
-            [
-              "source row matches target",
-              "update existing provision row",
-              ""
-            ],
-            [
-              "source row does not match target",
-              "insert new provision row",
-              ""
-            ],
-            [
-              "overdue_days > 90",
-              "process only overdue accounts",
-              ""
-            ]
-          ],
-          "expected": [
-            [
-              "overdue_days > 90",
-              "process only overdue accounts",
-              ""
-            ],
-            [
-              "91-365 days",
-              "set substandard and 15 pct",
-              ""
-            ],
-            [
-              "366-1095 days",
-              "set doubtful1 and 25 pct",
-              ""
-            ],
-            [
-              "else",
-              "set loss and 100 pct",
-              ""
-            ]
-          ],
-          "f1": 0.07142857142857142,
-          "matches": [
-            [
-              "overdue_days > 90",
-              "process only overdue accounts",
-              ""
-            ]
-          ],
-          "missing": [
-            [
-              "91-365 days",
-              "set substandard and 15 pct",
-              ""
-            ],
-            [
-              "366-1095 days",
-              "set doubtful1 and 25 pct",
-              ""
-            ],
-            [
-              "else",
-              "set loss and 100 pct",
-              ""
-            ]
-          ],
-          "precision": 0.041666666666666664,
-          "recall": 0.25,
-          "unexpected": [
-            [
-              "source row does not match target",
-              "set standard classification and 15 provision pct",
-              "v_classification"
-            ],
-            [
-              "source row does not match target",
-              "set standard classification and 15 provision pct",
-              ""
-            ],
-            [
-              "rec.overdue_days between 91 and 365",
-              "Set STANDARD classification",
-              "v_classification"
-            ],
-            [
-              "rec.overdue_days between 91 and 365",
-              "Set STANDARD classification",
-              ""
-            ],
-            [
-              "rec.overdue_days between 366 and 1095",
-              "Set DOUBTFUL1 classification",
-              "v_classification"
-            ],
-            [
-              "rec.overdue_days between 366 and 1095",
-              "Set DOUBTFUL1 classification",
-              ""
-            ],
-            [
-              "else",
-              "Set LOSS classification",
-              "v_classification"
-            ],
-            [
-              "else",
-              "Set LOSS classification",
-              ""
-            ],
-            [
-              "ELSE",
-              "Set LOSS classification",
-              "v_classification"
-            ],
-            [
-              "ELSE",
-              "Set LOSS classification",
-              ""
-            ],
-            [
-              "v_overdue_days > 1095",
-              "Set LOSS classification",
-              "v_classification"
-            ],
-            [
-              "v_overdue_days > 1095",
-              "Set LOSS classification",
-              ""
-            ],
-            [
-              "source row does not match target",
-              "set standard classification and 100 provision pct",
-              "provision_amount"
-            ],
-            [
-              "source row does not match target",
-              "set standard classification and 100 provision pct",
-              ""
-            ],
-            [
-              "source row does not match target",
-              "set standard classification and 100 provision pct",
-              "new_classification, change_date"
-            ],
-            [
-              "source row does not match target",
-              "set standard classification and 100 provision pct",
-              ""
-            ],
-            [
-              "rec.overdue_days between 91 and 365",
-              "set standard classification and 15 provision pct",
-              "v_classification"
-            ],
-            [
-              "rec.overdue_days between 91 and 365",
-              "set standard classification and 15 provision pct",
-              ""
-            ],
-            [
-              "else",
-              "set standard classification and 25 provision pct",
-              ""
-            ],
-            [
-              "rec.overdue_days between 366 and 1095",
-              "set standard classification and 25 provision pct",
-              "v_classification"
-            ],
-            [
-              "rec.overdue_days between 366 and 1095",
-              "set standard classification and 25 provision pct",
-              ""
-            ],
-            [
-              "source row matches target",
-              "update existing provision row",
-              ""
-            ],
-            [
-              "source row does not match target",
-              "insert new provision row",
-              ""
-            ]
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "dialect": {
           "actual": "ORACLE",
@@ -1367,61 +364,8 @@
           "match": true
         },
         "important_fields": {
-          "actual": [
-            "account_id",
-            "asset_classification",
-            "between",
-            "change_date",
-            "classification_date",
-            "else",
-            "elsif",
-            "loan_account",
-            "matched",
-            "new_classification",
-            "new_classification, change_date",
-            "not",
-            "npa_provision",
-            "outstanding_amount",
-            "overdue_days",
-            "provision_amount",
-            "sysdate",
-            "v_classification",
-            "v_new_classification",
-            "v_provision_pct"
-          ],
-          "expected": [
-            "overdue_days",
-            "v_new_classification",
-            "v_provision_pct"
-          ],
-          "f1": 0.2608695652173913,
-          "matches": [
-            "overdue_days",
-            "v_new_classification",
-            "v_provision_pct"
-          ],
-          "missing": [],
-          "precision": 0.15,
-          "recall": 1.0,
-          "unexpected": [
-            "account_id",
-            "asset_classification",
-            "between",
-            "change_date",
-            "classification_date",
-            "else",
-            "elsif",
-            "loan_account",
-            "matched",
-            "new_classification",
-            "new_classification, change_date",
-            "not",
-            "npa_provision",
-            "outstanding_amount",
-            "provision_amount",
-            "sysdate",
-            "v_classification"
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "object_type": {
           "actual": "plsql_block",
@@ -1501,22 +445,19 @@
         },
         "tables_read": {
           "actual": [
-            "loan_account",
-            "npa_provision"
+            "loan_account"
           ],
           "expected": [
             "loan_account"
           ],
-          "f1": 0.6666666666666666,
+          "f1": 1.0,
           "matches": [
             "loan_account"
           ],
           "missing": [],
-          "precision": 0.5,
+          "precision": 1.0,
           "recall": 1.0,
-          "unexpected": [
-            "npa_provision"
-          ]
+          "unexpected": []
         },
         "tables_written": {
           "actual": [
@@ -1541,11 +482,13 @@
           "unexpected": []
         }
       },
-      "mode": "live",
+      "mode": "deterministic",
       "notes": [
+        "Live LLM evaluation skipped; deterministic extraction only.",
+        "Business-rule metrics are unavailable in deterministic mode.",
         "Expected output is marked for manual confirmation."
       ],
-      "status": "FAIL"
+      "status": "CHANGED"
     },
     {
       "actual_available": true,
@@ -1553,10 +496,7 @@
       "checks": {
         "ambiguities": {
           "actual": [
-            "could not deterministically identify the database object type from the raw source.",
-            "it is not clear why the old classification is always set to null in the audit log when a failure is logged.",
-            "the extraction does not show the full definition or source of the account record being processed, making it unclear how rec.account_id and rec.overdue_days are populated.",
-            "the if statement referenced in the extraction is incomplete and does not specify a condition or branches, so its business impact cannot be determined."
+            "could not deterministically identify the database object type from the raw source."
           ],
           "expected": [],
           "f1": null,
@@ -1565,245 +505,12 @@
           "precision": 0.0,
           "recall": null,
           "unexpected": [
-            "could not deterministically identify the database object type from the raw source.",
-            "it is not clear why the old classification is always set to null in the audit log when a failure is logged.",
-            "the extraction does not show the full definition or source of the account record being processed, making it unclear how rec.account_id and rec.overdue_days are populated.",
-            "the if statement referenced in the extraction is incomplete and does not specify a condition or branches, so its business impact cannot be determined."
+            "could not deterministically identify the database object type from the raw source."
           ]
         },
         "business_rules": {
-          "actual": [
-            [
-              "source row does not match target",
-              "set standard classification",
-              ""
-            ],
-            [
-              "source row does not match target",
-              "assign bucket_0_30",
-              "ageing_bucket"
-            ],
-            [
-              "source row does not match target",
-              "assign bucket_0_30",
-              ""
-            ],
-            [
-              "rec.overdue_days <= 30",
-              "Assign BUCKET_0_30",
-              "ageing_bucket"
-            ],
-            [
-              "rec.overdue_days <= 30",
-              "Assign BUCKET_0_30",
-              ""
-            ],
-            [
-              "rec.overdue_days <= 60",
-              "Assign BUCKET_31_60",
-              "ageing_bucket"
-            ],
-            [
-              "rec.overdue_days <= 60",
-              "Assign BUCKET_31_60",
-              ""
-            ],
-            [
-              "rec.overdue_days <= 90",
-              "Assign BUCKET_61_90",
-              "ageing_bucket"
-            ],
-            [
-              "rec.overdue_days <= 90",
-              "Assign BUCKET_61_90",
-              ""
-            ],
-            [
-              "else",
-              "Assign BUCKET_90_PLUS",
-              "ageing_bucket"
-            ],
-            [
-              "else",
-              "Assign BUCKET_90_PLUS",
-              ""
-            ],
-            [
-              "ELSE",
-              "Assign BUCKET_90_PLUS",
-              "ageing_bucket"
-            ],
-            [
-              "ELSE",
-              "Assign BUCKET_90_PLUS",
-              ""
-            ],
-            [
-              "rec.overdue_days <= 30",
-              "assign bucket_0_30",
-              ""
-            ],
-            [
-              "rec.overdue_days <= 60",
-              "assign bucket_0_30",
-              ""
-            ],
-            [
-              "rec.overdue_days <= 90",
-              "assign bucket_0_30",
-              ""
-            ],
-            [
-              "source row matches target",
-              "update existing provision row",
-              ""
-            ],
-            [
-              "source row does not match target",
-              "insert new provision row",
-              ""
-            ]
-          ],
-          "expected": [
-            [
-              "<= 30 days",
-              "assign bucket_0_30",
-              ""
-            ],
-            [
-              "<= 60 days",
-              "assign bucket_31_60",
-              ""
-            ],
-            [
-              "<= 90 days",
-              "assign bucket_61_90",
-              ""
-            ],
-            [
-              "> 90 days",
-              "assign bucket_90_plus",
-              ""
-            ]
-          ],
-          "f1": null,
-          "matches": [],
-          "missing": [
-            [
-              "<= 30 days",
-              "assign bucket_0_30",
-              ""
-            ],
-            [
-              "<= 60 days",
-              "assign bucket_31_60",
-              ""
-            ],
-            [
-              "<= 90 days",
-              "assign bucket_61_90",
-              ""
-            ],
-            [
-              "> 90 days",
-              "assign bucket_90_plus",
-              ""
-            ]
-          ],
-          "precision": 0.0,
-          "recall": 0.0,
-          "unexpected": [
-            [
-              "source row does not match target",
-              "set standard classification",
-              ""
-            ],
-            [
-              "source row does not match target",
-              "assign bucket_0_30",
-              "ageing_bucket"
-            ],
-            [
-              "source row does not match target",
-              "assign bucket_0_30",
-              ""
-            ],
-            [
-              "rec.overdue_days <= 30",
-              "Assign BUCKET_0_30",
-              "ageing_bucket"
-            ],
-            [
-              "rec.overdue_days <= 30",
-              "Assign BUCKET_0_30",
-              ""
-            ],
-            [
-              "rec.overdue_days <= 60",
-              "Assign BUCKET_31_60",
-              "ageing_bucket"
-            ],
-            [
-              "rec.overdue_days <= 60",
-              "Assign BUCKET_31_60",
-              ""
-            ],
-            [
-              "rec.overdue_days <= 90",
-              "Assign BUCKET_61_90",
-              "ageing_bucket"
-            ],
-            [
-              "rec.overdue_days <= 90",
-              "Assign BUCKET_61_90",
-              ""
-            ],
-            [
-              "else",
-              "Assign BUCKET_90_PLUS",
-              "ageing_bucket"
-            ],
-            [
-              "else",
-              "Assign BUCKET_90_PLUS",
-              ""
-            ],
-            [
-              "ELSE",
-              "Assign BUCKET_90_PLUS",
-              "ageing_bucket"
-            ],
-            [
-              "ELSE",
-              "Assign BUCKET_90_PLUS",
-              ""
-            ],
-            [
-              "rec.overdue_days <= 30",
-              "assign bucket_0_30",
-              ""
-            ],
-            [
-              "rec.overdue_days <= 60",
-              "assign bucket_0_30",
-              ""
-            ],
-            [
-              "rec.overdue_days <= 90",
-              "assign bucket_0_30",
-              ""
-            ],
-            [
-              "source row matches target",
-              "update existing provision row",
-              ""
-            ],
-            [
-              "source row does not match target",
-              "insert new provision row",
-              ""
-            ]
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "dialect": {
           "actual": "ORACLE",
@@ -1811,69 +518,8 @@
           "match": true
         },
         "important_fields": {
-          "actual": [
-            "account_id",
-            "ageing bucket",
-            "ageing_update_failed",
-            "bucket_0_30",
-            "bucket_31_60",
-            "bucket_61_90",
-            "bucket_90_plus",
-            "else",
-            "elsif",
-            "last_updated",
-            "matched",
-            "new_classification",
-            "not",
-            "null",
-            "old_classification",
-            "outstanding_amount",
-            "overdue_ageing_summary",
-            "overdue_days",
-            "sqlerrm",
-            "status",
-            "sysdate",
-            "v_ageing_bucket",
-            "values"
-          ],
-          "expected": [
-            "overdue_days",
-            "v_ageing_bucket",
-            "v_processed_count"
-          ],
-          "f1": 0.15384615384615383,
-          "matches": [
-            "overdue_days",
-            "v_ageing_bucket"
-          ],
-          "missing": [
-            "v_processed_count"
-          ],
-          "precision": 0.08695652173913043,
-          "recall": 0.6666666666666666,
-          "unexpected": [
-            "account_id",
-            "ageing bucket",
-            "ageing_update_failed",
-            "bucket_0_30",
-            "bucket_31_60",
-            "bucket_61_90",
-            "bucket_90_plus",
-            "else",
-            "elsif",
-            "last_updated",
-            "matched",
-            "new_classification",
-            "not",
-            "null",
-            "old_classification",
-            "outstanding_amount",
-            "overdue_ageing_summary",
-            "sqlerrm",
-            "status",
-            "sysdate",
-            "values"
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "object_type": {
           "actual": "plsql_block",
@@ -1950,22 +596,19 @@
         },
         "tables_read": {
           "actual": [
-            "loan_account",
-            "overdue_ageing_summary"
+            "loan_account"
           ],
           "expected": [
             "loan_account"
           ],
-          "f1": 0.6666666666666666,
+          "f1": 1.0,
           "matches": [
             "loan_account"
           ],
           "missing": [],
-          "precision": 0.5,
+          "precision": 1.0,
           "recall": 1.0,
-          "unexpected": [
-            "overdue_ageing_summary"
-          ]
+          "unexpected": []
         },
         "tables_written": {
           "actual": [
@@ -1990,11 +633,13 @@
           "unexpected": []
         }
       },
-      "mode": "live",
+      "mode": "deterministic",
       "notes": [
+        "Live LLM evaluation skipped; deterministic extraction only.",
+        "Business-rule metrics are unavailable in deterministic mode.",
         "Expected output is marked for manual confirmation."
       ],
-      "status": "FAIL"
+      "status": "CHANGED"
     },
     {
       "actual_available": true,
@@ -2011,64 +656,8 @@
           "unexpected": []
         },
         "business_rules": {
-          "actual": [
-            [
-              "latest classification_date per account",
-              "show only non-standard accounts",
-              ""
-            ],
-            [
-              "latest classification_date per account",
-              "keep only most recent provision row",
-              "classification_date, account_id"
-            ],
-            [
-              "latest classification_date per account",
-              "keep only most recent provision row",
-              ""
-            ]
-          ],
-          "expected": [
-            [
-              "asset_classification != standard",
-              "show only non-standard accounts",
-              ""
-            ],
-            [
-              "latest classification_date per account",
-              "keep only most recent provision row",
-              ""
-            ]
-          ],
-          "f1": 0.4,
-          "matches": [
-            [
-              "latest classification_date per account",
-              "keep only most recent provision row",
-              ""
-            ]
-          ],
-          "missing": [
-            [
-              "asset_classification != standard",
-              "show only non-standard accounts",
-              ""
-            ]
-          ],
-          "precision": 0.3333333333333333,
-          "recall": 0.5,
-          "unexpected": [
-            [
-              "latest classification_date per account",
-              "show only non-standard accounts",
-              ""
-            ],
-            [
-              "latest classification_date per account",
-              "keep only most recent provision row",
-              ""
-            ]
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "dialect": {
           "actual": "ORACLE",
@@ -2076,38 +665,8 @@
           "match": true
         },
         "important_fields": {
-          "actual": [
-            "account_id",
-            "asset_classification",
-            "classification_date",
-            "classification_date, account_id",
-            "customer_id",
-            "max",
-            "npa_provision"
-          ],
-          "expected": [
-            "account_id",
-            "asset_classification",
-            "customer_id",
-            "provision_amount"
-          ],
-          "f1": 0.5454545454545454,
-          "matches": [
-            "account_id",
-            "asset_classification",
-            "customer_id"
-          ],
-          "missing": [
-            "provision_amount"
-          ],
-          "precision": 0.42857142857142855,
-          "recall": 0.75,
-          "unexpected": [
-            "classification_date",
-            "classification_date, account_id",
-            "max",
-            "npa_provision"
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "object_type": {
           "actual": "view",
@@ -2191,9 +750,12 @@
           "unexpected": []
         }
       },
-      "mode": "live",
-      "notes": [],
-      "status": "FAIL"
+      "mode": "deterministic",
+      "notes": [
+        "Live LLM evaluation skipped; deterministic extraction only.",
+        "Business-rule metrics are unavailable in deterministic mode."
+      ],
+      "status": "CHANGED"
     },
     {
       "actual_available": true,
@@ -2210,58 +772,8 @@
           "unexpected": []
         },
         "business_rules": {
-          "actual": [
-            [
-              "asset_classification is not null",
-              "include only classified accounts",
-              ""
-            ],
-            [
-              "asset_classification is not null",
-              "summarize latest provision values",
-              ""
-            ],
-            [
-              "latest calculated_date per account",
-              "summarize latest provision values",
-              ""
-            ]
-          ],
-          "expected": [
-            [
-              "asset_classification is not null",
-              "include only classified accounts",
-              ""
-            ],
-            [
-              "latest calculated_date per account",
-              "summarize latest provision values",
-              ""
-            ]
-          ],
-          "f1": 0.8,
-          "matches": [
-            [
-              "asset_classification is not null",
-              "include only classified accounts",
-              ""
-            ],
-            [
-              "latest calculated_date per account",
-              "summarize latest provision values",
-              ""
-            ]
-          ],
-          "missing": [],
-          "precision": 0.6666666666666666,
-          "recall": 1.0,
-          "unexpected": [
-            [
-              "asset_classification is not null",
-              "summarize latest provision values",
-              ""
-            ]
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "dialect": {
           "actual": "ORACLE",
@@ -2269,49 +781,8 @@
           "match": true
         },
         "important_fields": {
-          "actual": [
-            "account_count",
-            "account_id",
-            "asset_classification",
-            "calculated_date",
-            "is",
-            "max",
-            "not",
-            "np2",
-            "npa_provision",
-            "null",
-            "total_outstanding",
-            "total_provision"
-          ],
-          "expected": [
-            "account_count",
-            "asset_classification",
-            "branch_code",
-            "total_outstanding",
-            "total_provision"
-          ],
-          "f1": 0.47058823529411764,
-          "matches": [
-            "account_count",
-            "asset_classification",
-            "total_outstanding",
-            "total_provision"
-          ],
-          "missing": [
-            "branch_code"
-          ],
-          "precision": 0.3333333333333333,
-          "recall": 0.8,
-          "unexpected": [
-            "account_id",
-            "calculated_date",
-            "is",
-            "max",
-            "not",
-            "np2",
-            "npa_provision",
-            "null"
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "object_type": {
           "actual": "view",
@@ -2395,9 +866,12 @@
           "unexpected": []
         }
       },
-      "mode": "live",
-      "notes": [],
-      "status": "PASS"
+      "mode": "deterministic",
+      "notes": [
+        "Live LLM evaluation skipped; deterministic extraction only.",
+        "Business-rule metrics are unavailable in deterministic mode."
+      ],
+      "status": "CHANGED"
     },
     {
       "actual_available": true,
@@ -2414,108 +888,8 @@
           "unexpected": []
         },
         "business_rules": {
-          "actual": [
-            [
-              "try block succeeds",
-              "update account status and audit the change",
-              "status, accountid"
-            ],
-            [
-              "try block succeeds",
-              "update account status and audit the change",
-              ""
-            ],
-            [
-              "try block succeeds",
-              "update account status and audit the change",
-              "updatedat"
-            ],
-            [
-              "try block succeeds",
-              "update account status and audit the change",
-              ""
-            ],
-            [
-              "try block succeeds",
-              "update account status and audit the change",
-              "accountaudit entry"
-            ],
-            [
-              "try block succeeds",
-              "update account status and audit the change",
-              ""
-            ],
-            [
-              "catch block",
-              "log error message",
-              "errorlog entry"
-            ],
-            [
-              "catch block",
-              "log error message",
-              ""
-            ]
-          ],
-          "expected": [
-            [
-              "try block succeeds",
-              "update account status and audit the change",
-              ""
-            ],
-            [
-              "catch block",
-              "log error message",
-              ""
-            ]
-          ],
-          "f1": 0.4,
-          "matches": [
-            [
-              "try block succeeds",
-              "update account status and audit the change",
-              ""
-            ],
-            [
-              "catch block",
-              "log error message",
-              ""
-            ]
-          ],
-          "missing": [],
-          "precision": 0.25,
-          "recall": 1.0,
-          "unexpected": [
-            [
-              "try block succeeds",
-              "update account status and audit the change",
-              ""
-            ],
-            [
-              "try block succeeds",
-              "update account status and audit the change",
-              "updatedat"
-            ],
-            [
-              "try block succeeds",
-              "update account status and audit the change",
-              ""
-            ],
-            [
-              "try block succeeds",
-              "update account status and audit the change",
-              "accountaudit entry"
-            ],
-            [
-              "try block succeeds",
-              "update account status and audit the change",
-              ""
-            ],
-            [
-              "catch block",
-              "log error message",
-              ""
-            ]
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "dialect": {
           "actual": "TSQL",
@@ -2523,47 +897,8 @@
           "match": true
         },
         "important_fields": {
-          "actual": [
-            "@accountid",
-            "@newstatus",
-            "account",
-            "accountaudit entry",
-            "changedat",
-            "createdat",
-            "errorlog entry",
-            "errormessage",
-            "getdate",
-            "status",
-            "status, accountid",
-            "updatedat"
-          ],
-          "expected": [
-            "@accountid",
-            "@newstatus",
-            "errormessage",
-            "status",
-            "updatedat"
-          ],
-          "f1": 0.5882352941176471,
-          "matches": [
-            "@accountid",
-            "@newstatus",
-            "errormessage",
-            "status",
-            "updatedat"
-          ],
-          "missing": [],
-          "precision": 0.4166666666666667,
-          "recall": 1.0,
-          "unexpected": [
-            "account",
-            "accountaudit entry",
-            "changedat",
-            "createdat",
-            "errorlog entry",
-            "getdate",
-            "status, accountid"
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "object_type": {
           "actual": "procedure",
@@ -2710,11 +1045,13 @@
           "unexpected": []
         }
       },
-      "mode": "live",
+      "mode": "deterministic",
       "notes": [
+        "Live LLM evaluation skipped; deterministic extraction only.",
+        "Business-rule metrics are unavailable in deterministic mode.",
         "Expected output is marked for manual confirmation."
       ],
-      "status": "PASS"
+      "status": "CHANGED"
     },
     {
       "actual_available": true,
@@ -2735,78 +1072,8 @@
           ]
         },
         "business_rules": {
-          "actual": [
-            [
-              "source row does not match target",
-              "update existing provision row",
-              "provision_amount"
-            ],
-            [
-              "source row does not match target",
-              "update existing provision row",
-              ""
-            ],
-            [
-              "source row does not match target",
-              "insert new provision row",
-              "provision_amount"
-            ],
-            [
-              "source row does not match target",
-              "insert new provision row",
-              ""
-            ],
-            [
-              "source row matches target",
-              "update existing provision row",
-              ""
-            ]
-          ],
-          "expected": [
-            [
-              "source row matches target",
-              "update existing provision row",
-              ""
-            ],
-            [
-              "source row does not match target",
-              "insert new provision row",
-              ""
-            ]
-          ],
-          "f1": 0.5714285714285715,
-          "matches": [
-            [
-              "source row matches target",
-              "update existing provision row",
-              ""
-            ],
-            [
-              "source row does not match target",
-              "insert new provision row",
-              ""
-            ]
-          ],
-          "missing": [],
-          "precision": 0.4,
-          "recall": 1.0,
-          "unexpected": [
-            [
-              "source row does not match target",
-              "update existing provision row",
-              "provision_amount"
-            ],
-            [
-              "source row does not match target",
-              "update existing provision row",
-              ""
-            ],
-            [
-              "source row does not match target",
-              "insert new provision row",
-              ""
-            ]
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "dialect": {
           "actual": "TSQL",
@@ -2814,40 +1081,8 @@
           "match": true
         },
         "important_fields": {
-          "actual": [
-            "account_id",
-            "created_at",
-            "getdate",
-            "matched",
-            "no",
-            "not",
-            "npa_provision",
-            "provision_amount",
-            "updated_at"
-          ],
-          "expected": [
-            "account_id",
-            "created_at",
-            "provision_amount",
-            "updated_at"
-          ],
-          "f1": 0.6153846153846153,
-          "matches": [
-            "account_id",
-            "created_at",
-            "provision_amount",
-            "updated_at"
-          ],
-          "missing": [],
-          "precision": 0.4444444444444444,
-          "recall": 1.0,
-          "unexpected": [
-            "getdate",
-            "matched",
-            "no",
-            "not",
-            "npa_provision"
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "object_type": {
           "actual": "procedure",
@@ -2903,21 +1138,21 @@
         },
         "tables_read": {
           "actual": [
-            "dbo.npa_provision",
             "dbo.staging_provisioning"
           ],
           "expected": [
             "dbo.npa_provision",
             "dbo.staging_provisioning"
           ],
-          "f1": 1.0,
+          "f1": 0.6666666666666666,
           "matches": [
-            "dbo.npa_provision",
             "dbo.staging_provisioning"
           ],
-          "missing": [],
+          "missing": [
+            "dbo.npa_provision"
+          ],
           "precision": 1.0,
-          "recall": 1.0,
+          "recall": 0.5,
           "unexpected": []
         },
         "tables_written": {
@@ -2937,11 +1172,13 @@
           "unexpected": []
         }
       },
-      "mode": "live",
+      "mode": "deterministic",
       "notes": [
+        "Live LLM evaluation skipped; deterministic extraction only.",
+        "Business-rule metrics are unavailable in deterministic mode.",
         "Expected output is marked for manual confirmation."
       ],
-      "status": "PASS"
+      "status": "CHANGED"
     },
     {
       "actual_available": true,
@@ -2958,179 +1195,8 @@
           "unexpected": []
         },
         "business_rules": {
-          "actual": [
-            [
-              "else",
-              "set high risk band",
-              ""
-            ],
-            [
-              "dpddays <= 30",
-              "Set unchanged risk band",
-              ""
-            ],
-            [
-              "dpddays <= 90",
-              "Set unchanged risk band",
-              ""
-            ],
-            [
-              "else",
-              "Set HIGH risk band",
-              ""
-            ],
-            [
-              "ELSE",
-              "Set HIGH risk band",
-              ""
-            ],
-            [
-              "DpdDays > 90",
-              "Set HIGH risk band",
-              ""
-            ],
-            [
-              "try block succeeds",
-              "set low risk band",
-              ""
-            ],
-            [
-              "dpddays <= 30",
-              "Set LOW risk band",
-              ""
-            ],
-            [
-              "dpddays <= 90",
-              "Set unchanged risk band",
-              ""
-            ],
-            [
-              "else",
-              "Set unchanged risk band",
-              ""
-            ],
-            [
-              "ELSE",
-              "Set unchanged risk band",
-              ""
-            ],
-            [
-              "try block succeeds",
-              "log error message",
-              ""
-            ],
-            [
-              "dpddays <= 30",
-              "set low risk band",
-              ""
-            ],
-            [
-              "dpddays <= 90",
-              "set low risk band",
-              ""
-            ]
-          ],
-          "expected": [
-            [
-              "dpddays <= 30",
-              "set low risk band",
-              ""
-            ],
-            [
-              "dpddays <= 90",
-              "set medium risk band",
-              ""
-            ],
-            [
-              "else",
-              "set high risk band",
-              ""
-            ]
-          ],
-          "f1": 0.23529411764705882,
-          "matches": [
-            [
-              "dpddays <= 30",
-              "set low risk band",
-              ""
-            ],
-            [
-              "else",
-              "set high risk band",
-              ""
-            ]
-          ],
-          "missing": [
-            [
-              "dpddays <= 90",
-              "set medium risk band",
-              ""
-            ]
-          ],
-          "precision": 0.14285714285714285,
-          "recall": 0.6666666666666666,
-          "unexpected": [
-            [
-              "dpddays <= 30",
-              "Set unchanged risk band",
-              ""
-            ],
-            [
-              "dpddays <= 90",
-              "Set unchanged risk band",
-              ""
-            ],
-            [
-              "else",
-              "Set HIGH risk band",
-              ""
-            ],
-            [
-              "ELSE",
-              "Set HIGH risk band",
-              ""
-            ],
-            [
-              "DpdDays > 90",
-              "Set HIGH risk band",
-              ""
-            ],
-            [
-              "try block succeeds",
-              "set low risk band",
-              ""
-            ],
-            [
-              "dpddays <= 30",
-              "Set LOW risk band",
-              ""
-            ],
-            [
-              "dpddays <= 90",
-              "Set unchanged risk band",
-              ""
-            ],
-            [
-              "else",
-              "Set unchanged risk band",
-              ""
-            ],
-            [
-              "ELSE",
-              "Set unchanged risk band",
-              ""
-            ],
-            [
-              "try block succeeds",
-              "log error message",
-              ""
-            ],
-            [
-              "dpddays <= 90",
-              "set low risk band",
-              ""
-            ]
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "dialect": {
           "actual": "TSQL",
@@ -3138,43 +1204,8 @@
           "match": true
         },
         "important_fields": {
-          "actual": [
-            "@accountid",
-            "accountrisk",
-            "condition",
-            "dpddays",
-            "else",
-            "errormessage",
-            "next",
-            "riskband",
-            "riskerrors",
-            "see",
-            "unchanged"
-          ],
-          "expected": [
-            "@accountid",
-            "dpddays",
-            "riskband"
-          ],
-          "f1": 0.42857142857142855,
-          "matches": [
-            "@accountid",
-            "dpddays",
-            "riskband"
-          ],
-          "missing": [],
-          "precision": 0.2727272727272727,
-          "recall": 1.0,
-          "unexpected": [
-            "accountrisk",
-            "condition",
-            "else",
-            "errormessage",
-            "next",
-            "riskerrors",
-            "see",
-            "unchanged"
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "object_type": {
           "actual": "procedure",
@@ -3282,11 +1313,13 @@
           "unexpected": []
         }
       },
-      "mode": "live",
+      "mode": "deterministic",
       "notes": [
+        "Live LLM evaluation skipped; deterministic extraction only.",
+        "Business-rule metrics are unavailable in deterministic mode.",
         "Expected output is marked for manual confirmation."
       ],
-      "status": "FAIL"
+      "status": "CHANGED"
     },
     {
       "actual_available": true,
@@ -3309,53 +1342,8 @@
           ]
         },
         "business_rules": {
-          "actual": [
-            [
-              "dpddays > 90",
-              "mark accounts overdue and audit the status change",
-              ""
-            ],
-            [
-              "dpddays > 90",
-              "update dbo.account set status = 'overdue'",
-              ""
-            ],
-            [
-              "dpddays > 90",
-              "accountid and 'overdue' are selected for insert into dbo.accountaudit",
-              ""
-            ]
-          ],
-          "expected": [
-            [
-              "dpddays > 90",
-              "mark accounts overdue and audit the status change",
-              ""
-            ]
-          ],
-          "f1": 0.5,
-          "matches": [
-            [
-              "dpddays > 90",
-              "mark accounts overdue and audit the status change",
-              ""
-            ]
-          ],
-          "missing": [],
-          "precision": 0.3333333333333333,
-          "recall": 1.0,
-          "unexpected": [
-            [
-              "dpddays > 90",
-              "update dbo.account set status = 'overdue'",
-              ""
-            ],
-            [
-              "dpddays > 90",
-              "accountid and 'overdue' are selected for insert into dbo.accountaudit",
-              ""
-            ]
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "dialect": {
           "actual": "TSQL",
@@ -3363,39 +1351,8 @@
           "match": true
         },
         "important_fields": {
-          "actual": [
-            "account",
-            "accountid",
-            "are",
-            "dpddays",
-            "for",
-            "overdue",
-            "selected",
-            "status"
-          ],
-          "expected": [
-            "accountid",
-            "dpddays",
-            "newstatus"
-          ],
-          "f1": 0.36363636363636365,
-          "matches": [
-            "accountid",
-            "dpddays"
-          ],
-          "missing": [
-            "newstatus"
-          ],
-          "precision": 0.25,
-          "recall": 0.6666666666666666,
-          "unexpected": [
-            "account",
-            "are",
-            "for",
-            "overdue",
-            "selected",
-            "status"
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "object_type": {
           "actual": "unknown",
@@ -3494,11 +1451,13 @@
           "unexpected": []
         }
       },
-      "mode": "live",
+      "mode": "deterministic",
       "notes": [
+        "Live LLM evaluation skipped; deterministic extraction only.",
+        "Business-rule metrics are unavailable in deterministic mode.",
         "Expected output is marked for manual confirmation."
       ],
-      "status": "PASS"
+      "status": "CHANGED"
     },
     {
       "actual_available": true,
@@ -3506,9 +1465,7 @@
       "checks": {
         "ambiguities": {
           "actual": [
-            "dynamic sql detected and cannot be fully statically resolved: sp_executesql @sql, n'@id int', @id = @accountid; end;...",
-            "it is unclear whether the flagged status has a consistent business meaning across all possible target tables, or if the procedure could inadvertently affect unintended data.",
-            "the actual table and column being updated are determined by dynamic input and cannot be confirmed from the extraction, making the business effect dependent on how the procedure is invoked."
+            "dynamic sql detected and cannot be fully statically resolved: sp_executesql @sql, n'@id int', @id = @accountid; end;..."
           ],
           "expected": [
             "dynamic sql cannot be statically resolved to a concrete table."
@@ -3521,49 +1478,12 @@
           "precision": 0.0,
           "recall": 0.0,
           "unexpected": [
-            "dynamic sql detected and cannot be fully statically resolved: sp_executesql @sql, n'@id int', @id = @accountid; end;...",
-            "it is unclear whether the flagged status has a consistent business meaning across all possible target tables, or if the procedure could inadvertently affect unintended data.",
-            "the actual table and column being updated are determined by dynamic input and cannot be confirmed from the extraction, making the business effect dependent on how the procedure is invoked."
+            "dynamic sql detected and cannot be fully statically resolved: sp_executesql @sql, n'@id int', @id = @accountid; end;..."
           ]
         },
         "business_rules": {
-          "actual": [
-            [
-              "dynamic sql is assembled at runtime",
-              "flag for manual review instead of claiming a concrete table",
-              "flagged, account_id"
-            ],
-            [
-              "dynamic sql is assembled at runtime",
-              "flag for manual review instead of claiming a concrete table",
-              ""
-            ]
-          ],
-          "expected": [
-            [
-              "dynamic sql is assembled at runtime",
-              "flag for manual review instead of claiming a concrete table",
-              ""
-            ]
-          ],
-          "f1": 0.6666666666666666,
-          "matches": [
-            [
-              "dynamic sql is assembled at runtime",
-              "flag for manual review instead of claiming a concrete table",
-              ""
-            ]
-          ],
-          "missing": [],
-          "precision": 0.5,
-          "recall": 1.0,
-          "unexpected": [
-            [
-              "dynamic sql is assembled at runtime",
-              "flag for manual review instead of claiming a concrete table",
-              ""
-            ]
-          ]
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "dialect": {
           "actual": "TSQL",
@@ -3571,23 +1491,8 @@
           "match": true
         },
         "important_fields": {
-          "actual": [
-            "@accountid",
-            "@tablename"
-          ],
-          "expected": [
-            "@accountid",
-            "@tablename"
-          ],
-          "f1": 1.0,
-          "matches": [
-            "@accountid",
-            "@tablename"
-          ],
-          "missing": [],
-          "precision": 1.0,
-          "recall": 1.0,
-          "unexpected": []
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "object_type": {
           "actual": "procedure",
@@ -3668,11 +1573,13 @@
           "unexpected": []
         }
       },
-      "mode": "live",
+      "mode": "deterministic",
       "notes": [
+        "Live LLM evaluation skipped; deterministic extraction only.",
+        "Business-rule metrics are unavailable in deterministic mode.",
         "Expected output is marked for manual confirmation."
       ],
-      "status": "PASS"
+      "status": "CHANGED"
     },
     {
       "actual_available": true,
@@ -3695,14 +1602,8 @@
           "unexpected": []
         },
         "business_rules": {
-          "actual": [],
-          "expected": [],
-          "f1": null,
-          "matches": [],
-          "missing": [],
-          "precision": null,
-          "recall": null,
-          "unexpected": []
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "dialect": {
           "actual": "UNKNOWN",
@@ -3710,14 +1611,8 @@
           "match": true
         },
         "important_fields": {
-          "actual": [],
-          "expected": [],
-          "f1": null,
-          "matches": [],
-          "missing": [],
-          "precision": null,
-          "recall": null,
-          "unexpected": []
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "object_type": {
           "actual": "unknown",
@@ -3765,11 +1660,13 @@
           "unexpected": []
         }
       },
-      "mode": "live",
+      "mode": "deterministic",
       "notes": [
+        "Live LLM evaluation skipped; deterministic extraction only.",
+        "Business-rule metrics are unavailable in deterministic mode.",
         "Expected output is marked for manual confirmation."
       ],
-      "status": "PASS"
+      "status": "CHANGED"
     },
     {
       "actual_available": true,
@@ -3792,14 +1689,8 @@
           "unexpected": []
         },
         "business_rules": {
-          "actual": [],
-          "expected": [],
-          "f1": null,
-          "matches": [],
-          "missing": [],
-          "precision": null,
-          "recall": null,
-          "unexpected": []
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "dialect": {
           "actual": "UNSUPPORTED",
@@ -3807,14 +1698,8 @@
           "match": true
         },
         "important_fields": {
-          "actual": [],
-          "expected": [],
-          "f1": null,
-          "matches": [],
-          "missing": [],
-          "precision": null,
-          "recall": null,
-          "unexpected": []
+          "match": null,
+          "note": "not evaluated without LLM"
         },
         "object_type": {
           "actual": "unknown",
@@ -3862,20 +1747,22 @@
           "unexpected": []
         }
       },
-      "mode": "live",
+      "mode": "deterministic",
       "notes": [
+        "Live LLM evaluation skipped; deterministic extraction only.",
+        "Business-rule metrics are unavailable in deterministic mode.",
         "Expected output is marked for manual confirmation."
       ],
-      "status": "PASS"
+      "status": "CHANGED"
     }
   ],
   "summary": {
     "case_count": 13,
-    "changed_count": 0,
-    "fail_count": 6,
+    "changed_count": 13,
+    "fail_count": 0,
     "metrics": {},
-    "overall_status": "FAIL",
-    "pass_count": 7,
+    "overall_status": "CHANGED",
+    "pass_count": 0,
     "skipped_count": 0
   }
 }

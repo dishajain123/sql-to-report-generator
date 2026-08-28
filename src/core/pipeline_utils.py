@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace, field
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -24,6 +24,7 @@ class RunMetadata:
     configuration_version: str
     run_timestamp: str
     object_id: str = ""
+    telemetry: dict[str, Any] = field(default_factory=dict)
 
 
 def stable_hash_text(text: str, length: int = 16) -> str:
@@ -106,9 +107,15 @@ def build_run_metadata(
         configuration_version=config_ver,
         run_timestamp=datetime.now(timezone.utc).isoformat(),
         object_id=object_id,
+        telemetry={},
     )
 
 
 def run_metadata_to_dict(metadata: RunMetadata | None) -> dict[str, Any]:
     return asdict(metadata) if metadata else {}
 
+
+def attach_run_telemetry(metadata: RunMetadata | None, telemetry: dict[str, Any] | None) -> RunMetadata | None:
+    if metadata is None:
+        return None
+    return replace(metadata, telemetry=dict(telemetry or {}))
