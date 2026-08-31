@@ -47,6 +47,7 @@ from src.core.llm_client import LLMConfig, create_llm_client, load_llm_config
 from src.validation.confidence import derive_chunk_support_confidence
 from src.validation.reconciliation import reconcile_deterministic_evidence
 from src.ir.canonical_ir import CanonicalBusinessIR
+from src.core.llm_response_cache import PersistentLLMResponseCache
 from src.core.pipeline_utils import (
     PIPELINE_VERSION,
     RunMetadata,
@@ -135,6 +136,7 @@ class LogicRulesExtractorPipeline:
         self.project_root = Path(__file__).resolve().parent
         self.pipeline_version = PIPELINE_VERSION
         self.provider = self.llm_config.provider
+        self.response_cache = PersistentLLMResponseCache()
 
         self.client = create_llm_client(self.llm_config)
 
@@ -149,6 +151,7 @@ class LogicRulesExtractorPipeline:
             temperature=temperature,
             seed=seed,
             provider=self.provider,
+            response_cache=self.response_cache,
         )
 
         self.synthesizer_agent = RuleSynthesizerAgent(
@@ -157,6 +160,7 @@ class LogicRulesExtractorPipeline:
             temperature=temperature,
             seed=seed,
             provider=self.provider,
+            response_cache=self.response_cache,
         )
         self.formatter_agent = ReportFormatterAgent()
 

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
@@ -38,7 +39,10 @@ from typing import Optional
 
 from src.ingestion.guardrails import ground_business_rules_against_extraction, validate_synthesis_shape
 from src.core.llm_client import supports_chat_completion_seed
+from src.core.pipeline_utils import PIPELINE_VERSION
+from src.core.llm_response_cache import PersistentLLMResponseCache
 from src.prompts.prompt_loader import get_prompt_set, render_user_prompt
+from src.telemetry.tracker import LLMTelemetryTracker
 
 _EMPTY_SYNTHESIS: Dict[str, Any] = {
     "purpose_summary": "",
@@ -74,7 +78,15 @@ class RuleSynthesizerAgent:
     directly.
     """
 
-    def __init__(self, client, model: str, temperature: float = 0.1, seed: Optional[int] = 0):
+    def __init__(
+        self,
+        client,
+        model: str,
+        temperature: float = 0.1,
+        seed: Optional[int] = 0,
+        provider: str = "openai",
+        response_cache: Optional[PersistentLLMResponseCache] = None,
+    ):
         """
         Args:
             client: an initialized OpenAI-compatible chat client instance.
@@ -85,6 +97,8 @@ class RuleSynthesizerAgent:
         self.model = model
         self.temperature = temperature
         self.seed = seed
+        self.provider = provider
+        self.response_cache = response_cache
 
     def synthesize(
         self,
@@ -95,6 +109,7 @@ class RuleSynthesizerAgent:
         dialect: str = "oracle",
         raw_source: str = "",
         model: str | None = None,
+        telemetry_tracker: Optional[LLMTelemetryTracker] = None,
     ) -> SynthesisResult:
         """`model`, if given, overrides the agent's configured model for
         just this call - lets callers pick a different model per run
@@ -103,14 +118,65 @@ class RuleSynthesizerAgent:
         if str(dialect or "").strip().lower() not in {"oracle", "tsql"}:
             return SynthesisResult(data=dict(_EMPTY_SYNTHESIS))
         prompt_set = get_prompt_set("rule_synthesis.yaml", dialect=dialect)
+        compact_merged_extraction = self._build_compact_synthesis_payload(merged_extraction)
         user_prompt = render_user_prompt(
             prompt_set["user_template"],
             object_name=object_name,
             object_type=object_type,
             dialect=dialect,
             parameter_summary=parameter_summary or "No parameters.",
-            merged_extraction_json=json.dumps(merged_extraction, indent=2),
+            merged_extraction_json=json.dumps(
+                compact_merged_extraction,
+                separators=(",", ":"),
+                default=str,
+            ),
         )
+        effective_seed = self.seed if self.seed is not None and supports_chat_completion_seed(self.client) else None
+        cache_request = self._build_cache_request(
+            stage="synthesis",
+            dialect=dialect,
+            provider=self.provider,
+            model_name=model or self.model,
+            system_prompt=prompt_set["system"],
+            user_prompt=user_prompt,
+            temperature=self.temperature,
+            seed=effective_seed,
+        )
+        tracker = telemetry_tracker
+        if self.response_cache is not None:
+            cache_lookup = self.response_cache.lookup(cache_request)
+            if cache_lookup.hit:
+                raw_response = cache_lookup.response_text or ""
+                data, error = self._parse_json(raw_response)
+                if not error:
+                    if tracker is not None:
+                        tracker.record_cache_lookup(stage="synthesis", hit=True)
+                    guardrail_warnings: List[str] = []
+                    data, shape_warnings = validate_synthesis_shape(data)
+                    guardrail_warnings.extend(shape_warnings)
+                    data["business_rules"] = self._normalize_business_rules(
+                        data.get("business_rules"),
+                        source_text=raw_source,
+                        technical_context=merged_extraction,
+                    )
+                    guardrail_warnings.extend(
+                        ground_business_rules_against_extraction(
+                            data["business_rules"], merged_extraction, raw_source=raw_source
+                        )
+                    )
+                    jargon_flags = self._scan_for_jargon(data)
+                    return SynthesisResult(
+                        data=data,
+                        raw_response=raw_response,
+                        parse_error=error,
+                        jargon_flags=jargon_flags,
+                        guardrail_warnings=guardrail_warnings,
+                    )
+                self.response_cache.delete(cache_request)
+                if tracker is not None and cache_lookup.status != "disabled":
+                    tracker.record_cache_lookup(stage="synthesis", hit=False)
+            elif cache_lookup.status != "disabled" and tracker is not None:
+                tracker.record_cache_lookup(stage="synthesis", hit=False)
 
         completion_kwargs = {
             "model": model or self.model,
@@ -120,9 +186,32 @@ class RuleSynthesizerAgent:
                 {"role": "user", "content": user_prompt},
             ],
         }
-        if self.seed is not None and supports_chat_completion_seed(self.client):
-            completion_kwargs["seed"] = self.seed
-        response = self.client.chat.completions.create(**completion_kwargs)
+        if effective_seed is not None:
+            completion_kwargs["seed"] = effective_seed
+        response = None
+        call_success = False
+        call_error: Exception | None = None
+        start = time.perf_counter()
+        try:
+            response = self.client.chat.completions.create(**completion_kwargs)
+            call_success = True
+        except Exception as exc:  # noqa: BLE001
+            call_error = exc
+            raise
+        finally:
+            if tracker is not None:
+                try:
+                    tracker.record_call(
+                        stage="synthesis",
+                        provider=self.provider,
+                        model_name=model or self.model,
+                        response=response,
+                        latency_seconds=time.perf_counter() - start,
+                        success=call_success,
+                        error=call_error,
+                    )
+                except Exception:
+                    pass
         raw_response = response.choices[0].message.content or ""
 
         data, error = self._parse_json(raw_response)
@@ -142,6 +231,8 @@ class RuleSynthesizerAgent:
         )
 
         jargon_flags = self._scan_for_jargon(data)
+        if self.response_cache is not None and not error:
+            self.response_cache.store(cache_request, raw_response)
         return SynthesisResult(
             data=data,
             raw_response=raw_response,
@@ -149,6 +240,67 @@ class RuleSynthesizerAgent:
             jargon_flags=jargon_flags,
             guardrail_warnings=guardrail_warnings,
         )
+
+    @staticmethod
+    def _build_compact_synthesis_payload(merged_extraction: Dict[str, Any]) -> Dict[str, Any]:
+        """Return only the technical facts the synthesis prompt can use.
+
+        This is a prompt-size reduction only: the original merged
+        extraction remains unchanged for grounding, reconciliation, and
+        downstream reporting.
+        """
+
+        if not isinstance(merged_extraction, dict):
+            return {}
+
+        allowed_keys = (
+            "conditions",
+            "decision_chains",
+            "loops",
+            "tables_read",
+            "tables_written",
+            "table_operations",
+            "statement_provenance",
+            "chunk_provenance",
+            "calculations",
+            "exception_handling",
+            "ambiguities",
+        )
+        payload = OrderedDict()
+        for key in allowed_keys:
+            value = merged_extraction.get(key, [])
+            if isinstance(value, list):
+                payload[key] = value
+            elif value is None:
+                payload[key] = []
+            else:
+                payload[key] = value
+        return payload
+
+    @staticmethod
+    def _build_cache_request(
+        *,
+        stage: str,
+        dialect: str,
+        provider: str,
+        model_name: str,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        seed: Optional[int],
+    ) -> Dict[str, Any]:
+        return {
+            "pipeline_version": PIPELINE_VERSION,
+            "stage": stage,
+            "provider": provider,
+            "model_name": model_name,
+            "dialect": dialect,
+            "temperature": temperature,
+            "seed": seed,
+            "response_format": None,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+        }
 
     @staticmethod
     def _parse_json(raw_response: str) -> tuple[Dict[str, Any], str]:

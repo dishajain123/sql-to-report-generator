@@ -140,15 +140,35 @@ class RunTelemetry:
     call_metrics: List[LLMCallMetric] = field(default_factory=list)
     totals: TokenUsage = field(default_factory=TokenUsage)
     stage_breakdown: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    cache_hit_count: int = 0
+    cache_miss_count: int = 0
+    cache_hit_stage_breakdown: Dict[str, int] = field(default_factory=dict)
+    cache_miss_stage_breakdown: Dict[str, int] = field(default_factory=dict)
+
+    @property
+    def call_count(self) -> int:
+        return len(self.call_metrics)
+
+    @property
+    def success_count(self) -> int:
+        return sum(1 for metric in self.call_metrics if metric.success)
+
+    @property
+    def failure_count(self) -> int:
+        return sum(1 for metric in self.call_metrics if not metric.success)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "run_id": str(self.run_id or "").strip(),
-            "call_count": len(self.call_metrics),
-            "success_count": sum(1 for metric in self.call_metrics if metric.success),
-            "failure_count": sum(1 for metric in self.call_metrics if not metric.success),
+            "call_count": self.call_count,
+            "success_count": self.success_count,
+            "failure_count": self.failure_count,
             "totals": self.totals.to_dict(),
             "stage_breakdown": {key: dict(value) for key, value in self.stage_breakdown.items()},
             "call_metrics": [metric.to_dict() for metric in self.call_metrics],
+            "cache_hit_count": int(self.cache_hit_count or 0),
+            "cache_miss_count": int(self.cache_miss_count or 0),
+            "cache_hit_stage_breakdown": dict(self.cache_hit_stage_breakdown),
+            "cache_miss_stage_breakdown": dict(self.cache_miss_stage_breakdown),
         }
-
+        return {key: value for key, value in payload.items() if value not in (None, "", [], {}, ())}

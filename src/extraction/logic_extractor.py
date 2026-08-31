@@ -53,6 +53,8 @@ from typing import Optional
 
 from src.ingestion.guardrails import ground_extraction_against_source, validate_extraction_shape
 from src.core.llm_client import supports_chat_completion_seed
+from src.core.pipeline_utils import PIPELINE_VERSION
+from src.core.llm_response_cache import PersistentLLMResponseCache
 from src.prompts.prompt_loader import get_prompt_set, render_user_prompt
 from src.telemetry.tracker import LLMTelemetryTracker
 
@@ -93,6 +95,7 @@ class LogicExtractionAgent:
         seed: Optional[int] = 0,
         provider: str = "openai",
         telemetry_tracker: Optional[LLMTelemetryTracker] = None,
+        response_cache: Optional[PersistentLLMResponseCache] = None,
     ):
         """
         Args:
@@ -106,6 +109,7 @@ class LogicExtractionAgent:
         self.seed = seed
         self.provider = provider
         self.telemetry_tracker = telemetry_tracker
+        self.response_cache = response_cache
 
     def extract(
         self,
@@ -141,6 +145,45 @@ class LogicExtractionAgent:
             rag_context=rag_context,
             code_chunk=code_chunk,
         )
+        effective_seed = self.seed if self.seed is not None and supports_chat_completion_seed(self.client) else None
+        cache_request = self._build_cache_request(
+            stage="extraction",
+            dialect=dialect,
+            provider=self.provider,
+            model_name=model or self.model,
+            system_prompt=prompt_set["system"],
+            user_prompt=user_prompt,
+            temperature=self.temperature,
+            seed=effective_seed,
+        )
+        tracker = telemetry_tracker or self.telemetry_tracker
+        if self.response_cache is not None:
+            cache_lookup = self.response_cache.lookup(cache_request)
+            if cache_lookup.hit:
+                raw_response = cache_lookup.response_text or ""
+                data, error = self._parse_json(raw_response)
+                if not error:
+                    if tracker is not None:
+                        tracker.record_cache_lookup(stage="extraction", hit=True)
+                    guardrail_warnings: List[str] = []
+                    data, shape_warnings = validate_extraction_shape(data)
+                    guardrail_warnings.extend(shape_warnings)
+                    guardrail_warnings.extend(ground_extraction_against_source(data, code_chunk))
+                    return ChunkExtraction(
+                        chunk_id=chunk_id,
+                        chunk_kind=chunk_kind,
+                        chunk_context=context_path,
+                        embedded_sql=embedded_sql_context,
+                        data=data,
+                        raw_response=raw_response,
+                        parse_error=error,
+                        guardrail_warnings=guardrail_warnings,
+                    )
+                self.response_cache.delete(cache_request)
+                if tracker is not None and cache_lookup.status != "disabled":
+                    tracker.record_cache_lookup(stage="extraction", hit=False)
+            elif cache_lookup.status != "disabled" and tracker is not None:
+                tracker.record_cache_lookup(stage="extraction", hit=False)
 
         completion_kwargs = {
             "model": model or self.model,
@@ -150,9 +193,8 @@ class LogicExtractionAgent:
                 {"role": "user", "content": user_prompt},
             ],
         }
-        if self.seed is not None and supports_chat_completion_seed(self.client):
-            completion_kwargs["seed"] = self.seed
-        tracker = telemetry_tracker or self.telemetry_tracker
+        if effective_seed is not None:
+            completion_kwargs["seed"] = effective_seed
         response = None
         call_success = False
         call_error: Exception | None = None
@@ -185,6 +227,8 @@ class LogicExtractionAgent:
         data, shape_warnings = validate_extraction_shape(data)
         guardrail_warnings.extend(shape_warnings)
         guardrail_warnings.extend(ground_extraction_against_source(data, code_chunk))
+        if self.response_cache is not None and not error:
+            self.response_cache.store(cache_request, raw_response)
 
         return ChunkExtraction(
             chunk_id=chunk_id,
@@ -196,6 +240,31 @@ class LogicExtractionAgent:
             parse_error=error,
             guardrail_warnings=guardrail_warnings,
         )
+
+    @staticmethod
+    def _build_cache_request(
+        *,
+        stage: str,
+        dialect: str,
+        provider: str,
+        model_name: str,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        seed: Optional[int],
+    ) -> Dict[str, Any]:
+        return {
+            "pipeline_version": PIPELINE_VERSION,
+            "stage": stage,
+            "provider": provider,
+            "model_name": model_name,
+            "dialect": dialect,
+            "temperature": temperature,
+            "seed": seed,
+            "response_format": None,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+        }
 
     @staticmethod
     def _parse_json(raw_response: str) -> tuple[Dict[str, Any], str]:

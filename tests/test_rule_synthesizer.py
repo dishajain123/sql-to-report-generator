@@ -96,6 +96,65 @@ def _make_agent(canned_response: str) -> RuleSynthesizerAgent:
     return RuleSynthesizerAgent(client=client, model="llama-3.3-70b-versatile", temperature=0.1)
 
 
+def test_compact_synthesis_payload_keeps_only_synthesis_facts():
+    merged_extraction = {
+        "conditions": [{"condition": "x"}],
+        "decision_chains": [{"subject": "x"}],
+        "loops": [{"loop": "x"}],
+        "tables_read": [{"table": "A"}],
+        "tables_written": [{"table": "B"}],
+        "table_operations": [{"operation": "READ", "table": "A"}],
+        "statement_provenance": [{"statement_id": "stmt_1"}],
+        "chunk_provenance": [{"chunk_id": "chunk_1"}],
+        "calculations": [{"metric": "m"}],
+        "exception_handling": [{"kind": "catch"}],
+        "ambiguities": ["needs review"],
+        "run_metadata": {"model_name": "model"},
+        "telemetry": {"totals": {"prompt_tokens": 1}},
+        "llm_tables_read": [{"table": "A"}],
+        "llm_tables_written": [{"table": "B"}],
+        "reconciliation": {"status": "MATCHED"},
+        "coverage": {"total_statements": 1},
+        "quality": {"status": "PASS"},
+        "canonical_ir": {"business_rules": []},
+    }
+
+    compact = RuleSynthesizerAgent._build_compact_synthesis_payload(merged_extraction)
+
+    assert list(compact.keys()) == [
+        "conditions",
+        "decision_chains",
+        "loops",
+        "tables_read",
+        "tables_written",
+        "table_operations",
+        "statement_provenance",
+        "chunk_provenance",
+        "calculations",
+        "exception_handling",
+        "ambiguities",
+    ]
+    assert compact["conditions"] == [{"condition": "x"}]
+    assert compact["tables_written"] == [{"table": "B"}]
+    assert compact["table_operations"] == [{"operation": "READ", "table": "A"}]
+    assert compact["statement_provenance"] == [{"statement_id": "stmt_1"}]
+    assert compact["chunk_provenance"] == [{"chunk_id": "chunk_1"}]
+    assert json.dumps(compact, separators=(",", ":"), default=str) == json.dumps(
+        RuleSynthesizerAgent._build_compact_synthesis_payload(merged_extraction),
+        separators=(",", ":"),
+        default=str,
+    )
+    assert "run_metadata" not in compact
+    assert "telemetry" not in compact
+    assert "llm_tables_read" not in compact
+    assert "llm_tables_written" not in compact
+    assert "reconciliation" not in compact
+    assert "coverage" not in compact
+    assert "quality" not in compact
+    assert "canonical_ir" not in compact
+    assert merged_extraction["run_metadata"]["model_name"] == "model"
+
+
 def test_synthesize_parses_valid_json():
     agent = _make_agent(VALID_SYNTHESIS_JSON)
     result = agent.synthesize(
@@ -107,6 +166,54 @@ def test_synthesize_parses_valid_json():
     assert result.parse_error == ""
     assert result.data["business_rules"][0]["condition"].startswith("Account is not more")
     assert result.jargon_flags == []
+
+
+def test_synthesize_serializes_compact_payload_without_transport_fields():
+    client = _FakeGroqClient(VALID_SYNTHESIS_JSON)
+    agent = RuleSynthesizerAgent(client=client, model="llama-3.1-8b-instant", temperature=0.2)
+    merged_extraction = {
+        "conditions": [{"condition": "overdue_days > 90"}],
+        "decision_chains": [{"subject": "overdue_days"}],
+        "loops": [],
+        "tables_read": [{"table": "LOAN_ACCOUNT"}],
+        "tables_written": [{"table": "ACCOUNT_STATUS"}],
+        "calculations": [],
+        "exception_handling": [],
+        "ambiguities": [],
+        "run_metadata": {"model_name": "model"},
+        "telemetry": {"totals": {"prompt_tokens": 1}},
+        "llm_tables_read": [{"table": "LOAN_ACCOUNT"}],
+        "llm_tables_written": [{"table": "ACCOUNT_STATUS"}],
+        "statement_provenance": [{"statement_id": "stmt_1"}],
+        "table_operations": [{"operation": "READ"}],
+        "reconciliation": {"status": "MATCHED"},
+        "coverage": {"total_statements": 1},
+        "quality": {"status": "PASS"},
+        "canonical_ir": {"business_rules": []},
+        "chunk_provenance": [{"chunk_id": "chunk_1"}],
+    }
+
+    agent.synthesize(
+        object_name="obj",
+        object_type="PROCEDURE",
+        parameter_summary="none",
+        merged_extraction=merged_extraction,
+    )
+    user_prompt = client.chat.completions.last_call_kwargs["messages"][1]["content"]
+    assert '"run_metadata"' not in user_prompt
+    assert '"telemetry"' not in user_prompt
+    assert '"llm_tables_read"' not in user_prompt
+    assert '"llm_tables_written"' not in user_prompt
+    assert '"reconciliation"' not in user_prompt
+    assert '"coverage"' not in user_prompt
+    assert '"quality"' not in user_prompt
+    assert '"canonical_ir"' not in user_prompt
+    assert '"conditions":[{"condition":"overdue_days > 90"}]' in user_prompt
+    assert '"table_operations":[{"operation":"READ"}]' in user_prompt
+    assert '"statement_provenance":[{"statement_id":"stmt_1"}]' in user_prompt
+    assert '"chunk_provenance":[{"chunk_id":"chunk_1"}]' in user_prompt
+    assert '\n    "conditions"' not in user_prompt
+    assert '\n      "conditions"' not in user_prompt
 
 
 def test_synthesize_calls_configured_model():

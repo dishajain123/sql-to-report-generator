@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from collections import defaultdict
 from typing import Any, Optional
 
 from .aggregator import aggregate_run_telemetry
@@ -13,6 +14,7 @@ class LLMTelemetryTracker:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._call_metrics: list[LLMCallMetric] = []
+        self._cache_events: list[tuple[str, str]] = []
 
     def record_call(
         self,
@@ -45,10 +47,32 @@ class LLMTelemetryTracker:
         except Exception:
             return
 
+    def record_cache_lookup(self, *, stage: str, hit: bool) -> None:
+        try:
+            event = (str(stage or "").strip() or "unknown", "hit" if hit else "miss")
+            with self._lock:
+                self._cache_events.append(event)
+        except Exception:
+            return
+
     def snapshot(self, run_id: str) -> RunTelemetry:
         with self._lock:
             metrics = list(self._call_metrics)
-        return aggregate_run_telemetry(run_id, metrics)
+            cache_events = list(self._cache_events)
+        telemetry = aggregate_run_telemetry(run_id, metrics)
+        if cache_events:
+            hit_counts = defaultdict(int)
+            miss_counts = defaultdict(int)
+            for stage, status in cache_events:
+                if status == "hit":
+                    telemetry.cache_hit_count += 1
+                    hit_counts[stage] += 1
+                else:
+                    telemetry.cache_miss_count += 1
+                    miss_counts[stage] += 1
+            telemetry.cache_hit_stage_breakdown = dict(hit_counts)
+            telemetry.cache_miss_stage_breakdown = dict(miss_counts)
+        return telemetry
 
     def to_dict(self, run_id: str) -> dict[str, Any]:
         return self.snapshot(run_id).to_dict()
