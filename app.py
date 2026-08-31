@@ -24,6 +24,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
+from src.batch.batch_runner import BatchInput, build_batch_archive_bytes, run_batch
 from src.ingestion.ingestion import decode_sql_source_bytes, build_object_identity_stem
 from src.core.llm_client import LLMConfig, load_llm_config
 from pipeline import LogicRulesExtractorPipeline, PipelineInputError
@@ -40,6 +41,16 @@ DIALECT_OPTIONS = {
     "Oracle SQL / PL-SQL": "oracle",
     "SQL Server T-SQL": "tsql",
 }
+BATCH_DIALECT_OPTIONS = {
+    "Auto Detect": "auto",
+    "Oracle": "oracle",
+    "T-SQL": "tsql",
+}
+
+
+def _batch_dialect_key(index: int, filename: str) -> str:
+    safe_name = re.sub(r"[^A-Za-z0-9_]+", "_", Path(filename).stem or filename).strip("_")
+    return f"batch_dialect_mode_{index}_{safe_name or 'file'}"
 
 st.set_page_config(
     page_title="DB Logic & Business Rules Extractor",
@@ -328,6 +339,25 @@ def _render_run_status(stage_index: int, last_message: str, messages: list[str],
     )
 
 
+def _render_batch_run_status(batch_state: dict, log_path: Path | None = None) -> str:
+    current_file = batch_state.get("current_file") or "Waiting to start."
+    current_message = batch_state.get("latest_message") or "Starting..."
+    completed = batch_state.get("completed_files", 0)
+    total = batch_state.get("total_files", 0)
+    recent = batch_state.get("messages", [])[-4:]
+    recent_block = "\n".join(f"- {msg}" for msg in recent) if recent else "- Waiting to start."
+    log_line = f"- **Log file:** `{log_path}`\n" if log_path else ""
+    return (
+        "### Batch Run Status\n\n"
+        f"- **Current file:** {current_file}\n"
+        f"- **Current step:** {current_message}\n"
+        f"- **Batch progress:** {completed}/{total}\n"
+        f"{log_line}"
+        "**Recent updates**\n"
+        f"{recent_block}"
+    )
+
+
 # --------------------------------------------------------------------------
 # Main — input
 # --------------------------------------------------------------------------
@@ -343,14 +373,32 @@ source = st.radio(
 
 sql_code: str | None = None
 sql_filename = "input.sql"
+uploaded_files: list = []
+batch_mode = False
 
 if source == "Upload a .sql file":
-    uploaded = st.file_uploader(
+    uploaded_files = st.file_uploader(
         "Upload a .sql file",
         type=["sql", "prc", "pks", "pkb", "txt"],
+        accept_multiple_files=True,
         label_visibility="collapsed",
     )
-    if uploaded is not None:
+    batch_mode = len(uploaded_files) > 1
+    if batch_mode:
+        st.info(
+            f"{len(uploaded_files)} files selected. Batch mode will auto-detect the dialect for each file independently."
+        )
+        st.caption("Choose a per-file dialect override only if you need to override auto-detection.")
+        for index, uploaded in enumerate(uploaded_files, start=1):
+            st.selectbox(
+                f"Dialect for {uploaded.name}",
+                list(BATCH_DIALECT_OPTIONS.keys()),
+                index=0,
+                key=_batch_dialect_key(index, uploaded.name),
+                help="Applies only to this file in the batch. Auto Detect preserves the existing behavior.",
+            )
+    elif uploaded_files:
+        uploaded = uploaded_files[0]
         # Use the same BOM/heuristic-aware decoder as the CLI path
         # (agents.ingestion.decode_sql_source_bytes) instead of a bare
         # UTF-8 decode, which silently corrupts UTF-16 SSMS/Toad exports
@@ -384,15 +432,144 @@ else:
 
 st.subheader("2. Run the pipeline")
 
+run_label = "🚀 Run Batch Extraction" if batch_mode else "🚀 Run Extraction"
 run_clicked = st.button(
-    "🚀 Run Extraction", type="primary", disabled=not sql_code, use_container_width=False
+    run_label,
+    type="primary",
+    disabled=not batch_mode and not sql_code,
+    use_container_width=False,
 )
 
 # --------------------------------------------------------------------------
 # Run
 # --------------------------------------------------------------------------
 
-if run_clicked:
+if run_clicked and batch_mode:
+    for key in (
+        "last_report",
+        "last_verification_report",
+        "last_stem",
+        "last_model",
+        "last_saved_path",
+        "last_verification_path",
+        "last_log_path",
+        "last_run_number",
+        "last_run_messages",
+    ):
+        st.session_state.pop(key, None)
+    try:
+        pipeline = get_pipeline(
+            llm_config,
+            persist_directory,
+            knowledge_base_dir,
+            _pipeline_cache_signature(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Failed to initialize the pipeline: {exc}")
+        st.stop()
+
+    if rebuild_kb:
+        with st.spinner("Rebuilding knowledge base…"):
+            pipeline.retrieval_agent.build_or_load(force_rebuild=True)
+
+    pipeline.retrieval_k = retrieval_k
+    pipeline.extraction_agent.temperature = temperature
+    pipeline.synthesizer_agent.temperature = temperature
+
+    temp_dir = tempfile.TemporaryDirectory()
+    tmp_paths: list[Path] = []
+    run_state = {
+        "messages": [],
+        "current_file": "Starting...",
+        "latest_message": "Starting...",
+        "completed_files": 0,
+        "total_files": len(uploaded_files),
+    }
+    status_panel = st.container(border=True)
+    status_placeholder = status_panel.empty()
+    progress_bar = status_panel.progress(0)
+
+    def _refresh_status() -> None:
+        total = max(run_state["total_files"], 1)
+        progress_bar.progress(min(int((run_state["completed_files"] / total) * 100), 100))
+        status_placeholder.markdown(_render_batch_run_status(run_state))
+
+    def _on_batch_progress(message: str) -> None:
+        run_state["messages"].append(message)
+        batch_match = re.match(r"^\[(\d+)/(\d+)\]\s+\[(.*?)\]\s+(.*)$", message)
+        if batch_match:
+            run_state["current_file"] = f"{batch_match.group(1)}/{batch_match.group(2)} · {batch_match.group(3)}"
+            inner_message = batch_match.group(4).strip()
+            if inner_message.startswith("Completed"):
+                run_state["completed_files"] = min(
+                    run_state["total_files"], run_state["completed_files"] + 1
+                )
+            elif inner_message.startswith("Failed"):
+                run_state["completed_files"] = min(
+                    run_state["total_files"], run_state["completed_files"] + 1
+                )
+            stage_match = re.match(r"^Stage\s+(\d+)/(\d+):\s*(.*)$", inner_message)
+            run_state["latest_message"] = stage_match.group(3).strip() if stage_match else inner_message
+        else:
+            run_state["latest_message"] = message
+        _refresh_status()
+
+    try:
+        for uploaded in uploaded_files:
+            with tempfile.NamedTemporaryFile(mode="wb", suffix=Path(uploaded.name).suffix or ".sql", delete=False) as tmp:
+                tmp.write(uploaded.getvalue())
+                tmp_paths.append(Path(tmp.name))
+
+        batch_inputs = [
+            BatchInput(
+                source_path=str(tmp_path),
+                display_name=uploaded.name,
+                dialect_mode=BATCH_DIALECT_OPTIONS[
+                    st.session_state.get(_batch_dialect_key(index, uploaded.name), "Auto Detect")
+                ],
+            )
+            for index, (tmp_path, uploaded) in enumerate(zip(tmp_paths, uploaded_files), start=1)
+        ]
+
+        with st.status("Running the batch pipeline…", expanded=False) as status:
+            batch_result = run_batch(
+                pipeline,
+                batch_inputs,
+                output_dir=Path("samples/output/batches"),
+                progress_callback=_on_batch_progress,
+            )
+            run_state["completed_files"] = batch_result.success_count + batch_result.failure_count
+            run_state["latest_message"] = "Batch extraction complete"
+            _refresh_status()
+            status.update(label="Batch extraction complete ✅", state="complete")
+
+        archive_bytes = build_batch_archive_bytes(batch_result)
+        archive_path = batch_result.output_dir / f"{batch_result.batch_id}.zip"
+        archive_path.write_bytes(archive_bytes)
+
+        st.session_state["last_batch_result"] = batch_result
+        st.session_state["last_batch_archive"] = archive_bytes
+        st.session_state["last_batch_archive_path"] = str(archive_path)
+        st.session_state["last_batch_messages"] = run_state["messages"]
+
+    except PipelineInputError as exc:
+        st.error(f"Batch input rejected by guardrails: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Batch pipeline error: {exc}")
+        st.exception(exc)
+    finally:
+        for tmp_path in tmp_paths:
+            tmp_path.unlink(missing_ok=True)
+        temp_dir.cleanup()
+
+elif run_clicked:
+    for key in (
+        "last_batch_result",
+        "last_batch_archive",
+        "last_batch_archive_path",
+        "last_batch_messages",
+    ):
+        st.session_state.pop(key, None)
     try:
         pipeline = get_pipeline(
             llm_config,
@@ -514,6 +691,93 @@ if run_clicked:
 # --------------------------------------------------------------------------
 # Results
 # --------------------------------------------------------------------------
+
+if "last_batch_result" in st.session_state:
+    st.divider()
+    st.subheader("3. Batch results")
+
+    batch_result = st.session_state["last_batch_result"]
+    manifest = batch_result.manifest or {}
+    success_count = batch_result.success_count
+    failure_count = batch_result.failure_count
+    col1, col2, col3 = st.columns([2, 2, 3])
+    with col1:
+        st.metric("Batch ID", batch_result.batch_id)
+    with col2:
+        st.metric("Succeeded", success_count)
+    with col3:
+        st.metric("Failed", failure_count)
+
+    summary_cols = st.columns([2, 2, 2, 2])
+    with summary_cols[0]:
+        st.metric("Total files", manifest.get("total_files", len(batch_result.items)))
+    with summary_cols[1]:
+        st.metric("Successful files", manifest.get("successful_files", success_count))
+    with summary_cols[2]:
+        st.metric("Failed files", manifest.get("failed_files", failure_count))
+    with summary_cols[3]:
+        st.metric("Manifest", Path(batch_result.manifest_path).name if batch_result.manifest_path else "—")
+
+    if manifest:
+        st.caption(
+            f"Batch window: `{manifest.get('batch_start_time', '—')}` → `{manifest.get('batch_end_time', '—')}`"
+        )
+        st.caption(f"Batch output directory: `{manifest.get('batch_output_dir', batch_result.output_dir)}`")
+
+    if st.session_state.get("last_batch_archive"):
+        st.download_button(
+            "⬇️ Download all reports as ZIP",
+            data=st.session_state["last_batch_archive"],
+            file_name=f"{batch_result.batch_id}.zip",
+            mime="application/zip",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if st.session_state.get("last_batch_archive_path"):
+        st.caption(f"Batch archive saved to: `{st.session_state['last_batch_archive_path']}`")
+
+    if manifest:
+        with st.expander("Batch manifest", expanded=False):
+            st.json(manifest)
+
+    for idx, item in enumerate(batch_result.items, start=1):
+        title = f"{idx}. {item.display_name}"
+        with st.expander(title, expanded=idx == 1):
+            if item.status == "success" and item.run_result:
+                st.success("Completed successfully")
+                st.caption(
+                    f"Dialect mode: {item.selected_dialect_mode} | Effective dialect: {item.detected_dialect or '—'}"
+                )
+                st.caption(f"Report: `{item.report_path}`")
+                st.caption(f"Verification: `{item.verification_path}`")
+                st.download_button(
+                    f"⬇️ Download report ({idx})",
+                    data=item.run_result.report,
+                    file_name=Path(item.report_path).name,
+                    mime="text/markdown",
+                    key=f"batch-report-{idx}",
+                )
+                st.download_button(
+                    f"⬇️ Download verification ({idx})",
+                    data=item.run_result.verification_report,
+                    file_name=Path(item.verification_path).name,
+                    mime="text/markdown",
+                    key=f"batch-verification-{idx}",
+                )
+                tab_rendered, tab_raw = st.tabs([f"📖 {item.display_name}", "🔤 Raw Markdown"])
+                with tab_rendered:
+                    st.markdown(item.run_result.report)
+                with tab_raw:
+                    st.text_area(
+                        "Raw Markdown",
+                        value=item.run_result.report,
+                        height=700,
+                        label_visibility="collapsed",
+                        key=f"batch-raw-{idx}",
+                    )
+            else:
+                st.error(item.error or "Unknown failure")
 
 if "last_report" in st.session_state:
     st.divider()

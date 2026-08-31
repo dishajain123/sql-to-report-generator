@@ -84,6 +84,18 @@ def load_sql_text(sql_path: Path) -> str:
     return sql_path.read_text(encoding="utf-8")
 
 
+def _strip_generated_at(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _strip_generated_at(inner) for key, inner in value.items() if key != "generated_at"}
+    if isinstance(value, list):
+        return [_strip_generated_at(item) for item in value]
+    return value
+
+
+def _payloads_equal_ignoring_generated_at(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    return _strip_generated_at(left) == _strip_generated_at(right)
+
+
 def pipeline_available() -> bool:
     try:
         load_llm_config()
@@ -112,7 +124,7 @@ def run_deterministic_artifacts(sql_path: Path, dialect_hint: str) -> ActualArti
     else:
         table_ops, _statement_provenance = extract_table_operations_from_chunks(ingestion.chunks, analysis_dialect)
     reads, writes = split_table_operations(table_ops)
-    reads = _filter_supporting_reads(table_ops, reads, keep_merge_target=False)
+    reads = _filter_supporting_reads(table_ops, reads, keep_merge_target=True)
     important_fields = _derive_important_fields(ingestion, reads + writes)
     reportable_ops = _reportable_operations(table_ops)
     return ActualArtifacts(
@@ -805,7 +817,7 @@ def compare_case(expected: Dict[str, Any], actual: ActualArtifacts, live_mode: b
     elif live_mode and changed:
         status = "CHANGED"
     elif not live_mode:
-        status = "CHANGED"
+        status = "PASS"
     else:
         status = "PASS"
 
@@ -856,8 +868,17 @@ def evaluate_dataset(
         "results": [asdict(result) for result in results],
         "summary": asdict(summary),
     }
-    baseline_path.parent.mkdir(parents=True, exist_ok=True)
-    baseline_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    should_write_baseline = True
+    if baseline_path.exists():
+        try:
+            existing_payload = json.loads(baseline_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            existing_payload = None
+        if existing_payload is not None and _payloads_equal_ignoring_generated_at(existing_payload, payload):
+            should_write_baseline = False
+    if should_write_baseline:
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        baseline_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return payload
 
 

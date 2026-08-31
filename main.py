@@ -29,6 +29,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from pipeline import LogicRulesExtractorPipeline, PipelineInputError
+from src.batch.batch_runner import BatchInput, build_batch_archive_bytes, run_batch
 from src.ingestion.ingestion import build_object_identity_stem
 
 
@@ -42,9 +43,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "sql_file",
+        "sql_files",
         type=str,
-        help="Path to the input .sql file containing exactly one DB object.",
+        nargs="+",
+        help=(
+            "Path(s) to one or more .sql files. A single input preserves the "
+            "existing single-file workflow; multiple inputs are processed "
+            "independently."
+        ),
     )
     parser.add_argument(
         "--temperature",
@@ -62,6 +68,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "the SQL object's own parsed identity (not the input filename). "
         "A companion `..._verification.md` traceability artifact is "
         "always written alongside it.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help=(
+            "Directory for batch outputs. Defaults to "
+            "samples/output/batches/<batch_id> when multiple files are given."
+        ),
     )
     parser.add_argument(
         "--dialect",
@@ -128,10 +143,11 @@ def main(argv: list[str] | None = None) -> int:
         format="[%(levelname)s] %(name)s: %(message)s",
     )
 
-    sql_path = Path(args.sql_file)
-    if not sql_path.exists():
-        print(f"Error: input file not found: {sql_path}", file=sys.stderr)
-        return 1
+    sql_paths = [Path(path) for path in args.sql_files]
+    for sql_path in sql_paths:
+        if not sql_path.exists():
+            print(f"Error: input file not found: {sql_path}", file=sys.stderr)
+            return 1
 
     try:
         pipeline = LogicRulesExtractorPipeline(
@@ -145,6 +161,45 @@ def main(argv: list[str] | None = None) -> int:
     except EnvironmentError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+
+    if len(sql_paths) > 1:
+        if args.output:
+            print(
+                "Error: --output is only supported for single-file runs; use --output-dir for batch runs.",
+                file=sys.stderr,
+            )
+            return 1
+        batch_inputs = [BatchInput(source_path=str(path), display_name=path.name) for path in sql_paths]
+        batch_output_dir = Path(args.output_dir) if args.output_dir else Path("samples/output/batches")
+        print(
+            f"Running batch pipeline on {len(batch_inputs)} files using model '{pipeline.model_name}' "
+            f"(per-file dialect auto-detection)..."
+        )
+        try:
+            batch_result = run_batch(
+                pipeline,
+                batch_inputs,
+                output_dir=batch_output_dir,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"Error: batch pipeline failed: {exc}", file=sys.stderr)
+            return 1
+
+        archive_path = batch_result.output_dir / f"{batch_result.batch_id}.zip"
+        archive_path.write_bytes(build_batch_archive_bytes(batch_result))
+
+        print(f"Batch ID: {batch_result.batch_id}")
+        print(f"Batch outputs written to: {batch_result.output_dir}")
+        for item in batch_result.items:
+            if item.status == "success":
+                print(f"[OK] {item.display_name} -> {item.report_path}")
+                print(f"     Verification -> {item.verification_path}")
+            else:
+                print(f"[FAIL] {item.display_name} -> {item.error}")
+        print(f"Batch archive written to: {archive_path}")
+        return 0 if batch_result.failure_count == 0 else 2
+
+    sql_path = sql_paths[0]
 
     logs_dir = Path("samples/output/logs")
     log_path = logs_dir / f"{sql_path.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_pipeline.log"
