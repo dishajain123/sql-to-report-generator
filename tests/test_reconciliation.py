@@ -14,7 +14,7 @@ import pytest
 from src.ingestion.ingestion import CodeChunk, IngestionResult
 from src.output.report_formatter import ReportFormatterAgent
 from src.synthesis.rule_synthesizer import SynthesisResult
-from src.validation.reconciliation import reconcile_deterministic_evidence
+from src.validation.reconciliation import ReconciliationRecord, _gather_contradictions, reconcile_deterministic_evidence
 
 
 def _make_ingestion(dialect: str = "ORACLE") -> IngestionResult:
@@ -52,21 +52,39 @@ def _table_row(table, operation, *, chunk_id="chunk_1", statement_id="stmt_1", c
     return row
 
 
+def _evidence_span(*, chunk_id="chunk_1", statement_id="stmt_1", parse_status="parsed", evidence_type="CONDITION"):
+    return {
+        "source_file": "demo.sql",
+        "char_start": 1,
+        "char_end": 10,
+        "line_start": 1,
+        "line_end": 2,
+        "chunk_id": chunk_id,
+        "statement_id": statement_id,
+        "evidence_type": evidence_type,
+        "source_location_status": "available",
+        "statement_parse_status": parse_status,
+    }
+
+
 def _rule(
     *,
     rule_id="rule_1",
     rule_name="Rule 1",
     source_chunks=None,
+    source_statement_ids=None,
     technical_references=None,
     fields_affected=None,
     condition=None,
     action=None,
     decision_logic_rows=None,
+    **extra,
 ):
-    return {
+    rule = {
         "rule_id": rule_id,
         "rule_name": rule_name,
         "source_chunks": list(source_chunks or []),
+        "source_statement_ids": list(source_statement_ids or []),
         "technical_references": list(technical_references or []),
         "fields_affected": list(fields_affected or []),
         "condition": condition,
@@ -76,6 +94,8 @@ def _rule(
         "rule_type": "explicit",
         "confidence": "medium",
     }
+    rule.update(extra)
+    return rule
 
 
 def _find_record(result, *, kind=None, status=None):
@@ -86,6 +106,20 @@ def _find_record(result, *, kind=None, status=None):
             continue
         return record
     raise AssertionError(f"No record found for kind={kind!r} status={status!r}")
+
+
+def _find_contradiction(result, *, classification=None, ctype=None, severity=None):
+    for item in result.contradictions:
+        if classification is not None and item.classification != classification:
+            continue
+        if ctype is not None and item.type != ctype:
+            continue
+        if severity is not None and item.severity != severity:
+            continue
+        return item
+    raise AssertionError(
+        f"No contradiction found for classification={classification!r} type={ctype!r} severity={severity!r}"
+    )
 
 
 def test_matching_table_operation_is_marked_matched():
@@ -118,6 +152,75 @@ def test_matching_table_operation_is_marked_matched():
     assert record.confidence in {"medium", "high"}
 
 
+def test_provenance_matches_raw_chunk_ids_even_when_display_labels_include_kind():
+    ingestion = _make_ingestion()
+    merged = {
+        "tables_read": [],
+        "tables_written": [_table_row("ACCOUNT", "UPDATE", chunk_id="chunk_1", statement_id="stmt_1", columns=["STATUS"])],
+        "llm_tables_read": [],
+        "llm_tables_written": [_table_row("ACCOUNT", "UPDATE", chunk_id="chunk_1", statement_id="stmt_1", columns=["STATUS"])],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            source_chunks=["chunk_1:main_body"],
+            technical_references=["stmt_1"],
+            fields_affected=["STATUS"],
+            condition="STATUS = 'A'",
+            action="STATUS = 'A'",
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    record = _find_record(result, kind="rule", status="MATCHED")
+    assert record.chunk_id == "chunk_1"
+    assert record.statement_id == "stmt_1"
+    assert record.deterministic_evidence["source_chunks"] == ["chunk_1"]
+
+
+def test_evidence_spans_can_ground_when_text_is_only_paraphrased():
+    ingestion = _make_ingestion()
+    merged = {
+        "tables_read": [],
+        "tables_written": [_table_row("ACCOUNT", "UPDATE", chunk_id="chunk_1", statement_id="stmt_1", columns=["STATUS"])],
+        "llm_tables_read": [],
+        "llm_tables_written": [_table_row("ACCOUNT", "UPDATE", chunk_id="chunk_1", statement_id="stmt_1", columns=["STATUS"])],
+    }
+    synthesis = _make_synthesis([
+        {
+            "rule_id": "rule_1",
+            "rule_name": "Rule 1",
+            "source_chunks": ["chunk_1:main_body"],
+            "source_chunk_ids": ["chunk_1"],
+            "source_statement_ids": ["stmt_1"],
+            "technical_references": ["stmt_1"],
+            "fields_affected": ["STATUS"],
+            "condition": "STATUS is adjusted for the branch",
+            "action": "STATUS is adjusted for the branch",
+            "decision_logic_rows": [],
+            "validation_status": "verified",
+            "rule_type": "explicit",
+            "confidence": "medium",
+            "evidence_spans": [_evidence_span()],
+            "source_evidence": ["branch summary, not the exact SQL text"],
+        }
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    record = _find_record(result, kind="rule", status="MATCHED")
+    assert record.deterministic_evidence["statement_ids"] == ["stmt_1"]
+    assert record.comparison["field_status"] == "MATCHED"
+
+
 def test_table_conflict_is_preserved():
     ingestion = _make_ingestion()
     merged = {
@@ -141,9 +244,186 @@ def test_table_conflict_is_preserved():
     )
 
     record = _find_record(result, kind="tables_written", status="CONFLICT")
+    contradiction = _find_contradiction(result, classification="TECHNICAL_PROVENANCE_NOISE")
     assert record.comparison["table_status"] == "CONFLICT"
     assert record.deterministic_evidence["operation"] == "UPDATE"
     assert record.llm_claim["operation"] == "MERGE"
+    assert contradiction.business_relevant is False
+    assert contradiction.counted_for_review is False
+
+
+def test_technical_vs_business_overlap_is_classified_from_explicit_cleanup_semantics():
+    ingestion = _make_ingestion()
+    merged = {
+        "tables_read": [],
+        "tables_written": [
+            _table_row(
+                "PRO.ACCOUNTCAL",
+                "UPDATE",
+                columns=["SMA_CLASS", "SMA_REASON", "SMA_DT", "FLGSMA"],
+                filter_condition="FinalAssetClassAlt_Key = 1",
+                assigned_values=[{"column": "SMA_CLASS", "expression": "'STD'"}],
+            )
+        ],
+        "llm_tables_read": [],
+        "llm_tables_written": [
+            _table_row(
+                "PRO.ACCOUNTCAL",
+                "UPDATE",
+                columns=["SMA_CLASS", "SMA_REASON", "SMA_DT", "FLGSMA"],
+                filter_condition="FinalAssetClassAlt_Key = 1",
+                assigned_values=[{"column": "SMA_CLASS", "expression": "'STD'"}],
+            )
+        ],
+        "statement_provenance": [
+            {"statement_id": "stmt_1", "parse_status": "parsed"},
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            rule_id="rule_1",
+            source_chunks=["chunk_1"],
+            technical_references=["stmt_1"],
+            fields_affected=["SMA_CLASS", "SMA_REASON", "SMA_DT", "FLGSMA"],
+            condition="FinalAssetClassAlt_Key = 1",
+            action="Clear prior SMA fields and set SMA_CLASS = 'STD'",
+            decision_logic_rows=[
+                {"condition": "FinalAssetClassAlt_Key = 1", "outcome": "Clear prior SMA fields and set SMA_CLASS = 'STD'"},
+            ],
+            business_meaning="Technical cleanup before recalculation.",
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    contradiction = _find_contradiction(result, classification="TECHNICAL_VS_BUSINESS_OVERLAP", ctype="outcome_conflict")
+    assert contradiction.business_relevant is False
+    assert contradiction.counted_for_review is False
+
+
+def test_insufficient_evidence_remains_review_relevant():
+    ingestion = _make_ingestion()
+    merged = {
+        "tables_read": [],
+        "tables_written": [
+            _table_row("ACCOUNT", "UPDATE", columns=["STATUS"], filter_condition="STATUS = 'A'", assigned_values=[{"column": "STATUS", "expression": "'A'"}])
+        ],
+        "llm_tables_read": [],
+        "llm_tables_written": [
+            _table_row("ACCOUNT", "UPDATE", columns=["STATUS"], filter_condition="STATUS = 'A'", assigned_values=[{"column": "STATUS", "expression": "'A'"}])
+        ],
+        "statement_provenance": [
+            {"statement_id": "stmt_1", "parse_status": "parsed"},
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            rule_id="rule_1",
+            source_chunks=["chunk_1"],
+            technical_references=["stmt_1"],
+            fields_affected=["STATUS"],
+            condition="DPD > 30",
+            action="STATUS = 'SMA-2'",
+            validation_status="insufficient_evidence",
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    contradiction = _find_contradiction(result, classification="INSUFFICIENT_EVIDENCE")
+    assert contradiction.business_relevant is True
+    assert contradiction.counted_for_review is True
+
+
+def test_business_review_required_items_are_deduped_by_underlying_issue():
+    ingestion = _make_ingestion()
+    merged = {
+        "tables_read": [],
+        "tables_written": [
+            _table_row(
+                "ACCOUNT",
+                "UPDATE",
+                columns=["SMA_STATUS"],
+                filter_condition="DPD >= 30",
+                assigned_values=[{"column": "SMA_STATUS", "expression": "'SMA-1'"}],
+            )
+        ],
+        "llm_tables_read": [],
+        "llm_tables_written": [
+            _table_row(
+                "ACCOUNT",
+                "UPDATE",
+                columns=["SMA_STATUS"],
+                filter_condition="DPD >= 30",
+                assigned_values=[{"column": "SMA_STATUS", "expression": "'SMA-1'"}],
+            )
+        ],
+        "statement_provenance": [
+            {"statement_id": "stmt_1", "parse_status": "parsed"},
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            rule_id="rule_1",
+            source_chunks=["chunk_1"],
+            technical_references=["stmt_1"],
+            fields_affected=["SMA_STATUS"],
+            condition="DPD > 30",
+            action="SMA_STATUS = 'SMA-2'",
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    # Raw review-required accounting still reflects the legacy aggregate,
+    # while the new internal summary dedupes the underlying issue.
+    assert result.review_summary["review_item_count"] == 1
+    assert result.review_summary["business_review_required_items"] == 1
+    assert result.coverage["business_review_required_items"] == 1
+    assert result.coverage["review_required_items"] >= 2
+
+
+def test_raw_contradiction_evidence_is_preserved():
+    ingestion = _make_ingestion()
+    merged = {
+        "tables_read": [],
+        "tables_written": [_table_row("ACCOUNT", "UPDATE", columns=["STATUS"])],
+        "llm_tables_read": [],
+        "llm_tables_written": [_table_row("ACCOUNT", "MERGE", columns=["STATUS"])],
+        "statement_provenance": [
+            {"statement_id": "stmt_1", "parse_status": "parsed"},
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            rule_id="rule_1",
+            source_chunks=["chunk_1"],
+            technical_references=["stmt_1"],
+            fields_affected=["STATUS"],
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    contradiction = _find_contradiction(result, classification="TECHNICAL_PROVENANCE_NOISE", ctype="operation_conflict")
+    assert contradiction.evidence["record"]["reconciliation_id"]
+    assert contradiction.evidence["record"]["kind"] == "tables_written"
 
 
 def test_field_conflict_is_detected_from_deterministic_columns():
@@ -400,9 +680,138 @@ def test_condition_contradiction_forces_review_required():
         synthesis=synthesis,
     )
 
+    contradiction = _find_contradiction(result, classification="GENUINE_BUSINESS_CONTRADICTION", ctype="condition_conflict")
     assert any(item.type == "condition_conflict" for item in result.contradictions)
+    assert contradiction.business_relevant is True
+    assert contradiction.counted_for_review is True
     assert result.quality["status"] == "REVIEW_REQUIRED"
     assert result.review_required is True
+
+
+def test_disjoint_threshold_branches_are_not_auto_contradictions():
+    ingestion = _make_ingestion()
+    merged = {
+        "tables_read": [],
+        "tables_written": [],
+        "llm_tables_read": [],
+        "llm_tables_written": [],
+        "statement_provenance": [
+            {"statement_id": "stmt_low", "parse_status": "parsed"},
+            {"statement_id": "stmt_high", "parse_status": "parsed"},
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            rule_id="rule_low",
+            source_chunks=["chunk_low"],
+            technical_references=["stmt_low"],
+            fields_affected=["SMA_STATUS"],
+            condition="DPD < 30",
+            action="SMA_STATUS = 'SMA-0'",
+        ),
+        _rule(
+            rule_id="rule_high",
+            source_chunks=["chunk_high"],
+            technical_references=["stmt_high"],
+            fields_affected=["SMA_STATUS"],
+            condition="DPD >= 30",
+            action="SMA_STATUS = 'SMA-1'",
+        ),
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    assert not any(item.type == "rule_vs_rule_conflict" for item in result.contradictions)
+
+
+def test_overlapping_threshold_branches_still_conflict():
+    ingestion = _make_ingestion()
+    merged = {
+        "tables_read": [],
+        "tables_written": [],
+        "llm_tables_read": [],
+        "llm_tables_written": [],
+        "statement_provenance": [
+            {"statement_id": "stmt_a", "parse_status": "parsed"},
+            {"statement_id": "stmt_b", "parse_status": "parsed"},
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            rule_id="rule_a",
+            source_chunks=["chunk_a"],
+            technical_references=["stmt_a"],
+            fields_affected=["SMA_STATUS"],
+            condition="DPD >= 30",
+            action="SMA_STATUS = 'SMA-1'",
+            decision_logic_rows=[
+                {"condition": "DPD >= 30", "outcome": "SMA_STATUS = 'SMA-1'"},
+                {"condition": "DPD > 30", "outcome": "SMA_STATUS = 'SMA-2'"},
+            ],
+            tie_priority_handling=["Explicit ordered thresholds"],
+        ),
+        _rule(
+            rule_id="rule_b",
+            source_chunks=["chunk_b"],
+            technical_references=["stmt_b"],
+            fields_affected=["SMA_STATUS"],
+            condition="DPD > 30",
+            action="SMA_STATUS = 'SMA-2'",
+        ),
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    contradiction = _find_contradiction(result, classification="VALID_ORDERED_BRANCH", ctype="rule_vs_rule_conflict")
+    assert contradiction.business_relevant is False
+    assert contradiction.counted_for_review is False
+    assert any(item.type == "rule_vs_rule_conflict" for item in result.contradictions)
+
+
+def test_comment_only_evidence_does_not_ground_executable_rule():
+    ingestion = _make_ingestion()
+    merged = {
+        "tables_read": [],
+        "tables_written": [_table_row("ACCOUNT", "UPDATE", chunk_id="chunk_1", statement_id="stmt_1", columns=["STATUS"])],
+        "llm_tables_read": [],
+        "llm_tables_written": [_table_row("ACCOUNT", "UPDATE", chunk_id="chunk_1", statement_id="stmt_1", columns=["STATUS"])],
+    }
+    synthesis = _make_synthesis([
+        {
+            "rule_id": "rule_1",
+            "rule_name": "Rule 1",
+            "source_chunks": ["chunk_1:comment_block"],
+            "source_chunk_ids": ["chunk_1"],
+            "source_statement_ids": ["stmt_1"],
+            "technical_references": ["stmt_1"],
+            "fields_affected": ["STATUS"],
+            "condition": "STATUS is mentioned in comments only",
+            "action": "STATUS is mentioned in comments only",
+            "decision_logic_rows": [],
+            "validation_status": "verified",
+            "rule_type": "explicit",
+            "confidence": "medium",
+            "evidence_spans": [_evidence_span(parse_status="parse_failed", evidence_type="COMMENT")],
+            "source_evidence": ["comment-only guidance"],
+        }
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    record = _find_record(result, kind="rule", status="LLM_ONLY")
+    assert record.deterministic_evidence == {}
 
 
 def test_outcome_contradiction_is_detected():
@@ -448,6 +857,225 @@ def test_outcome_contradiction_is_detected():
 
     assert any(item.type == "outcome_conflict" for item in result.contradictions)
     assert result.quality["status"] == "REVIEW_REQUIRED"
+
+
+def test_technical_predicate_formatting_difference_is_not_a_contradiction():
+    ingestion = _make_ingestion()
+    merged = {
+        "tables_read": [],
+        "tables_written": [
+            _table_row(
+                "SYSDAYMATRIX",
+                "READ",
+                chunk_id="chunk_1",
+                statement_id="stmt_1",
+                columns=["DATE"],
+                filter_condition="TIMEKEY=@TIMEKEY)",
+            )
+        ],
+        "llm_tables_read": [],
+        "llm_tables_written": [
+            _table_row(
+                "SYSDAYMATRIX",
+                "READ",
+                chunk_id="chunk_1",
+                statement_id="stmt_1",
+                columns=["DATE"],
+                filter_condition="TIMEKEY=@TIMEKEY",
+            )
+        ],
+        "statement_provenance": [
+            {"statement_id": "stmt_1", "parse_status": "parsed"},
+        ],
+    }
+    synthesis = _make_synthesis([])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    assert not any(item.type == "condition_conflict" for item in result.contradictions)
+    assert any(record.status == "MATCHED" for record in result.records if record.kind == "tables_written")
+
+
+def test_tables_read_column_projection_differences_do_not_create_business_contradictions():
+    ingestion = _make_ingestion()
+    merged = {
+        "tables_read": [
+            _table_row(
+                "ACCOUNT",
+                "READ",
+                chunk_id="chunk_1",
+                statement_id="stmt_1",
+                columns=["ACCOUNT_ID", "BALANCE", "STATUS"],
+                filter_condition="STATUS = 'A'",
+            )
+        ],
+        "tables_written": [],
+        "llm_tables_read": [
+            _table_row(
+                "ACCOUNT",
+                "READ",
+                chunk_id="chunk_1",
+                statement_id="stmt_1",
+                columns=["STATUS"],
+                filter_condition="STATUS = 'A'",
+            )
+        ],
+        "llm_tables_written": [],
+        "statement_provenance": [
+            {"statement_id": "stmt_1", "parse_status": "parsed"},
+        ],
+    }
+    synthesis = _make_synthesis([])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    assert not any(item.type == "field_conflict" for item in result.contradictions)
+    assert any(record.status == "MATCHED" for record in result.records if record.kind == "tables_read")
+
+
+def test_rule_candidate_rows_ignore_unrelated_rows_from_same_chunk():
+    ingestion = _make_ingestion()
+    merged = {
+        "tables_read": [],
+        "tables_written": [
+            _table_row(
+                "DPD",
+                "UPDATE",
+                chunk_id="chunk_1",
+                statement_id="stmt_dpd",
+                columns=["DPD_IntService"],
+                filter_condition="DPD_IntService < 0",
+                assigned_values=[{"column": "DPD_IntService", "expression": "0"}],
+            ),
+            _table_row(
+                "PRO.ACCOUNTCAL",
+                "UPDATE",
+                chunk_id="chunk_1",
+                statement_id="stmt_other",
+                columns=["SMA_CLASS", "SMA_REASON", "SMA_DT", "FLGSMA"],
+                filter_condition="FinalAssetClassAlt_Key = 1",
+                assigned_values=[{"column": "SMA_CLASS", "expression": "NULL"}],
+            ),
+        ],
+        "llm_tables_read": [],
+        "llm_tables_written": [
+            _table_row(
+                "DPD",
+                "UPDATE",
+                chunk_id="chunk_1",
+                statement_id="stmt_dpd",
+                columns=["DPD_IntService"],
+                filter_condition="DPD_IntService < 0",
+                assigned_values=[{"column": "DPD_IntService", "expression": "0"}],
+            ),
+            _table_row(
+                "PRO.ACCOUNTCAL",
+                "UPDATE",
+                chunk_id="chunk_1",
+                statement_id="stmt_other",
+                columns=["SMA_CLASS", "SMA_REASON", "SMA_DT", "FLGSMA"],
+                filter_condition="FinalAssetClassAlt_Key = 1",
+                assigned_values=[{"column": "SMA_CLASS", "expression": "NULL"}],
+            ),
+        ],
+        "statement_provenance": [
+            {"statement_id": "stmt_dpd", "parse_status": "parsed"},
+            {"statement_id": "stmt_other", "parse_status": "parsed"},
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            rule_id="rule_dpd",
+            source_chunks=["chunk_1"],
+            technical_references=["stmt_dpd"],
+            fields_affected=["DPD_IntService"],
+            condition="DPD_IntService < 0",
+            action="DPD_IntService = 0",
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    record = _find_record(result, kind="rule", status="MATCHED")
+    assert record.rule_id == "rule_dpd"
+    assert not any(item.type == "rule_vs_rule_conflict" for item in result.contradictions)
+
+
+def test_rule_candidate_rows_prefer_statement_identity_over_shared_chunk():
+    ingestion = _make_ingestion()
+    merged = {
+        "tables_read": [],
+        "tables_written": [
+            _table_row(
+                "ACCOUNT",
+                "UPDATE",
+                chunk_id="chunk_1",
+                statement_id="stmt_chunk",
+                columns=["STATUS"],
+                filter_condition="STATUS = 'N'",
+                assigned_values=[{"column": "STATUS", "expression": "'N'"}],
+            ),
+            _table_row(
+                "ACCOUNT",
+                "UPDATE",
+                chunk_id="chunk_2",
+                statement_id="stmt_match",
+                columns=["STATUS"],
+                filter_condition="STATUS = 'B'",
+                assigned_values=[{"column": "STATUS", "expression": "'B'"}],
+            ),
+        ],
+        "llm_tables_read": [],
+        "llm_tables_written": [
+            _table_row(
+                "ACCOUNT",
+                "UPDATE",
+                chunk_id="chunk_1",
+                statement_id="stmt_match",
+                columns=["STATUS"],
+                filter_condition="STATUS = 'Y'",
+                assigned_values=[{"column": "STATUS", "expression": "'Y'"}],
+            )
+        ],
+        "statement_provenance": [
+            {"statement_id": "stmt_chunk", "parse_status": "parsed"},
+            {"statement_id": "stmt_match", "parse_status": "parsed"},
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            rule_id="rule_stmt_match",
+            source_chunks=["chunk_1:main_body"],
+            source_statement_ids=["stmt_match"],
+            technical_references=["stmt_match"],
+            fields_affected=["STATUS"],
+            condition="STATUS = 'Y'",
+            action="STATUS = 'Y'",
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    record = _find_record(result, kind="rule", status="CONFLICT")
+    assert record.statement_id == "stmt_match"
+    assert record.deterministic_evidence["statement_ids"] == ["stmt_match"]
+    assert record.deterministic_evidence["filters"] == ["STATUS = 'B'"]
 
 
 def test_table_operation_contradiction_is_detected():
@@ -553,6 +1181,53 @@ def test_duplicate_rule_without_contradiction_is_grouped():
 
     assert not any(item.type == "rule_vs_rule_conflict" for item in result.contradictions)
     assert result.duplicate_rule_groups
+
+
+def test_duplicate_contradiction_ids_are_deduplicated():
+    records = [
+        ReconciliationRecord(
+            reconciliation_id="recon_1",
+            kind="tables_written",
+            status="CONFLICT",
+            object_id="obj_1",
+            chunk_id="chunk_1",
+            statement_id="stmt_1",
+            llm_claim={
+                "table": "ACCOUNT",
+                "operation": "MERGE",
+            },
+            deterministic_evidence={
+                "table": "ACCOUNT",
+                "operation": "UPDATE",
+                "filter_condition": "STATUS = 'A'",
+            },
+            comparison={"table_status": "CONFLICT"},
+        ),
+        ReconciliationRecord(
+            reconciliation_id="recon_2",
+            kind="tables_written",
+            status="CONFLICT",
+            object_id="obj_1",
+            chunk_id="chunk_1",
+            statement_id="stmt_1",
+            llm_claim={
+                "table": "ACCOUNT",
+                "operation": "MERGE",
+            },
+            deterministic_evidence={
+                "table": "ACCOUNT",
+                "operation": "UPDATE",
+                "filter_condition": "STATUS = 'B'",
+            },
+            comparison={"table_status": "CONFLICT"},
+        ),
+    ]
+
+    contradictions, _ = _gather_contradictions(object_id="obj_1", rules=[], records=records)
+
+    contradiction_ids = [item.contradiction_id for item in contradictions]
+    assert len(contradiction_ids) == len(set(contradiction_ids))
+    assert len(contradictions) == 1
 
 
 def test_coverage_metrics_are_calculated():

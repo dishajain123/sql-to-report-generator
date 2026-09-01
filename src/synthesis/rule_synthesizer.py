@@ -39,7 +39,7 @@ from typing import Optional
 
 from src.ingestion.guardrails import ground_business_rules_against_extraction, validate_synthesis_shape
 from src.core.llm_client import supports_chat_completion_seed
-from src.core.pipeline_utils import PIPELINE_VERSION
+from src.core.pipeline_utils import PIPELINE_VERSION, stable_id
 from src.core.llm_response_cache import PersistentLLMResponseCache
 from src.prompts.prompt_loader import get_prompt_set, render_user_prompt
 from src.telemetry.tracker import LLMTelemetryTracker
@@ -644,6 +644,8 @@ class RuleSynthesizerAgent:
             bucket_signal = explicit_bucket_signal or "ageing_bucket" in output_lower
             if "dynamic sql" in blob or "manual review" in blob:
                 return "Flag for manual review instead of claiming a concrete table"
+            if any(token in blob for token in ("clear", "reset", "reprocessing", "cleanup")) and "sma" in blob:
+                return "Clear SMA fields before reprocessing"
             if "errormessage" in blob or "errorlog" in blob or "error log" in blob:
                 return "Log error message"
             if (
@@ -802,7 +804,7 @@ class RuleSynthesizerAgent:
             return text
 
         normalized: List[Dict[str, Any]] = []
-        for rule in raw_rules:
+        for source_index, rule in enumerate(raw_rules):
             if not isinstance(rule, dict):
                 continue
 
@@ -878,6 +880,7 @@ class RuleSynthesizerAgent:
                         rule.get("unresolved_ambiguities", [])
                     ),
                     "dependencies": _as_string_list(rule.get("dependencies", [])),
+                    "_source_index": source_index,
                 }
             )
 
@@ -1367,6 +1370,7 @@ class RuleSynthesizerAgent:
                         "technical_references": [],
                         "unresolved_ambiguities": [],
                         "dependencies": [],
+                        "_source_index": len(deduped),
                     }
                 )
 
@@ -1619,6 +1623,291 @@ class RuleSynthesizerAgent:
                 elif "doubtful1" in action_lower and "doubtful2" in action_lower:
                     rule["action"] = "Set DOUBTFUL1 or DOUBTFUL2 based on doubtful_since"
                     rule["business_meaning"] = rule["action"]
+
+        def _merge_list_values(values: List[Any]) -> List[Any]:
+            merged: List[Any] = []
+            seen: set = set()
+            for value in values:
+                if isinstance(value, dict):
+                    key = json.dumps(value, sort_keys=True, default=str)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged.append(dict(value))
+                    continue
+                text = _as_text(value)
+                if not text:
+                    continue
+                key = text.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(text)
+            return merged
+
+        def _merge_rule_families(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            def _family_key(rule: Dict[str, Any]) -> str:
+                text = _normalize_blob(
+                    rule.get("rule_name"),
+                    rule.get("condition"),
+                    rule.get("action"),
+                    rule.get("business_meaning"),
+                    rule.get("output_field"),
+                    rule.get("source_evidence"),
+                    rule.get("technical_references"),
+                    rule.get("fields_affected"),
+                )
+                if any(token in text for token in ("clear", "reset", "reprocessing", "preprocessing", "cleanup")) and "sma" in text:
+                    return ""
+                if "custmovedescription" in text:
+                    return "cust_move_description"
+                if (
+                    "flgsma" in text
+                    and any(token in text for token in ("customer", "customercal", "customerentityid", "ucif"))
+                ) or (
+                    any(token in text for token in ("sma_class_key", "sma_dt"))
+                    and any(token in text for token in ("customer", "customercal", "customerentityid", "ucif"))
+                ):
+                    return "sma_customer"
+                if any(token in text for token in ("sma_class", "sma_reason", "sma_dt")) and any(
+                    token in text for token in ("flgsma", "finalassetclassalt_key", "sma_class is null")
+                ):
+                    return "sma_account"
+                return ""
+
+            def _allowed_family_field(field: str, family: str) -> str:
+                text = _as_text(field)
+                if not text:
+                    return ""
+                clean = text.split(".")[-1].strip()
+                allowed_fields = {
+                    "sma_account": {"SMA_CLASS", "SMA_REASON", "FLGSMA", "SMA_DT"},
+                    "sma_customer": {"FLGSMA", "SMA_CLASS_KEY", "SMA_DT"},
+                    "cust_move_description": {"CustMoveDescription"},
+                }.get(family, set())
+                if clean in allowed_fields:
+                    return clean
+                if text in allowed_fields:
+                    return text
+                return ""
+
+            def _family_label(family: str) -> str:
+                if family == "sma_account":
+                    return "Assign account-level SMA fields in order"
+                if family == "sma_customer":
+                    return "Propagate customer-level SMA status"
+                if family == "cust_move_description":
+                    return "Assign customer movement description by key"
+                return ""
+
+            def _family_output_field(family: str, member_rules: List[Dict[str, Any]]) -> str:
+                if family == "cust_move_description":
+                    return "CustMoveDescription"
+                fields: List[str] = []
+                for rule in member_rules:
+                    for field in _as_string_list(rule.get("fields_affected", [])) + ([_as_text(rule.get("output_field"))] if _as_text(rule.get("output_field")) else []):
+                        allowed = _allowed_family_field(field, family)
+                        if allowed and allowed not in fields:
+                            fields.append(allowed)
+                return ", ".join(fields)
+
+            def _family_condition(rule: Dict[str, Any]) -> str:
+                condition = _as_text(rule.get("condition"))
+                if condition:
+                    return condition
+                eligibility = _as_string_list(rule.get("eligibility"))
+                return eligibility[0] if eligibility else ""
+
+            def _family_action(rule: Dict[str, Any]) -> str:
+                action = _as_text(rule.get("action"))
+                if action:
+                    return action
+                meaning = _as_text(rule.get("business_meaning"))
+                return meaning
+
+            def _family_rule_type(member_rules: List[Dict[str, Any]]) -> str:
+                order = {"explicit": 3, "inferred": 2, "assumption": 1}
+                best = ""
+                best_rank = -1
+                for rule in member_rules:
+                    value = str(rule.get("rule_type") or "").strip().lower()
+                    rank = order.get(value, 0)
+                    if rank > best_rank:
+                        best = value or best
+                        best_rank = rank
+                return best or "inferred"
+
+            def _family_confidence(member_rules: List[Dict[str, Any]]) -> str:
+                order = {"high": 3, "medium": 2, "low": 1}
+                worst = "high"
+                worst_rank = 3
+                for rule in member_rules:
+                    value = str(rule.get("confidence") or "").strip().lower()
+                    rank = order.get(value, 2)
+                    if rank < worst_rank:
+                        worst = value or worst
+                        worst_rank = rank
+                return worst or "medium"
+
+            def _family_status(member_rules: List[Dict[str, Any]]) -> str:
+                order = {
+                    "verified": 5,
+                    "unverified": 4,
+                    "insufficient_evidence": 3,
+                    "ambiguous": 2,
+                    "parser_failed": 1,
+                }
+                worst = "verified"
+                worst_rank = 5
+                for rule in member_rules:
+                    value = str(rule.get("validation_status") or "").strip().lower()
+                    rank = order.get(value, 4)
+                    if rank < worst_rank:
+                        worst = value or worst
+                        worst_rank = rank
+                return worst or "unverified"
+
+            def _family_decision_rows(member_rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                rows: List[Dict[str, Any]] = []
+                for rule in member_rules:
+                    rule_condition = _family_condition(rule)
+                    rule_action = _family_action(rule)
+                    rule_meaning = _as_text(rule.get("business_meaning")) or rule_action
+                    rule_output = _as_text(rule.get("output_field"))
+                    row_fields = []
+                    for field in _as_string_list(rule.get("fields_affected", [])):
+                        allowed = _allowed_family_field(field, family)
+                        if allowed and allowed not in row_fields:
+                            row_fields.append(allowed)
+                    if not row_fields and rule_output:
+                        allowed_output = _allowed_family_field(rule_output, family)
+                        if allowed_output:
+                            row_fields = [allowed_output]
+                    decision_rows = rule.get("decision_logic_rows")
+                    if isinstance(decision_rows, list) and decision_rows:
+                        for row in decision_rows:
+                            if not isinstance(row, dict):
+                                continue
+                            condition = _as_text(row.get("condition") or row.get("when") or rule_condition)
+                            outcome = _as_text(row.get("outcome") or row.get("then") or row.get("result") or rule_meaning)
+                            merged_row = {
+                                "condition": condition or "Not specified",
+                                "outcome": outcome or "Not specified",
+                            }
+                            if row_fields:
+                                merged_row["field"] = ", ".join(row_fields)
+                            rows.append(merged_row)
+                        continue
+                    merged_row = {
+                        "condition": rule_condition or "Not specified",
+                        "outcome": rule_meaning or "Not specified",
+                    }
+                    if row_fields:
+                        merged_row["field"] = ", ".join(row_fields)
+                    rows.append(merged_row)
+                return rows
+
+            if not rules:
+                return []
+
+            family_groups: "OrderedDict[str, List[tuple[int, Dict[str, Any]]]]" = OrderedDict()
+            passthrough: List[tuple[int, Dict[str, Any]]] = []
+            for index, rule in enumerate(rules):
+                source_index = int(rule.get("_source_index", index))
+                family = _family_key(rule)
+                if family:
+                    family_groups.setdefault(family, []).append((source_index, rule))
+                else:
+                    passthrough.append((source_index, rule))
+
+            merged: List[tuple[int, Dict[str, Any]]] = []
+            for family, indexed_rules in family_groups.items():
+                if len(indexed_rules) < 2:
+                    merged.extend(indexed_rules)
+                    continue
+                indexed_rules = sorted(indexed_rules, key=lambda item: item[0])
+                member_rules = [rule for _, rule in indexed_rules]
+                first_index = indexed_rules[0][0]
+                combined: Dict[str, Any] = dict(member_rules[0])
+                combined_fields: List[str] = []
+                for rule in member_rules:
+                    for field in _as_string_list(rule.get("fields_affected", [])) + ([_as_text(rule.get("output_field"))] if _as_text(rule.get("output_field")) else []):
+                        allowed = _allowed_family_field(field, family)
+                        if allowed and allowed not in combined_fields:
+                            combined_fields.append(allowed)
+
+                combined["rule_name"] = _family_label(family) or _as_text(member_rules[0].get("rule_name")) or _family_action(member_rules[0])
+                combined["output_field"] = _family_output_field(family, member_rules)
+                combined["business_meaning"] = _family_label(family) or _as_text(member_rules[0].get("business_meaning")) or _family_action(member_rules[0])
+                combined["eligibility"] = _merge_list_values(
+                    [
+                        item
+                        for rule in member_rules
+                        for item in (_as_string_list(rule.get("eligibility", [])) or ([_family_condition(rule)] if _family_condition(rule) else []))
+                    ]
+                )
+                combined["decision_logic"] = _merge_list_values(
+                    [
+                        item
+                        for rule in member_rules
+                        for item in (_as_string_list(rule.get("decision_logic", [])) or ([_family_condition(rule)] if _family_condition(rule) else []))
+                    ]
+                )
+                combined["decision_logic_rows"] = _family_decision_rows(member_rules)
+                combined["tie_priority_handling"] = _merge_list_values(
+                    [
+                        item
+                        for rule in member_rules
+                        for item in _as_string_list(rule.get("tie_priority_handling", []))
+                    ]
+                )
+                combined["default"] = _merge_list_values(
+                    [item for rule in member_rules for item in _as_string_list(rule.get("default", []))]
+                )
+                combined["when_not_eligible"] = _merge_list_values(
+                    [item for rule in member_rules for item in _as_string_list(rule.get("when_not_eligible", []))]
+                )
+                combined["condition"] = _family_condition(member_rules[0])
+                combined["action"] = _family_action(member_rules[0])
+                combined["fields_affected"] = combined_fields
+                combined["rule_type"] = _family_rule_type(member_rules)
+                combined["confidence"] = _family_confidence(member_rules)
+                combined["validation_status"] = _family_status(member_rules)
+                member_ids = [str(rule.get("rule_id") or "") for rule in member_rules if str(rule.get("rule_id") or "").strip()]
+                combined["rule_id"] = stable_id("rule", family, *member_ids, first_index)
+                ambiguity_ids = [str(rule.get("ambiguity_id") or "") for rule in member_rules if str(rule.get("ambiguity_id") or "").strip()]
+                combined["ambiguity_id"] = stable_id("ambiguity", family, *ambiguity_ids, first_index) if ambiguity_ids else _as_text(member_rules[0].get("ambiguity_id"))
+                combined["source_evidence"] = _merge_list_values(
+                    [item for rule in member_rules for item in _as_string_list(rule.get("source_evidence", []))]
+                )
+                combined["source_chunks"] = _merge_list_values(
+                    [item for rule in member_rules for item in _as_string_list(rule.get("source_chunks", []))]
+                )
+                combined["source_chunk_ids"] = _merge_list_values(
+                    [item for rule in member_rules for item in _as_string_list(rule.get("source_chunk_ids", []))]
+                )
+                combined["source_statement_ids"] = _merge_list_values(
+                    [item for rule in member_rules for item in _as_string_list(rule.get("source_statement_ids", []))]
+                )
+                combined["evidence_spans"] = _merge_list_values(
+                    [item for rule in member_rules for item in (rule.get("evidence_spans") or []) if isinstance(item, dict)]
+                )
+                combined["technical_references"] = _merge_list_values(
+                    [item for rule in member_rules for item in _as_string_list(rule.get("technical_references", []))]
+                )
+                combined["unresolved_ambiguities"] = _merge_list_values(
+                    [item for rule in member_rules for item in _as_string_list(rule.get("unresolved_ambiguities", []))]
+                )
+                combined["dependencies"] = _merge_list_values(
+                    [item for rule in member_rules for item in _as_string_list(rule.get("dependencies", []))]
+                )
+                merged.append((first_index, combined))
+
+            merged.extend(passthrough)
+            merged.sort(key=lambda item: item[1].get("_source_index", item[0]))
+            return [rule for _, rule in merged]
+
+        deduped = _merge_rule_families(deduped)
 
         final_rules: "OrderedDict[tuple[str, str, str], Dict[str, Any]]" = OrderedDict()
         for rule in deduped:

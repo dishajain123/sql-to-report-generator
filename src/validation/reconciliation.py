@@ -28,6 +28,25 @@ CONTRADICTION_TYPES = {
     "cross_chunk_conflict",
 }
 
+CONTRADICTION_CLASSIFICATIONS = {
+    "GENUINE_BUSINESS_CONTRADICTION",
+    "TECHNICAL_PROVENANCE_NOISE",
+    "TECHNICAL_VS_BUSINESS_OVERLAP",
+    "VALID_ORDERED_BRANCH",
+    "INSUFFICIENT_EVIDENCE",
+}
+
+BUSINESS_REVIEW_CLASSIFICATIONS = {
+    "GENUINE_BUSINESS_CONTRADICTION",
+    "INSUFFICIENT_EVIDENCE",
+}
+
+EXPECTED_FINDING_CLASSIFICATIONS = {
+    "TECHNICAL_PROVENANCE_NOISE",
+    "TECHNICAL_VS_BUSINESS_OVERLAP",
+    "VALID_ORDERED_BRANCH",
+}
+
 _SIMPLE_CONDITION_RE = re.compile(
     r"^(?P<lhs>[A-Z0-9_.\[\]#$]+)\s*(?P<op>>=|<=|<>|!=|=|>|<|IN|NOT IN)\s*(?P<rhs>.+)$",
     re.IGNORECASE,
@@ -44,6 +63,35 @@ def _clean_text(value: Any) -> str:
 
 def _normalize_value(value: Any) -> str:
     return _clean_text(value).lower()
+
+
+def _normalize_sql_fragment(value: Any) -> str:
+    cleaned = _clean_text(value).rstrip(";,")
+    if not cleaned:
+        return ""
+    cleaned = _strip_outer_parentheses(cleaned)
+    while cleaned.endswith(")") and cleaned.count("(") < cleaned.count(")"):
+        cleaned = cleaned[:-1].rstrip()
+        cleaned = _strip_outer_parentheses(cleaned)
+    return _clean_text(cleaned)
+
+
+def _normalize_column_reference(value: Any) -> str:
+    cleaned = _normalize_sql_fragment(value)
+    if "." not in cleaned:
+        return _normalize_value(cleaned)
+    left, right = cleaned.rsplit(".", 1)
+    alias = _clean_text(left).strip("[]")
+    column = _clean_text(right).strip("[]")
+    if not alias or not column:
+        return _normalize_value(cleaned)
+    if len(alias) <= 4 and (alias.islower() or len(alias) <= 2):
+        return _normalize_value(column)
+    return _normalize_value(cleaned)
+
+
+def _expressions_semantically_equal(left: Any, right: Any) -> bool:
+    return _normalize_sql_fragment(left).lower() == _normalize_sql_fragment(right).lower()
 
 
 def _normalize_list(values: Sequence[Any]) -> List[str]:
@@ -69,12 +117,12 @@ def _row_operation(row: Dict[str, Any]) -> str:
 
 
 def _row_filter(row: Dict[str, Any]) -> str:
-    return _normalize_value(
+    return _normalize_sql_fragment(
         row.get("filter_condition")
         or row.get("where_predicate")
         or row.get("trigger_condition")
         or ""
-    )
+    ).lower()
 
 
 def _row_assigned_values(row: Dict[str, Any]) -> List[str]:
@@ -82,7 +130,7 @@ def _row_assigned_values(row: Dict[str, Any]) -> List[str]:
     for item in row.get("assigned_values") or []:
         if not isinstance(item, dict):
             continue
-        expression = _clean_text(item.get("expression"))
+        expression = _normalize_sql_fragment(_strip_quotes(item.get("expression")))
         if expression:
             values.append(expression)
     return values
@@ -168,7 +216,7 @@ def _strip_quotes(text: str) -> str:
 
 
 def _parse_structured_comparison(text: Any) -> Optional[Dict[str, str]]:
-    cleaned = _strip_outer_parentheses(str(text or ""))
+    cleaned = _normalize_sql_fragment(str(text or ""))
     match = _SIMPLE_CONDITION_RE.match(cleaned)
     if not match:
         return None
@@ -181,7 +229,7 @@ def _parse_structured_comparison(text: Any) -> Optional[Dict[str, str]]:
 
 
 def _parse_structured_assignment(text: Any) -> Optional[Dict[str, str]]:
-    cleaned = _strip_outer_parentheses(str(text or ""))
+    cleaned = _normalize_sql_fragment(str(text or ""))
     match = _SIMPLE_ASSIGNMENT_RE.match(cleaned)
     if not match:
         return None
@@ -199,16 +247,281 @@ def _source_identity(row: Dict[str, Any]) -> Tuple[str, str]:
 def _same_source_identity(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
     left_chunk, left_statement = _source_identity(left)
     right_chunk, right_statement = _source_identity(right)
-    return bool(
-        (left_chunk and right_chunk and left_chunk == right_chunk)
-        or (left_statement and right_statement and left_statement == right_statement)
-    )
+    if left_statement and right_statement:
+        return left_statement == right_statement
+    if left_statement or right_statement:
+        return False
+    return bool(left_chunk and right_chunk and left_chunk == right_chunk)
 
 
 def _rule_source_identity(rule: Dict[str, Any]) -> Tuple[List[str], List[str]]:
-    chunks = [str(chunk).strip() for chunk in rule.get("source_chunks") or [] if str(chunk).strip()]
-    statements = [str(ref).strip() for ref in rule.get("technical_references") or [] if str(ref).strip()]
+    raw_chunks = rule.get("source_chunk_ids") or []
+    if not raw_chunks:
+        raw_chunks = [
+            str(chunk).split(":", 1)[0].strip()
+            for chunk in rule.get("source_chunks") or []
+            if str(chunk).strip()
+        ]
+    chunks = [str(chunk).strip() for chunk in raw_chunks if str(chunk).strip()]
+
+    raw_statements = rule.get("source_statement_ids") or []
+    if not raw_statements:
+        raw_statements = [
+            str(ref).strip()
+            for ref in rule.get("source_statements") or []
+            if str(ref).strip()
+        ]
+    statements = [str(ref).strip() for ref in raw_statements if str(ref).strip()]
     return chunks, statements
+
+
+def _rule_evidence_spans(rule: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [dict(span) for span in rule.get("evidence_spans") or [] if isinstance(span, dict)]
+
+
+def _span_is_executable(span: Dict[str, Any]) -> bool:
+    return str(span.get("statement_parse_status") or "").strip().lower() == "parsed"
+
+
+def _row_matches_evidence_span(row: Dict[str, Any], span: Dict[str, Any]) -> bool:
+    row_chunk = _chunk_id_from_row(row)
+    row_statement = _statement_id_from_row(row)
+    span_chunk = str(span.get("chunk_id") or "").strip()
+    span_statement = str(span.get("statement_id") or "").strip()
+    if span_statement and row_statement and span_statement == row_statement:
+        return True
+    if span_statement and row_statement and span_statement != row_statement:
+        return False
+    if span_chunk and row_chunk and span_chunk == row_chunk:
+        return True
+
+    span_file = str(span.get("source_file") or "").strip()
+    row_file = str(row.get("source_file") or row.get("provenance", {}).get("source_file") or "").strip()
+    if span_file and row_file and span_file == row_file:
+        span_start = int(span.get("char_start") or -1)
+        span_end = int(span.get("char_end") or -1)
+        row_start = int(row.get("source_char_start") or row.get("provenance", {}).get("source_char_start") or -1)
+        row_end = int(row.get("source_char_end") or row.get("provenance", {}).get("source_char_end") or -1)
+        if span_start >= 0 and span_end >= 0 and row_start >= 0 and row_end >= 0:
+            if not (span_end < row_start or row_end < span_start):
+                return True
+
+        span_line_start = int(span.get("line_start") or -1)
+        span_line_end = int(span.get("line_end") or -1)
+        row_line_start = int(row.get("source_line_start") or row.get("provenance", {}).get("source_line_start") or -1)
+        row_line_end = int(row.get("source_line_end") or row.get("provenance", {}).get("source_line_end") or -1)
+        if span_line_start >= 0 and span_line_end >= 0 and row_line_start >= 0 and row_line_end >= 0:
+            if not (span_line_end < row_line_start or row_line_end < span_line_start):
+                return True
+
+    return False
+
+
+def _condition_space(condition: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    lhs = _normalize_value(condition.get("lhs"))
+    op = str(condition.get("op") or "").upper().replace(" ", "")
+    rhs_raw = _clean_text(condition.get("rhs"))
+    if not lhs or not op or not rhs_raw:
+        return None
+    if op == "IN":
+        values = [_normalize_value(item) for item in re.split(r",\s*", _strip_outer_parentheses(rhs_raw).strip("()")) if _normalize_value(item)]
+        if not values:
+            return None
+        return {"lhs": lhs, "kind": "set", "values": values, "raw": condition.get("raw", "")}
+    if op == "NOTIN":
+        values = [_normalize_value(item) for item in re.split(r",\s*", _strip_outer_parentheses(rhs_raw).strip("()")) if _normalize_value(item)]
+        if not values:
+            return None
+        return {"lhs": lhs, "kind": "negated_set", "values": values, "raw": condition.get("raw", "")}
+    if op == "=":
+        return {"lhs": lhs, "kind": "point", "lower": rhs_raw, "upper": rhs_raw, "lower_inclusive": True, "upper_inclusive": True, "raw": condition.get("raw", "")}
+    if op in {">", ">=", "<", "<="}:
+        numeric_match = re.match(r"^[-+]?\d+(?:\.\d+)?$", rhs_raw)
+        if numeric_match:
+            value = float(rhs_raw) if "." in rhs_raw else int(rhs_raw)
+            if op == ">":
+                return {"lhs": lhs, "kind": "range", "lower": value, "lower_inclusive": False, "raw": condition.get("raw", "")}
+            if op == ">=":
+                return {"lhs": lhs, "kind": "range", "lower": value, "lower_inclusive": True, "raw": condition.get("raw", "")}
+            if op == "<":
+                return {"lhs": lhs, "kind": "range", "upper": value, "upper_inclusive": False, "raw": condition.get("raw", "")}
+            if op == "<=":
+                return {"lhs": lhs, "kind": "range", "upper": value, "upper_inclusive": True, "raw": condition.get("raw", "")}
+    between_match = re.match(
+        r"^(?P<lhs>[A-Z0-9_.\[\]#$]+)\s+BETWEEN\s+(?P<lower>[-+]?\d+(?:\.\d+)?)\s+AND\s+(?P<upper>[-+]?\d+(?:\.\d+)?)$",
+        _clean_text(condition.get("raw") or ""),
+        re.IGNORECASE,
+    )
+    if between_match:
+        lhs_text = _normalize_value(between_match.group("lhs"))
+        lower = float(between_match.group("lower")) if "." in between_match.group("lower") else int(between_match.group("lower"))
+        upper = float(between_match.group("upper")) if "." in between_match.group("upper") else int(between_match.group("upper"))
+        if lhs_text:
+            return {
+                "lhs": lhs_text,
+                "kind": "range",
+                "lower": lower,
+                "upper": upper,
+                "lower_inclusive": True,
+                "upper_inclusive": True,
+                "raw": condition.get("raw", ""),
+            }
+    if _normalize_value(condition.get("raw")) in {"else", "otherwise"}:
+        return {"lhs": lhs, "kind": "catch_all", "raw": condition.get("raw", "")}
+    return None
+
+
+def _spaces_overlap(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    if not left or not right:
+        return False
+    if left.get("lhs") != right.get("lhs"):
+        return False
+    if left.get("kind") == "catch_all" or right.get("kind") == "catch_all":
+        return left.get("kind") == "catch_all" and right.get("kind") == "catch_all"
+    if left.get("kind") == "point" and right.get("kind") == "point":
+        return _normalize_value(left.get("lower")) == _normalize_value(right.get("lower"))
+    if left.get("kind") == "set" and right.get("kind") == "set":
+        return bool(set(left.get("values") or []) & set(right.get("values") or []))
+    if left.get("kind") == "set" and right.get("kind") == "point":
+        return _normalize_value(right.get("lower")) in set(left.get("values") or [])
+    if right.get("kind") == "set" and left.get("kind") == "point":
+        return _normalize_value(left.get("lower")) in set(right.get("values") or [])
+
+    left_lower = left.get("lower")
+    left_upper = left.get("upper")
+    right_lower = right.get("lower")
+    right_upper = right.get("upper")
+
+    def _lower_bound(space: Dict[str, Any]) -> Tuple[Optional[float], bool]:
+        return space.get("lower"), bool(space.get("lower_inclusive", True))
+
+    def _upper_bound(space: Dict[str, Any]) -> Tuple[Optional[float], bool]:
+        return space.get("upper"), bool(space.get("upper_inclusive", True))
+
+    left_lb, left_lb_inclusive = _lower_bound(left)
+    left_ub, left_ub_inclusive = _upper_bound(left)
+    right_lb, right_lb_inclusive = _lower_bound(right)
+    right_ub, right_ub_inclusive = _upper_bound(right)
+
+    if left_lb is not None and right_ub is not None:
+        if left_lb > right_ub:
+            return False
+        if left_lb == right_ub and (not left_lb_inclusive or not right_ub_inclusive):
+            return False
+    if right_lb is not None and left_ub is not None:
+        if right_lb > left_ub:
+            return False
+        if right_lb == left_ub and (not right_lb_inclusive or not left_ub_inclusive):
+            return False
+    if left_lb is not None and left_ub is not None and right_lb is not None and right_ub is not None:
+        return True
+    if left_lb is not None and right_lb is not None:
+        return True
+    if left_ub is not None and right_ub is not None:
+        return True
+    return False
+
+
+def _rule_has_executable_span(rule: Dict[str, Any]) -> bool:
+    for span in _rule_evidence_spans(rule):
+        if _span_is_executable(span):
+            return True
+    return False
+
+
+def _rule_candidate_rows(rule: Dict[str, Any], deterministic_rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    evidence_spans = _rule_evidence_spans(rule)
+    executable_spans = [span for span in evidence_spans if _span_is_executable(span)]
+    source_chunk_ids, source_statement_ids = _rule_source_identity(rule)
+    source_chunk_ids = {str(chunk).strip() for chunk in source_chunk_ids if str(chunk).strip()}
+    source_statement_ids = {str(statement).strip() for statement in source_statement_ids if str(statement).strip()}
+
+    candidate_rows: List[Dict[str, Any]] = []
+
+    if executable_spans:
+        for row in deterministic_rows:
+            if any(_row_matches_evidence_span(row, span) for span in executable_spans):
+                candidate_rows.append(row)
+        if candidate_rows:
+            return candidate_rows
+        if source_statement_ids:
+            candidate_rows = [
+                row
+                for row in deterministic_rows
+                if _statement_id_from_row(row) in source_statement_ids
+            ]
+            if candidate_rows:
+                return candidate_rows
+        return []
+
+    if evidence_spans and not executable_spans:
+        return []
+
+    if source_statement_ids:
+        for row in deterministic_rows:
+            if _statement_id_from_row(row) in source_statement_ids:
+                candidate_rows.append(row)
+        if candidate_rows:
+            return candidate_rows
+        return []
+
+    if source_chunk_ids:
+        for row in deterministic_rows:
+            if _chunk_id_from_row(row) in source_chunk_ids:
+                candidate_rows.append(row)
+        if candidate_rows:
+            return candidate_rows
+
+    source_evidence = {_normalize_value(e) for e in rule.get("source_evidence") or [] if _clean_text(e)}
+    if source_evidence:
+        for row in deterministic_rows:
+            row_text_candidates = {
+                _normalize_value(row.get("filter_condition") or ""),
+                _normalize_value(row.get("where_predicate") or ""),
+                _normalize_value(row.get("statement_text") or ""),
+            }
+            if source_evidence & row_text_candidates:
+                candidate_rows.append(row)
+        if candidate_rows:
+            return candidate_rows
+
+    return candidate_rows
+
+
+def _condition_overlap_key(condition: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    space = _condition_space(condition)
+    if not space:
+        return None
+    return space
+
+
+def _rule_condition_spaces(rule: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+    spaces: Dict[str, List[Dict[str, Any]]] = {}
+    for condition in _structured_rule_conditions(rule):
+        space = _condition_space(condition)
+        if not space:
+            continue
+        lhs = str(space.get("lhs") or "").strip()
+        if not lhs:
+            continue
+        spaces.setdefault(lhs, []).append(space)
+    return spaces
+
+
+def _rules_have_structural_overlap(left_rule: Dict[str, Any], right_rule: Dict[str, Any]) -> bool:
+    left_spaces = _rule_condition_spaces(left_rule)
+    right_spaces = _rule_condition_spaces(right_rule)
+    shared_lhs = set(left_spaces) & set(right_spaces)
+    if not shared_lhs:
+        return False
+    for lhs in shared_lhs:
+        left_values = left_spaces.get(lhs, [])
+        right_values = right_spaces.get(lhs, [])
+        if not left_values or not right_values:
+            return False
+        if not any(_spaces_overlap(left_value, right_value) for left_value in left_values for right_value in right_values):
+            return False
+    return True
 
 
 def _structured_rule_conditions(rule: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -229,12 +542,126 @@ def _structured_rule_outcomes(rule: Dict[str, Any]) -> List[Dict[str, str]]:
     return outcomes
 
 
+def _row_relevant_to_rule(
+    row: Dict[str, Any],
+    claim_fields: Sequence[str],
+    claim_conditions: Sequence[str],
+    claim_outcomes: Sequence[str],
+) -> bool:
+    row_fields = {_normalize_column_reference(value) for value in _row_columns(row) if _clean_text(value)}
+    claim_field_set = {_normalize_column_reference(value) for value in claim_fields if _clean_text(value)}
+    if row_fields and claim_field_set and row_fields & claim_field_set:
+        return True
+
+    row_filter = _row_filter(row)
+    if row_filter and any(_expressions_semantically_equal(row_filter, condition) for condition in claim_conditions if _clean_text(condition)):
+        return True
+
+    row_values = {_normalize_sql_fragment(value).lower() for value in _row_assigned_values(row) if _clean_text(value)}
+    claim_outcome_set = set()
+    for value in claim_outcomes or []:
+        parsed = _parse_structured_assignment(value)
+        if parsed and _clean_text(parsed.get("rhs")):
+            claim_outcome_set.add(_normalize_sql_fragment(parsed.get("rhs")).lower())
+        elif _clean_text(value):
+            claim_outcome_set.add(_normalize_sql_fragment(value).lower())
+    if row_values and claim_outcome_set and row_values & claim_outcome_set:
+        return True
+
+    return False
+
+
+def _normalize_claim_axis_values(values: Sequence[Any], *, column_references: bool = False) -> set[str]:
+    normalized: set[str] = set()
+    for value in values or []:
+        if not _clean_text(value):
+            continue
+        normalized.add(_normalize_column_reference(value) if column_references else _normalize_sql_fragment(value).lower())
+    return normalized
+
+
 def _rule_signature(rule: Dict[str, Any]) -> Tuple[Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]]:
     return (
         tuple(sorted(_normalize_set(_rule_claim_fields(rule)))),
         tuple(sorted({_clean_text(item.get("raw") or "") for item in _structured_rule_conditions(rule)})),
         tuple(sorted({_clean_text(item.get("raw") or "") for item in _structured_rule_outcomes(rule)})),
     )
+
+
+def _rule_text_blob(rule: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    for key in (
+        "rule_name",
+        "condition",
+        "action",
+        "business_meaning",
+        "output_field",
+        "validation_status",
+        "rule_type",
+    ):
+        value = _clean_text(rule.get(key))
+        if value:
+            parts.append(value)
+    for key in ("fields_affected", "eligibility", "decision_logic", "tie_priority_handling", "default", "when_not_eligible"):
+        parts.extend(_normalize_list(rule.get(key) or []))
+    for key in ("source_evidence", "technical_references", "source_chunks", "source_chunk_ids", "source_statement_ids"):
+        parts.extend(_normalize_list(rule.get(key) or []))
+    for row in rule.get("decision_logic_rows") or []:
+        if not isinstance(row, dict):
+            continue
+        parts.extend(
+            _normalize_list(
+                [
+                    row.get("field"),
+                    row.get("condition"),
+                    row.get("when"),
+                    row.get("if"),
+                    row.get("outcome"),
+                    row.get("then"),
+                    row.get("result"),
+                ]
+            )
+        )
+    return _normalize_value(" ".join(parts))
+
+
+def _rule_has_ordered_branch_metadata(rule: Dict[str, Any]) -> bool:
+    decision_rows = rule.get("decision_logic_rows") or []
+    if isinstance(decision_rows, list) and len([row for row in decision_rows if isinstance(row, dict)]) >= 2:
+        return True
+    for key in ("tie_priority_handling", "default", "when_not_eligible"):
+        if _normalize_list(rule.get(key) or []):
+            return True
+    text = _rule_text_blob(rule)
+    if not text:
+        return False
+    if any(token in text for token in ("ordered branch", "decision chain", "decision ladder", "priority handling")):
+        return True
+    return False
+
+
+def _rule_has_technical_preprocessing_metadata(rule: Dict[str, Any], deterministic_evidence: Optional[Dict[str, Any]] = None) -> bool:
+    text = _rule_text_blob(rule)
+    deterministic_text = _normalize_value(" ".join(
+        _normalize_list((deterministic_evidence or {}).get("assigned_values") or [])
+        + _normalize_list((deterministic_evidence or {}).get("filters") or [])
+    ))
+    if not text and not deterministic_text:
+        return False
+    if any(token in text for token in ("clear prior", "reset", "reprocessing", "preprocessing", "cleanup", "before reprocess")):
+        return True
+    if any(token in deterministic_text for token in ("null", "0")) and any(
+        token in text for token in ("clear", "reset", "cleanup", "reprocess", "preprocess")
+    ):
+        return True
+    return False
+
+
+def _rule_has_insufficient_evidence(rule: Dict[str, Any], record: Optional[Dict[str, Any]] = None) -> bool:
+    validation_status = _clean_text(rule.get("validation_status") or (record or {}).get("comparison", {}).get("coverage_status"))
+    if validation_status.lower() in {"insufficient_evidence", "parser_failed", "ambiguous"}:
+        return True
+    return False
 
 
 def _rule_claim_tables(rule: Dict[str, Any]) -> List[str]:
@@ -261,6 +688,12 @@ def _table_rows_match(llm_row: Dict[str, Any], det_row: Dict[str, Any]) -> bool:
         return False
     if _row_operation(llm_row) and _row_operation(llm_row) != _row_operation(det_row):
         return False
+    if _row_operation(det_row) == "read":
+        llm_filter = _row_filter(llm_row)
+        det_filter = _row_filter(det_row)
+        if llm_filter and det_filter and not _expressions_semantically_equal(llm_filter, det_filter):
+            return False
+        return True
     llm_cols = _normalize_set(_row_columns(llm_row))
     det_cols = _normalize_set(_row_columns(det_row))
     if llm_cols and det_cols and llm_cols != det_cols:
@@ -394,6 +827,11 @@ class ContradictionFinding:
     reconciliation_status: str = ""
     explanation: str = ""
     review_required: bool = True
+    classification: str = "INSUFFICIENT_EVIDENCE"
+    classification_reason: str = ""
+    business_relevant: bool = True
+    counted_for_review: bool = True
+    review_item_id: str = ""
     evidence: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -405,6 +843,8 @@ class ReconciliationResult:
     unsupported_dialect: bool = False
     summary: Dict[str, Any] = field(default_factory=dict)
     contradictions: List[ContradictionFinding] = field(default_factory=list)
+    classification_summary: Dict[str, Any] = field(default_factory=dict)
+    review_summary: Dict[str, Any] = field(default_factory=dict)
     coverage: Dict[str, Any] = field(default_factory=dict)
     quality: Dict[str, Any] = field(default_factory=dict)
     duplicate_rule_groups: List[Dict[str, Any]] = field(default_factory=list)
@@ -417,6 +857,8 @@ class ReconciliationResult:
             "unsupported_dialect": self.unsupported_dialect,
             "summary": dict(self.summary),
             "contradictions": [asdict(finding) for finding in self.contradictions],
+            "classification_summary": dict(self.classification_summary),
+            "review_summary": dict(self.review_summary),
             "coverage": dict(self.coverage),
             "quality": dict(self.quality),
             "duplicate_rule_groups": [dict(group) for group in self.duplicate_rule_groups],
@@ -510,6 +952,225 @@ def _create_contradiction(
     )
 
 
+def _classify_contradiction_finding(
+    *,
+    contradiction_type: str,
+    record: Optional[ReconciliationRecord] = None,
+    original_rule: Optional[Dict[str, Any]] = None,
+    paired_rule: Optional[Dict[str, Any]] = None,
+    contradiction: Optional[ContradictionFinding] = None,
+) -> tuple[str, str, bool, bool]:
+    record_dict = asdict(record) if isinstance(record, ReconciliationRecord) else {}
+    source_rule = original_rule or {}
+    paired_rule = paired_rule or {}
+    finding_type = str(contradiction_type or getattr(contradiction, "type", "") or "").strip().lower()
+
+    if record and record.kind in {"tables_read", "tables_written"}:
+        return (
+            "TECHNICAL_PROVENANCE_NOISE",
+            "Deterministic table-operation reconciliation is a technical provenance finding rather than a business-rule contradiction.",
+            False,
+            False,
+        )
+
+    if source_rule and _rule_has_ordered_branch_metadata(source_rule):
+        return (
+            "VALID_ORDERED_BRANCH",
+            "The rule carries explicit ordered-branch / decision-chain metadata, so the difference reflects branch ordering rather than incompatible business logic.",
+            False,
+            False,
+        )
+
+    if source_rule and _rule_has_technical_preprocessing_metadata(source_rule, record_dict.get("deterministic_evidence") if record_dict else None):
+        return (
+            "TECHNICAL_VS_BUSINESS_OVERLAP",
+            "The rule explicitly describes preprocessing/reset/cleanup behavior that overlaps with business logic.",
+            False,
+            False,
+        )
+
+    if source_rule and _rule_has_insufficient_evidence(source_rule, record_dict):
+        return (
+            "INSUFFICIENT_EVIDENCE",
+            "The available provenance is not strong enough to distinguish this finding from a genuine review item.",
+            True,
+            True,
+        )
+
+    if paired_rule and _rule_has_ordered_branch_metadata(paired_rule):
+        return (
+            "VALID_ORDERED_BRANCH",
+            "The paired rule carries explicit ordered-branch / decision-chain metadata, so the difference reflects branch ordering rather than incompatible business logic.",
+            False,
+            False,
+        )
+
+    if paired_rule and _rule_has_technical_preprocessing_metadata(paired_rule, record_dict.get("deterministic_evidence") if record_dict else None):
+        return (
+            "TECHNICAL_VS_BUSINESS_OVERLAP",
+            "The paired rule explicitly describes preprocessing/reset/cleanup behavior that overlaps with business logic.",
+            False,
+            False,
+        )
+
+    if paired_rule and _rule_has_insufficient_evidence(paired_rule, record_dict):
+        return (
+            "INSUFFICIENT_EVIDENCE",
+            "The available provenance is not strong enough to distinguish this finding from a genuine review item.",
+            True,
+            True,
+        )
+
+    if finding_type in {"rule_vs_rule_conflict", "condition_conflict", "outcome_conflict", "field_conflict", "table_conflict", "operation_conflict"}:
+        return (
+            "GENUINE_BUSINESS_CONTRADICTION",
+            "The evidence shows incompatible executable SQL/business logic with no explicit ordered-branch or technical-preprocessing explanation.",
+            True,
+            True,
+        )
+
+    return (
+        "INSUFFICIENT_EVIDENCE",
+        "The contradiction cannot be confidently classified from the available evidence.",
+        True,
+        True,
+    )
+
+
+def _contradiction_review_item_id(contradiction: ContradictionFinding) -> str:
+    evidence_record = contradiction.evidence.get("record") if isinstance(contradiction.evidence, dict) else {}
+    if isinstance(evidence_record, dict):
+        reconciliation_id = str(evidence_record.get("reconciliation_id") or "").strip()
+        if reconciliation_id:
+            return reconciliation_id
+    if contradiction.rule_id:
+        return stable_id(
+            "review",
+            contradiction.object_id,
+            contradiction.rule_id,
+            contradiction.type,
+            contradiction.reconciliation_status,
+        )
+    if contradiction.related_rule_ids:
+        return stable_id(
+            "review",
+            contradiction.object_id,
+            contradiction.type,
+            "|".join(sorted(contradiction.related_rule_ids)),
+            contradiction.reconciliation_status,
+        )
+    return stable_id(
+        "review",
+        contradiction.object_id,
+        contradiction.type,
+        contradiction.reconciliation_status,
+        "|".join(sorted(contradiction.chunk_ids)),
+        "|".join(sorted(contradiction.statement_ids)),
+        contradiction.source_value,
+        contradiction.llm_value,
+    )
+
+
+def _record_review_item_id(record: ReconciliationRecord) -> str:
+    return str(record.reconciliation_id or stable_id(
+        "review",
+        record.object_id,
+        record.kind,
+        record.rule_id or record.chunk_id or record.statement_id,
+        record.status,
+    ))
+
+
+def _classification_summary_from_contradictions(contradictions: Sequence[ContradictionFinding]) -> Dict[str, Any]:
+    counts = {classification: 0 for classification in CONTRADICTION_CLASSIFICATIONS}
+    for contradiction in contradictions:
+        classification = str(contradiction.classification or "").strip().upper()
+        if classification not in counts:
+            classification = "INSUFFICIENT_EVIDENCE"
+        counts[classification] += 1
+    return {
+        "total_contradictions": len(list(contradictions)),
+        "genuine_business_contradictions": counts["GENUINE_BUSINESS_CONTRADICTION"],
+        "technical_provenance_noise": counts["TECHNICAL_PROVENANCE_NOISE"],
+        "technical_vs_business_overlap": counts["TECHNICAL_VS_BUSINESS_OVERLAP"],
+        "valid_ordered_branches": counts["VALID_ORDERED_BRANCH"],
+        "insufficient_evidence": counts["INSUFFICIENT_EVIDENCE"],
+        "expected_non_business_findings": counts["TECHNICAL_PROVENANCE_NOISE"] + counts["TECHNICAL_VS_BUSINESS_OVERLAP"] + counts["VALID_ORDERED_BRANCH"],
+        "counts": counts,
+    }
+
+
+def _build_review_summary(
+    *,
+    records: Sequence[ReconciliationRecord],
+    contradictions: Sequence[ContradictionFinding],
+    unsupported_dialect: bool,
+) -> Dict[str, Any]:
+    review_items: Dict[str, Dict[str, Any]] = {}
+
+    def _ensure_item(item_id: str, *, source: str, kind: str = "", status: str = "") -> Dict[str, Any]:
+        item = review_items.setdefault(
+            item_id,
+            {
+                "review_item_id": item_id,
+                "sources": [],
+                "kind": kind,
+                "status": status,
+                "record_ids": [],
+                "contradiction_ids": [],
+                "classifications": [],
+                "business_relevant": False,
+                "counted_for_review": False,
+            },
+        )
+        if source not in item["sources"]:
+            item["sources"].append(source)
+        if kind and not item.get("kind"):
+            item["kind"] = kind
+        if status and not item.get("status"):
+            item["status"] = status
+        return item
+
+    for record in records:
+        if record.status not in {"CONFLICT", "LLM_ONLY", "UNRESOLVED"} and not (record.status == "MATCHED" and unsupported_dialect):
+            continue
+        item_id = _record_review_item_id(record)
+        item = _ensure_item(item_id, source="record", kind=record.kind, status=record.status)
+        item["record_ids"].append(record.reconciliation_id)
+        item["counted_for_review"] = True
+        item["business_relevant"] = record.status in {"LLM_ONLY", "UNRESOLVED"}
+        if unsupported_dialect and record.status == "MATCHED":
+            item["business_relevant"] = True
+
+    for contradiction in contradictions:
+        item_id = contradiction.review_item_id or _contradiction_review_item_id(contradiction)
+        item = _ensure_item(
+            item_id,
+            source="contradiction",
+            kind=contradiction.type,
+            status=contradiction.reconciliation_status,
+        )
+        item["contradiction_ids"].append(contradiction.contradiction_id)
+        item["classifications"].append(contradiction.classification)
+        if contradiction.business_relevant:
+            item["business_relevant"] = True
+        if contradiction.counted_for_review:
+            item["counted_for_review"] = True
+
+    for item in review_items.values():
+        item["record_ids"] = sorted({str(v).strip() for v in item["record_ids"] if str(v).strip()})
+        item["contradiction_ids"] = sorted({str(v).strip() for v in item["contradiction_ids"] if str(v).strip()})
+        item["classifications"] = sorted({str(v).strip().upper() for v in item["classifications"] if str(v).strip()})
+
+    business_review_items = [item for item in review_items.values() if item.get("business_relevant")]
+    expected_items = [item for item in review_items.values() if not item.get("business_relevant") and item.get("counted_for_review")]
+    return {
+        "review_item_count": len(review_items),
+        "business_review_required_items": len(business_review_items),
+        "expected_review_items": len(expected_items),
+        "items": sorted(review_items.values(), key=lambda item: item["review_item_id"]),
+    }
+
 def _gather_contradictions(
     *,
     object_id: str,
@@ -518,6 +1179,32 @@ def _gather_contradictions(
 ) -> tuple[List[ContradictionFinding], List[Dict[str, Any]]]:
     contradictions: List[ContradictionFinding] = []
     duplicate_groups: List[Dict[str, Any]] = []
+    rule_lookup = {
+        str(rule.get("rule_id") or "").strip(): rule
+        for rule in rules
+        if isinstance(rule, dict) and str(rule.get("rule_id") or "").strip()
+    }
+
+    def _finalize(
+        finding: ContradictionFinding,
+        *,
+        record: Optional[ReconciliationRecord] = None,
+        original_rule: Optional[Dict[str, Any]] = None,
+        paired_rule: Optional[Dict[str, Any]] = None,
+    ) -> ContradictionFinding:
+        classification, reason, business_relevant, counted_for_review = _classify_contradiction_finding(
+            contradiction_type=finding.type,
+            record=record,
+            original_rule=original_rule,
+            paired_rule=paired_rule,
+            contradiction=finding,
+        )
+        finding.classification = classification
+        finding.classification_reason = reason
+        finding.business_relevant = business_relevant
+        finding.counted_for_review = counted_for_review
+        finding.review_item_id = _record_review_item_id(record) if record else _contradiction_review_item_id(finding)
+        return finding
 
     for record in records:
         if record.kind == "tables_read" or record.kind == "tables_written":
@@ -525,9 +1212,12 @@ def _gather_contradictions(
                 continue
             llm_claim = record.llm_claim or {}
             deterministic = record.deterministic_evidence or {}
-            if _clean_text(llm_claim.get("table")) and _clean_text(deterministic.get("table")) and _normalize_value(llm_claim.get("table")) != _normalize_value(deterministic.get("table")):
+            llm_table = _clean_text(llm_claim.get("table"))
+            det_table = _clean_text(deterministic.get("table"))
+            if llm_table and det_table and _normalize_value(llm_table) != _normalize_value(det_table):
                 contradictions.append(
-                    _create_contradiction(
+                    _finalize(
+                        _create_contradiction(
                         object_id=object_id,
                         contradiction_type="table_conflict",
                         severity="MEDIUM",
@@ -538,11 +1228,16 @@ def _gather_contradictions(
                         reconciliation_status=record.status,
                         explanation="Synthesized table reference does not match deterministic table evidence.",
                         evidence={"record": asdict(record), "axis": "table"},
+                        ),
+                        record=record,
                     )
                 )
-            if _clean_text(llm_claim.get("operation")) and _clean_text(deterministic.get("operation")) and _normalize_value(llm_claim.get("operation")) != _normalize_value(deterministic.get("operation")):
+            llm_operation = _clean_text(llm_claim.get("operation"))
+            det_operation = _clean_text(deterministic.get("operation"))
+            if llm_operation and det_operation and _normalize_value(llm_operation) != _normalize_value(det_operation):
                 contradictions.append(
-                    _create_contradiction(
+                    _finalize(
+                        _create_contradiction(
                         object_id=object_id,
                         contradiction_type="operation_conflict",
                         severity="HIGH",
@@ -553,13 +1248,16 @@ def _gather_contradictions(
                         reconciliation_status=record.status,
                         explanation="Synthesized table operation conflicts with deterministic SQL/AST evidence.",
                         evidence={"record": asdict(record), "axis": "operation"},
+                        ),
+                        record=record,
                     )
                 )
-            llm_columns = { _normalize_value(v) for v in llm_claim.get("target_columns") or llm_claim.get("columns") or [] if _clean_text(v) }
-            det_columns = { _normalize_value(v) for v in deterministic.get("target_columns") or deterministic.get("columns") or [] if _clean_text(v) }
-            if llm_columns and det_columns and llm_columns != det_columns:
+            llm_columns = {_normalize_column_reference(v) for v in llm_claim.get("target_columns") or llm_claim.get("columns") or [] if _clean_text(v)}
+            det_columns = {_normalize_column_reference(v) for v in deterministic.get("target_columns") or deterministic.get("columns") or [] if _clean_text(v)}
+            if record.kind == "tables_written" and llm_columns and det_columns and llm_columns != det_columns:
                 contradictions.append(
-                    _create_contradiction(
+                    _finalize(
+                        _create_contradiction(
                         object_id=object_id,
                         contradiction_type="field_conflict",
                         severity="MEDIUM",
@@ -570,13 +1268,16 @@ def _gather_contradictions(
                         reconciliation_status=record.status,
                         explanation="Synthesized affected fields do not match deterministic SQL/AST evidence.",
                         evidence={"record": asdict(record), "axis": "fields"},
+                        ),
+                        record=record,
                     )
                 )
-            llm_filter = _parse_structured_comparison(llm_claim.get("filter_condition") or llm_claim.get("where_predicate") or llm_claim.get("trigger_condition"))
-            det_filter = _parse_structured_comparison(deterministic.get("filter_condition") or deterministic.get("where_predicate") or deterministic.get("trigger_condition"))
-            if llm_filter and det_filter and llm_filter != det_filter:
+            llm_filter = _clean_text(llm_claim.get("filter_condition") or llm_claim.get("where_predicate") or llm_claim.get("trigger_condition"))
+            det_filter = _clean_text(deterministic.get("filter_condition") or deterministic.get("where_predicate") or deterministic.get("trigger_condition"))
+            if llm_filter and det_filter and not _expressions_semantically_equal(llm_filter, det_filter):
                 contradictions.append(
-                    _create_contradiction(
+                    _finalize(
+                        _create_contradiction(
                         object_id=object_id,
                         contradiction_type="condition_conflict",
                         severity="HIGH",
@@ -587,13 +1288,16 @@ def _gather_contradictions(
                         reconciliation_status=record.status,
                         explanation="Synthesized condition conflicts with deterministic predicate evidence.",
                         evidence={"record": asdict(record), "axis": "condition"},
+                        ),
+                        record=record,
                     )
                 )
-            llm_assignment_values = _normalize_set(_row_assigned_values(llm_claim))
-            det_assignment_values = _normalize_set(_row_assigned_values(deterministic))
+            llm_assignment_values = {_normalize_sql_fragment(v).lower() for v in _row_assigned_values(llm_claim) if _clean_text(v)}
+            det_assignment_values = {_normalize_sql_fragment(v).lower() for v in _row_assigned_values(deterministic) if _clean_text(v)}
             if llm_assignment_values and det_assignment_values and llm_assignment_values != det_assignment_values:
                 contradictions.append(
-                    _create_contradiction(
+                    _finalize(
+                        _create_contradiction(
                         object_id=object_id,
                         contradiction_type="outcome_conflict",
                         severity="HIGH",
@@ -604,16 +1308,20 @@ def _gather_contradictions(
                         reconciliation_status=record.status,
                         explanation="Synthesized assignment/outcome does not match deterministic SQL/AST evidence.",
                         evidence={"record": asdict(record), "axis": "outcome"},
+                        ),
+                        record=record,
                     )
                 )
             continue
 
         if record.kind != "rule" or record.status != "CONFLICT":
             continue
+        original_rule = rule_lookup.get(record.rule_id or "", {})
         comparison = record.comparison or {}
         if comparison.get("field_status") == "CONFLICT":
             contradictions.append(
-                _create_contradiction(
+                _finalize(
+                    _create_contradiction(
                     object_id=object_id,
                     contradiction_type="field_conflict",
                     severity="MEDIUM",
@@ -625,12 +1333,16 @@ def _gather_contradictions(
                     reconciliation_status=record.status,
                     explanation="Synthesized rule affects different fields than the deterministic evidence.",
                     evidence={"record": asdict(record), "axis": "fields"},
+                    ),
+                    record=record,
+                    original_rule=original_rule,
                 )
             )
         if comparison.get("condition_status") == "CONFLICT":
             llm_conditions = _find_record_condition_values(record)
             contradictions.append(
-                _create_contradiction(
+                _finalize(
+                    _create_contradiction(
                     object_id=object_id,
                     contradiction_type="condition_conflict",
                     severity="HIGH",
@@ -642,12 +1354,16 @@ def _gather_contradictions(
                     reconciliation_status=record.status,
                     explanation="Synthesized condition conflicts with deterministic predicate evidence.",
                     evidence={"record": asdict(record), "axis": "condition"},
+                    ),
+                    record=record,
+                    original_rule=original_rule,
                 )
             )
         if comparison.get("outcome_status") == "CONFLICT":
             llm_outcomes = _find_record_outcome_values(record)
             contradictions.append(
-                _create_contradiction(
+                _finalize(
+                    _create_contradiction(
                     object_id=object_id,
                     contradiction_type="outcome_conflict",
                     severity="HIGH",
@@ -659,6 +1375,9 @@ def _gather_contradictions(
                     reconciliation_status=record.status,
                     explanation="Synthesized outcome/assignment conflicts with deterministic evidence.",
                     evidence={"record": asdict(record), "axis": "outcome"},
+                    ),
+                    record=record,
+                    original_rule=original_rule,
                 )
             )
 
@@ -675,7 +1394,12 @@ def _gather_contradictions(
     for signature, grouped_rules in duplicate_index.items():
         if len(grouped_rules) < 2:
             continue
-        chunk_union = sorted({chunk for rule in grouped_rules for chunk in (rule.get("source_chunks") or []) if str(chunk).strip()})
+        chunk_union = sorted({
+            str(chunk).strip()
+            for rule in grouped_rules
+            for chunk in (rule.get("source_chunk_ids") or rule.get("source_chunks") or [])
+            if str(chunk).strip()
+        })
         if len(chunk_union) < 2:
             continue
         duplicate_groups.append(
@@ -708,6 +1432,7 @@ def _gather_contradictions(
             right_outcomes = _structured_rule_outcomes(right_rule)
             if not right_conditions or not right_fields or not right_outcomes:
                 continue
+            right_chunks, right_statements = _rule_source_identity(right_rule)
             if not (left_fields & right_fields):
                 continue
 
@@ -760,20 +1485,9 @@ def _gather_contradictions(
             if left_outcome_values == right_outcome_values:
                 continue
 
-            contradictory = False
+            contradictory = _rules_have_structural_overlap(left_rule, right_rule)
             explanation = ""
-            for left_condition in left_conditions:
-                for right_condition in right_conditions:
-                    if left_condition["lhs"] != right_condition["lhs"]:
-                        continue
-                    if left_condition["op"] != right_condition["op"] or left_condition["rhs"] != right_condition["rhs"]:
-                        contradictory = True
-                        explanation = "Rules share the same field condition but apply different outcomes."
-                        break
-                if contradictory:
-                    break
-            if not contradictory and left_condition_sig and right_condition_sig:
-                contradictory = bool(same_lhs) and bool(left_outcome_values ^ right_outcome_values)
+            if contradictory:
                 explanation = "Rules overlap on the same structured condition but assign different outcomes."
 
             if contradictory:
@@ -787,11 +1501,12 @@ def _gather_contradictions(
                 chunk_ids = sorted(
                     {
                         *left_chunks,
-                        *[str(v).strip() for v in right_rule.get("source_chunks") or [] if str(v).strip()],
+                        *right_chunks,
                     }
                 )
                 contradictions.append(
-                    _create_contradiction(
+                    _finalize(
+                        _create_contradiction(
                         object_id=object_id,
                         contradiction_type="rule_vs_rule_conflict",
                         severity="HIGH",
@@ -800,11 +1515,7 @@ def _gather_contradictions(
                         statement_ids=sorted(
                             {
                                 *left_statements,
-                                *[
-                                    str(v).strip()
-                                    for v in right_rule.get("technical_references") or []
-                                    if str(v).strip()
-                                ],
+                                *right_statements,
                             }
                         ),
                         source_value=", ".join(sorted({out["raw"] for out in left_outcomes})),
@@ -823,10 +1534,21 @@ def _gather_contradictions(
                                 "outcome": [out["raw"] for out in right_outcomes],
                             },
                         },
+                        ),
+                        original_rule=left_rule,
+                        paired_rule=right_rule,
                     )
-                )
+            )
 
-    return contradictions, duplicate_groups
+    deduped_contradictions: List[ContradictionFinding] = []
+    seen_contradiction_ids: set[str] = set()
+    for contradiction in contradictions:
+        if contradiction.contradiction_id in seen_contradiction_ids:
+            continue
+        seen_contradiction_ids.add(contradiction.contradiction_id)
+        deduped_contradictions.append(contradiction)
+
+    return deduped_contradictions, duplicate_groups
 
 
 def _build_coverage_metrics(
@@ -836,6 +1558,8 @@ def _build_coverage_metrics(
     records: Sequence[ReconciliationRecord],
     contradictions: Sequence[ContradictionFinding],
     duplicate_rule_groups: Sequence[Dict[str, Any]],
+    classification_summary: Optional[Dict[str, Any]] = None,
+    review_summary: Optional[Dict[str, Any]] = None,
     unsupported_dialect: bool,
 ) -> Dict[str, Any]:
     statement_provenance = merged_extraction.get("statement_provenance", []) or []
@@ -871,6 +1595,17 @@ def _build_coverage_metrics(
         "review_required_items": review_required_items,
         "duplicate_rule_groups": len(list(duplicate_rule_groups)),
     }
+    if classification_summary:
+        metrics["genuine_business_contradictions"] = int(classification_summary.get("genuine_business_contradictions", 0) or 0)
+        metrics["technical_provenance_noise"] = int(classification_summary.get("technical_provenance_noise", 0) or 0)
+        metrics["technical_vs_business_overlap"] = int(classification_summary.get("technical_vs_business_overlap", 0) or 0)
+        metrics["valid_ordered_branches"] = int(classification_summary.get("valid_ordered_branches", 0) or 0)
+        metrics["insufficient_evidence_contradictions"] = int(classification_summary.get("insufficient_evidence", 0) or 0)
+        metrics["expected_non_business_findings"] = int(classification_summary.get("expected_non_business_findings", 0) or 0)
+    if review_summary:
+        metrics["review_item_count"] = int(review_summary.get("review_item_count", 0) or 0)
+        metrics["business_review_required_items"] = int(review_summary.get("business_review_required_items", 0) or 0)
+        metrics["expected_review_items"] = int(review_summary.get("expected_review_items", 0) or 0)
     if total_statements > 0:
         metrics["statement_parse_success_pct"] = round((parsed_statements / total_statements) * 100, 1)
     if rule_list:
@@ -893,6 +1628,7 @@ def _build_quality_assessment(
     llm_only_rules = int(coverage.get("llm_only_rules", 0) or 0)
     deterministic_only_facts = int(coverage.get("deterministic_only_facts", 0) or 0)
     unresolved_items = int(coverage.get("review_required_items", 0) or 0)
+    business_review_items = int(coverage.get("business_review_required_items", unresolved_items) or unresolved_items)
     parse_success_pct = float(coverage.get("statement_parse_success_pct") or 0.0)
     grounding_pct = float(coverage.get("rule_grounding_pct") or 0.0)
     total_statements = int(coverage.get("total_statements", 0) or 0)
@@ -941,6 +1677,7 @@ def _build_quality_assessment(
             "low_contradictions": low_contradictions,
             "llm_only_rules": llm_only_rules,
             "deterministic_only_facts": deterministic_only_facts,
+            "business_review_required_items": business_review_items,
             "parse_success_pct": coverage.get("statement_parse_success_pct"),
             "rule_grounding_pct": coverage.get("rule_grounding_pct"),
         },
@@ -1050,17 +1787,16 @@ def reconcile_deterministic_evidence(
         claim_fields = _rule_claim_fields(rule)
         claim_conditions = _rule_claim_conditions(rule)
         claim_outcomes = _rule_claim_outcomes(rule)
-        source_chunks = {str(chunk).strip() for chunk in rule.get("source_chunks") or [] if str(chunk).strip()}
-        candidate_rows = [
-            row
-            for row in deterministic_rows
-            if (_chunk_id_from_row(row) and _chunk_id_from_row(row) in source_chunks)
-            or any(_normalize_value(e) in {_normalize_value(row.get("filter_condition") or ""), _normalize_value(row.get("where_predicate") or ""), _normalize_value(row.get("statement_text") or "")} for e in rule.get("source_evidence") or [])
-        ]
-        if not candidate_rows and source_chunks:
-            candidate_rows = [
-                row for row in deterministic_rows if _chunk_id_from_row(row) in source_chunks
+        source_chunks, source_statements = _rule_source_identity(rule)
+        candidate_rows = _rule_candidate_rows(rule, deterministic_rows)
+        if candidate_rows:
+            relevant_rows = [
+                row
+                for row in candidate_rows
+                if _row_relevant_to_rule(row, claim_fields, claim_conditions, claim_outcomes)
             ]
+            if relevant_rows:
+                candidate_rows = relevant_rows
 
         status = "LLM_ONLY"
         comparison = {
@@ -1072,35 +1808,37 @@ def reconcile_deterministic_evidence(
         matched_rows = []
         if candidate_rows:
             matched_rows = candidate_rows
-            field_matches = []
-            condition_matches = []
-            outcome_matches = []
-            field_conflicts = []
-            condition_conflicts = []
-            outcome_conflicts = []
+            claim_field_set = _normalize_claim_axis_values(claim_fields, column_references=True)
+            claim_condition_set = _normalize_claim_axis_values(claim_conditions)
+            claim_outcome_set: set[str] = set()
+            for value in claim_outcomes:
+                parsed = _parse_structured_assignment(value)
+                if parsed and _clean_text(parsed.get("rhs")):
+                    claim_outcome_set.add(_normalize_sql_fragment(parsed.get("rhs")).lower())
+                elif _clean_text(value):
+                    claim_outcome_set.add(_normalize_sql_fragment(value).lower())
+            field_union: set[str] = set()
+            condition_union: set[str] = set()
+            outcome_union: set[str] = set()
             for row in candidate_rows:
-                row_fields = _normalize_set(_row_columns(row))
+                row_fields = {_normalize_column_reference(value) for value in _row_columns(row) if _clean_text(value)}
                 row_filter = _row_filter(row)
-                row_values = _normalize_set(_row_assigned_values(row))
-                if claim_fields:
-                    if row_fields and _normalize_set(claim_fields) == row_fields:
-                        field_matches.append(row)
-                    elif row_fields:
-                        field_conflicts.append(row)
-                if claim_conditions:
-                    if row_filter and any(_normalize_value(c) == row_filter for c in claim_conditions):
-                        condition_matches.append(row)
-                    elif row_filter:
-                        condition_conflicts.append(row)
-                if claim_outcomes:
-                    if row_values and any(_normalize_value(o) in row_values for o in claim_outcomes):
-                        outcome_matches.append(row)
-                    elif row_values:
-                        outcome_conflicts.append(row)
+                row_values = {_normalize_sql_fragment(value).lower() for value in _row_assigned_values(row) if _clean_text(value)}
+                field_union |= row_fields
+                if row_filter:
+                    condition_union.add(row_filter)
+                outcome_union |= row_values
 
-            if field_conflicts or condition_conflicts or outcome_conflicts:
+            field_match = bool(claim_field_set and field_union and claim_field_set.issubset(field_union))
+            condition_match = bool(claim_condition_set and condition_union and claim_condition_set.issubset(condition_union))
+            outcome_match = bool(claim_outcome_set and outcome_union and claim_outcome_set.issubset(outcome_union))
+            field_conflict = bool(claim_field_set and field_union and not field_match)
+            condition_conflict = bool(claim_condition_set and condition_union and not condition_match)
+            outcome_conflict = bool(claim_outcome_set and outcome_union and not outcome_match)
+
+            if field_conflict or condition_conflict or outcome_conflict:
                 status = "CONFLICT"
-            elif field_matches or condition_matches or outcome_matches:
+            elif field_match or condition_match or outcome_match:
                 status = "MATCHED"
             else:
                 status = "UNRESOLVED"
@@ -1115,13 +1853,11 @@ def reconcile_deterministic_evidence(
                 "assigned_values": sorted({value for row in matched_rows for value in _row_assigned_values(row)}),
             }
             comparison = {
-                "field_status": "MATCHED" if field_matches and not field_conflicts else ("CONFLICT" if field_conflicts else "UNRESOLVED"),
-                "condition_status": "MATCHED" if condition_matches and not condition_conflicts else ("CONFLICT" if condition_conflicts else "UNRESOLVED"),
-                "outcome_status": "MATCHED" if outcome_matches and not outcome_conflicts else ("CONFLICT" if outcome_conflicts else "UNRESOLVED"),
+                "field_status": "MATCHED" if field_match else ("CONFLICT" if field_conflict else "UNRESOLVED"),
+                "condition_status": "MATCHED" if condition_match else ("CONFLICT" if condition_conflict else "UNRESOLVED"),
+                "outcome_status": "MATCHED" if outcome_match else ("CONFLICT" if outcome_conflict else "UNRESOLVED"),
             }
-            if status == "UNRESOLVED" and claim_fields and claim_conditions:
-                status = "UNRESOLVED"
-            if status != "CONFLICT" and not (field_matches or condition_matches or outcome_matches):
+            if status != "CONFLICT" and not (field_match or condition_match or outcome_match):
                 status = "UNRESOLVED"
 
         rule_recon_id = stable_id(
@@ -1183,7 +1919,7 @@ def reconcile_deterministic_evidence(
                 object_id=object_id,
                 rule_id=str(rule.get("rule_id") or ""),
                 chunk_id=";".join(sorted(source_chunks)),
-                statement_id=";".join(deterministic_evidence.get("statement_ids", [])),
+                statement_id=";".join(sorted(source_statements or deterministic_evidence.get("statement_ids", []))),
                 llm_claim=rule["llm_claim"],
                 deterministic_evidence=deterministic_evidence,
                 comparison=comparison,
@@ -1195,15 +1931,15 @@ def reconcile_deterministic_evidence(
 
     # Coverage: deterministic facts that never made it into synthesized rules.
     rule_chunk_refs = {
-        str(chunk).strip()
+        str(chunk).split(":", 1)[0].strip()
         for rule in rules
-        for chunk in (rule.get("source_chunks") or [])
+        for chunk in (rule.get("source_chunk_ids") or rule.get("source_chunks") or [])
         if str(chunk).strip()
     }
     rule_statement_refs = {
         str(statement).strip()
         for rule in rules
-        for statement in (rule.get("technical_references") or [])
+        for statement in (rule.get("source_statement_ids") or rule.get("technical_references") or [])
         if str(statement).strip()
     }
     for row in deterministic_rows:
@@ -1246,12 +1982,20 @@ def reconcile_deterministic_evidence(
         rules=rules,
         records=records,
     )
+    classification_summary = _classification_summary_from_contradictions(contradictions)
+    review_summary = _build_review_summary(
+        records=records,
+        contradictions=contradictions,
+        unsupported_dialect=unsupported_dialect,
+    )
     coverage = _build_coverage_metrics(
         merged_extraction=merged_extraction,
         rules=rules,
         records=records,
         contradictions=contradictions,
         duplicate_rule_groups=duplicate_rule_groups,
+        classification_summary=classification_summary,
+        review_summary=review_summary,
         unsupported_dialect=unsupported_dialect,
     )
     quality = _build_quality_assessment(
@@ -1268,6 +2012,8 @@ def reconcile_deterministic_evidence(
         "conflicts": status_counts.get("CONFLICT", 0),
         "unresolved": status_counts.get("UNRESOLVED", 0),
         "contradictions": len(contradictions),
+        "business_review_required_items": review_summary["business_review_required_items"],
+        "expected_review_items": review_summary["expected_review_items"],
         "review_required": bool(
             status_counts.get("CONFLICT")
             or status_counts.get("LLM_ONLY")
@@ -1290,6 +2036,8 @@ def reconcile_deterministic_evidence(
         unsupported_dialect=unsupported_dialect,
         summary=summary,
         contradictions=contradictions,
+        classification_summary=classification_summary,
+        review_summary=review_summary,
         coverage=coverage,
         quality=quality,
         duplicate_rule_groups=duplicate_rule_groups,

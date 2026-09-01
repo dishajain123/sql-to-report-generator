@@ -330,25 +330,25 @@ def test_business_rule_provenance_fields_are_normalized():
     assert rule["dependencies"] == ["dep text"]
 
 
-def test_normalization_preserves_distinct_rules_with_shared_branch_family():
+def test_normalization_merges_sma_account_family_into_one_ordered_rule():
     raw_rules = [
         {
-            "rule_name": "Clear prior classification",
+            "rule_name": "Assign SMA classification based on DPD_Max",
             "condition": "FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL",
-            "action": "Clear the SMA classification fields",
+            "action": "Set SMA classification from the overdue-days band",
             "output_field": "SMA_CLASS",
-            "business_meaning": "Clears the prior SMA status before recalculation.",
+            "business_meaning": "Assigns the account's SMA classification.",
             "fields_affected": ["SMA_CLASS"],
             "rule_type": "explicit",
             "confidence": "high",
             "validation_status": "verified",
-            "source_evidence": ["FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL"],
+            "source_evidence": ["FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL", "SMA_CLASS := 'STD'"],
             "source_chunks": ["chunk_1"],
             "technical_references": ["conditions[0]"],
             "dependencies": [],
         },
         {
-            "rule_name": "Set SMA reason",
+            "rule_name": "Assign SMA reason based on facility and DPD type",
             "condition": "FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL",
             "action": "Set SMA reason from the triggering DPD bucket",
             "output_field": "SMA_REASON",
@@ -357,7 +357,22 @@ def test_normalization_preserves_distinct_rules_with_shared_branch_family():
             "rule_type": "inferred",
             "confidence": "high",
             "validation_status": "verified",
-            "source_evidence": ["FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL"],
+            "source_evidence": ["FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL", "SMA_REASON := 'SMA-0'"],
+            "source_chunks": ["chunk_1"],
+            "technical_references": ["conditions[0]"],
+            "dependencies": [],
+        },
+        {
+            "rule_name": "Set FLGSMA for processed accounts",
+            "condition": "FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL",
+            "action": "Set the SMA flag to Y for processed accounts",
+            "output_field": "FLGSMA",
+            "business_meaning": "Marks the account as processed for SMA handling.",
+            "fields_affected": ["FLGSMA"],
+            "rule_type": "explicit",
+            "confidence": "high",
+            "validation_status": "verified",
+            "source_evidence": ["A.FLGSMA='Y'"],
             "source_chunks": ["chunk_1"],
             "technical_references": ["conditions[0]"],
             "dependencies": [],
@@ -372,7 +387,22 @@ def test_normalization_preserves_distinct_rules_with_shared_branch_family():
             "rule_type": "explicit",
             "confidence": "high",
             "validation_status": "verified",
-            "source_evidence": ["FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL"],
+            "source_evidence": ["A.SMA_DT = DATEADD(DAY, -dpd.DPD_MAX + 1, @ProcessDate)"],
+            "source_chunks": ["chunk_1"],
+            "technical_references": ["conditions[0]"],
+            "dependencies": [],
+        },
+        {
+            "rule_name": "Default SMA class for final asset class key",
+            "condition": "FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL",
+            "action": "Assign the default SMA class when no prior SMA class exists",
+            "output_field": "SMA_CLASS",
+            "business_meaning": "Provides the final SMA class fallback.",
+            "fields_affected": ["SMA_CLASS"],
+            "rule_type": "explicit",
+            "confidence": "high",
+            "validation_status": "verified",
+            "source_evidence": ["FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL", "SMA_CLASS='STD'"],
             "source_chunks": ["chunk_1"],
             "technical_references": ["conditions[0]"],
             "dependencies": [],
@@ -381,8 +411,152 @@ def test_normalization_preserves_distinct_rules_with_shared_branch_family():
 
     normalized = RuleSynthesizerAgent._normalize_business_rules(raw_rules)
 
-    assert len(normalized) == 3
-    assert {rule["output_field"] for rule in normalized} == {"SMA_CLASS", "SMA_REASON", "SMA_DT"}
+    assert len(normalized) == 1
+    rule = normalized[0]
+    assert rule["output_field"] == "SMA_CLASS, SMA_REASON, FLGSMA, SMA_DT"
+    assert rule["fields_affected"] == ["SMA_CLASS", "SMA_REASON", "FLGSMA", "SMA_DT"]
+    assert len(rule["decision_logic_rows"]) == 5
+    assert rule["decision_logic_rows"][0]["field"] == "SMA_CLASS"
+    assert rule["decision_logic_rows"][-1]["field"] == "SMA_CLASS"
+    assert "SMA_CLASS := 'STD'" in rule["source_evidence"]
+    assert "SMA_REASON := 'SMA-0'" in rule["source_evidence"]
+    assert "A.FLGSMA='Y'" in rule["source_evidence"]
+    assert "A.SMA_DT = DATEADD(DAY, -dpd.DPD_MAX + 1, @ProcessDate)" in rule["source_evidence"]
+    assert rule["rule_id"].startswith("rule_")
+
+
+def test_customer_level_sma_family_merges_propagation_and_rollup():
+    raw_rules = [
+        {
+            "rule_name": "Update customer SMA flag based on account SMA flag",
+            "condition": "B.FLGSMA = 'Y'",
+            "action": "Set the customer FLGSMA flag to Y",
+            "output_field": "FLGSMA",
+            "fields_affected": ["FLGSMA"],
+            "source_evidence": ["B.FLGSMA='Y'"],
+            "business_meaning": "Propagates the SMA flag from account to customer.",
+            "rule_type": "explicit",
+            "confidence": "high",
+            "validation_status": "verified",
+        },
+        {
+            "rule_name": "Aggregate SMA class and date at customer level",
+            "condition": "A.FLGSMA='Y'",
+            "action": "Assign customer SMA class key and SMA date",
+            "output_field": "SMA_CLASS_KEY, SMA_DT",
+            "fields_affected": ["SMA_CLASS_KEY", "SMA_DT"],
+            "source_evidence": ["A.FLGSMA='Y'"],
+            "business_meaning": "Rolls up customer-level SMA information from linked accounts.",
+            "rule_type": "explicit",
+            "confidence": "high",
+            "validation_status": "verified",
+        },
+    ]
+
+    normalized = RuleSynthesizerAgent._normalize_business_rules(raw_rules)
+
+    assert len(normalized) == 1
+    rule = normalized[0]
+    assert rule["output_field"] == "FLGSMA, SMA_CLASS_KEY, SMA_DT"
+    assert rule["fields_affected"] == ["FLGSMA", "SMA_CLASS_KEY", "SMA_DT"]
+    assert rule["decision_logic_rows"][0]["field"] == "FLGSMA"
+    assert "SMA_CLASS_KEY" in rule["decision_logic_rows"][1]["field"]
+    assert "SMA_DT" in rule["decision_logic_rows"][1]["field"]
+    assert rule["decision_logic_rows"][1]["outcome"] == "Rolls up customer-level SMA information from linked accounts."
+    assert "B.FLGSMA='Y'" in rule["source_evidence"]
+    assert "A.FLGSMA='Y'" in rule["source_evidence"]
+
+
+def test_customer_movement_description_family_merges_ordered_branches():
+    raw_rules = [
+        {
+            "rule_name": "Assign customer movement description based on asset class key",
+            "condition": "SYSASSETCLASSALT_KEY = 1",
+            "action": "Set CustMoveDescription to STD",
+            "output_field": "CustMoveDescription",
+            "fields_affected": ["CustMoveDescription"],
+            "source_evidence": ["SYSASSETCLASSALT_KEY = 1"],
+            "business_meaning": "Describes the standard customer movement state.",
+            "rule_type": "explicit",
+            "confidence": "high",
+            "validation_status": "verified",
+        },
+        {
+            "rule_name": "Assign customer movement description for other asset class keys",
+            "condition": "SYSASSETCLASSALT_KEY = 2",
+            "action": "Set CustMoveDescription to SUB",
+            "output_field": "CustMoveDescription",
+            "fields_affected": ["CustMoveDescription"],
+            "source_evidence": ["SYSASSETCLASSALT_KEY = 2"],
+            "business_meaning": "Describes the sub-standard customer movement state.",
+            "rule_type": "explicit",
+            "confidence": "high",
+            "validation_status": "verified",
+        },
+        {
+            "rule_name": "Assign customer movement description for SMA class keys",
+            "condition": "SMA_CLASS_KEY = 1",
+            "action": "Set CustMoveDescription to SMA_0",
+            "output_field": "CustMoveDescription",
+            "fields_affected": ["CustMoveDescription"],
+            "source_evidence": ["SMA_CLASS_KEY = 1"],
+            "business_meaning": "Describes the SMA movement state.",
+            "rule_type": "explicit",
+            "confidence": "high",
+            "validation_status": "verified",
+        },
+    ]
+
+    normalized = RuleSynthesizerAgent._normalize_business_rules(raw_rules)
+
+    assert len(normalized) == 1
+    rule = normalized[0]
+    assert rule["output_field"] == "CustMoveDescription"
+    assert [row["condition"] for row in rule["decision_logic_rows"]] == [
+        "SYSASSETCLASSALT_KEY = 1",
+        "SYSASSETCLASSALT_KEY = 2",
+        "SMA_CLASS_KEY = 1",
+    ]
+    assert [row["outcome"] for row in rule["decision_logic_rows"]] == [
+        "Describes the standard customer movement state.",
+        "Describes the sub-standard customer movement state.",
+        "Describes the SMA movement state.",
+    ]
+
+
+def test_technical_reset_rules_remain_separate_from_sma_family():
+    raw_rules = [
+        {
+            "rule_name": "Clear prior SMA fields",
+            "condition": "FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL",
+            "action": "Clear the SMA classification fields before reprocessing",
+            "output_field": "SMA_CLASS",
+            "fields_affected": ["SMA_CLASS", "SMA_REASON", "SMA_DT", "FLGSMA"],
+            "source_evidence": ["A.SMA_CLASS=NULL", "A.SMA_REASON=NULL", "A.SMA_DT=NULL", "A.FLGSMA=NULL"],
+            "business_meaning": "Technical cleanup before recalculation.",
+            "rule_type": "explicit",
+            "confidence": "high",
+            "validation_status": "verified",
+        },
+        {
+            "rule_name": "Assign SMA classification based on DPD_Max",
+            "condition": "FinalAssetClassAlt_Key = 1 AND SMA_CLASS is NULL",
+            "action": "Set SMA classification from the overdue-days band",
+            "output_field": "SMA_CLASS",
+            "fields_affected": ["SMA_CLASS"],
+            "source_evidence": ["SMA_CLASS := 'STD'"],
+            "business_meaning": "Assigns the account's SMA classification.",
+            "rule_type": "explicit",
+            "confidence": "high",
+            "validation_status": "verified",
+        },
+    ]
+
+    normalized = RuleSynthesizerAgent._normalize_business_rules(raw_rules)
+
+    assert len(normalized) == 2
+    assert any("clear" in rule["action"].lower() for rule in normalized)
+    assert any("classification" in rule["action"].lower() for rule in normalized)
 
 
 def test_parser_failed_evidence_stays_uncertain():

@@ -619,6 +619,12 @@ def _build_evidence_span(
         or record.get("_section")
         or "UNKNOWN"
     ).strip().upper()
+    statement_parse_status = str(
+        record.get("statement_parse_status")
+        or statement_meta.get("parse_status")
+        or statement_meta.get("statement_parse_status")
+        or ""
+    ).strip().lower()
 
     return {
         "source_file": source_file,
@@ -630,6 +636,7 @@ def _build_evidence_span(
         "statement_id": statement_id,
         "evidence_type": evidence_type,
         "source_location_status": location_status,
+        "statement_parse_status": statement_parse_status,
     }
 
 
@@ -731,6 +738,8 @@ def ground_business_rules_against_extraction(
         ambiguous_evidence: List[str] = []
         technical_refs: List[str] = []
         source_chunks: List[str] = []
+        source_chunk_ids: List[str] = []
+        source_statement_ids: List[str] = []
 
         if not source_evidence:
             unresolved_evidence.append("No source evidence was provided for the synthesized rule.")
@@ -751,6 +760,8 @@ def ground_business_rules_against_extraction(
                     chunk_name = f"{chunk_label}:{record.get('_chunk_kind') or 'chunk'}"
                     if chunk_name not in source_chunks:
                         source_chunks.append(chunk_name)
+                    if chunk_label not in source_chunk_ids:
+                        source_chunk_ids.append(chunk_label)
 
                 if record.get("_parse_error"):
                     parser_failed_evidence.append(evidence)
@@ -764,6 +775,8 @@ def ground_business_rules_against_extraction(
                 chunk_meta = chunk_lookup.get(chunk_id, {})
                 statement_id = str(record.get("statement_id") or record.get("source_statement_id") or "").strip()
                 statement_meta = statement_lookup.get(statement_id, {})
+                if statement_id and statement_id not in source_statement_ids:
+                    source_statement_ids.append(statement_id)
                 span = _build_evidence_span(record, chunk_meta, statement_meta)
                 if _span_signature(span) not in {_span_signature(existing) for existing in evidence_spans}:
                     evidence_spans.append(span)
@@ -799,6 +812,8 @@ def ground_business_rules_against_extraction(
         ]
         rule["rule_id"] = stable_id("rule", *rule_id_seed, length=12)
         rule["source_chunks"] = source_chunks
+        rule["source_chunk_ids"] = source_chunk_ids
+        rule["source_statement_ids"] = source_statement_ids
         rule["technical_references"] = technical_refs
         rule["evidence_spans"] = evidence_spans
 
