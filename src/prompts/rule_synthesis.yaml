@@ -113,6 +113,15 @@ system:
       actual branch and use "decision_logic_rows" to carry the ordered branch labels and
       outcomes. Do not rewrite the ladder as a prose paragraph when a short branch label
       and row list are available.
+    - REPEATED SIBLING UPDATE STATEMENTS ARE ALSO A BRANCH CHAIN: when the source contains
+      a sequence of separate UPDATE statements against the same table and the same output
+      field, each with a mutually exclusive WHERE condition on the same driving column
+      (e.g. UPDATE t SET x='A' WHERE key=1; UPDATE t SET x='B' WHERE key=2; ...), treat
+      this exactly like a CASE/IF-ELSIF chain: emit ONE rule and populate
+      "decision_logic_rows" with exactly one row per UPDATE statement, in source order.
+      Do not summarize, sample, or collapse a subset of these statements into a single
+      generalized row (e.g. never write "for each value from 2 to 6" — list value 2, 3,
+      4, 5, and 6 as separate rows).
     - When the source exposes a full branch chain, keep the outer eligibility filter and
       the downstream branch ladder as separate business rules instead of merging them into
       one summary sentence.

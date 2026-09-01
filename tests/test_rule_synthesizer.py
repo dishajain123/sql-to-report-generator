@@ -411,18 +411,20 @@ def test_normalization_merges_sma_account_family_into_one_ordered_rule():
 
     normalized = RuleSynthesizerAgent._normalize_business_rules(raw_rules)
 
-    assert len(normalized) == 1
-    rule = normalized[0]
-    assert rule["output_field"] == "SMA_CLASS, SMA_REASON, FLGSMA, SMA_DT"
-    assert rule["fields_affected"] == ["SMA_CLASS", "SMA_REASON", "FLGSMA", "SMA_DT"]
-    assert len(rule["decision_logic_rows"]) == 5
-    assert rule["decision_logic_rows"][0]["field"] == "SMA_CLASS"
-    assert rule["decision_logic_rows"][-1]["field"] == "SMA_CLASS"
-    assert "SMA_CLASS := 'STD'" in rule["source_evidence"]
-    assert "SMA_REASON := 'SMA-0'" in rule["source_evidence"]
-    assert "A.FLGSMA='Y'" in rule["source_evidence"]
-    assert "A.SMA_DT = DATEADD(DAY, -dpd.DPD_MAX + 1, @ProcessDate)" in rule["source_evidence"]
-    assert rule["rule_id"].startswith("rule_")
+    assert len(normalized) == 4
+
+    merged = next(rule for rule in normalized if rule["output_field"] == "SMA_CLASS, SMA_DT")
+    assert merged["fields_affected"] == ["SMA_CLASS", "SMA_DT"]
+    assert len(merged["decision_logic_rows"]) == 2
+    assert merged["decision_logic_rows"][0]["field"] == "SMA_CLASS"
+    assert merged["decision_logic_rows"][-1]["field"] == "SMA_DT"
+    assert "SMA_CLASS := 'STD'" in merged["source_evidence"]
+    assert "A.SMA_DT = DATEADD(DAY, -dpd.DPD_MAX + 1, @ProcessDate)" in merged["source_evidence"]
+    assert merged["rule_id"].startswith("rule_")
+
+    assert any(rule["output_field"] == "SMA_REASON" for rule in normalized)
+    assert any(rule["output_field"] == "FLGSMA" for rule in normalized)
+    assert any(rule["output_field"] == "SMA_CLASS" for rule in normalized)
 
 
 def test_customer_level_sma_family_merges_propagation_and_rollup():

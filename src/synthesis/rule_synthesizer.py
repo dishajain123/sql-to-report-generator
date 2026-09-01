@@ -1669,8 +1669,10 @@ class RuleSynthesizerAgent:
                     and any(token in text for token in ("customer", "customercal", "customerentityid", "ucif"))
                 ):
                     return "sma_customer"
-                if any(token in text for token in ("sma_class", "sma_reason", "sma_dt")) and any(
-                    token in text for token in ("flgsma", "finalassetclassalt_key", "sma_class is null")
+                if (
+                    any(token in text for token in ("sma_class", "sma_reason", "sma_dt"))
+                    and any(token in text for token in ("dpd_max", "dpd.dpd_max", "facilitytype", "degrade"))
+                    and "default" not in text
                 ):
                     return "sma_account"
                 return ""
@@ -1838,7 +1840,13 @@ class RuleSynthesizerAgent:
 
                 combined["rule_name"] = _family_label(family) or _as_text(member_rules[0].get("rule_name")) or _family_action(member_rules[0])
                 combined["output_field"] = _family_output_field(family, member_rules)
-                combined["business_meaning"] = _family_label(family) or _as_text(member_rules[0].get("business_meaning")) or _family_action(member_rules[0])
+                _member_meanings = _merge_list_values(
+                    [_as_text(rule.get("business_meaning")) for rule in member_rules if _as_text(rule.get("business_meaning"))]
+                )
+                combined["business_meaning"] = (
+                    " ".join(_member_meanings) if _member_meanings
+                    else (_family_label(family) or _as_text(member_rules[0].get("business_meaning")) or _family_action(member_rules[0]))
+                )
                 combined["eligibility"] = _merge_list_values(
                     [
                         item
