@@ -274,6 +274,38 @@ def test_synthesize_calls_configured_model():
     assert client.chat.completions.last_call_kwargs["temperature"] == 0.2
 
 
+def test_synthesize_always_passes_explicit_max_tokens():
+    # Regression test: `max_tokens` must always be passed explicitly on
+    # every completion call. The OpenAI client defaults to a generous
+    # ceiling when it's omitted, but the Bedrock-backed client
+    # (`_BedrockChatCompletions.create` in src/core/llm_client.py) defaults
+    # its OWN max_tokens to 1024 when the caller doesn't pass one - which
+    # silently truncates synthesis JSON well before it's complete for any
+    # object of realistic size. Never rely on provider defaults here.
+    client = _FakeGroqClient(VALID_SYNTHESIS_JSON)
+    agent = RuleSynthesizerAgent(client=client, model="m", temperature=0.1)
+    agent.synthesize(
+        object_name="obj",
+        object_type="PROCEDURE",
+        parameter_summary="none",
+        merged_extraction={},
+    )
+    assert client.chat.completions.last_call_kwargs["max_tokens"] == agent.max_tokens
+    assert client.chat.completions.last_call_kwargs["max_tokens"] > 1024
+
+
+def test_synthesize_max_tokens_is_configurable():
+    client = _FakeGroqClient(VALID_SYNTHESIS_JSON)
+    agent = RuleSynthesizerAgent(client=client, model="m", temperature=0.1, max_tokens=32000)
+    agent.synthesize(
+        object_name="obj",
+        object_type="PROCEDURE",
+        parameter_summary="none",
+        merged_extraction={},
+    )
+    assert client.chat.completions.last_call_kwargs["max_tokens"] == 32000
+
+
 def test_synthesize_handles_malformed_json():
     agent = _make_agent("this is not valid json at all {{{")
     result = agent.synthesize(
@@ -1106,7 +1138,14 @@ def test_report_formatter_surfaces_provenance_fields():
     assert "**Dialect:** Oracle" in report
 
 
-def test_report_formatter_prefers_richer_business_rules_for_display():
+def test_report_formatter_prefers_canonical_business_rules_for_display():
+    # `canonical_ir.business_rules` is always preferred over the raw LLM
+    # output for display, even when raw_rules has more/"richer" items -
+    # canonical is the only one of the two that's been grounded against
+    # the deterministic extraction and sorted into actual source
+    # execution order. Silently preferring "whichever list looks bigger"
+    # was a real regression: it let raw, unordered, ungrounded rules
+    # bypass all of that (see report design notes).
     raw_rules = [
         {"condition": "A", "action": "First", "decision_logic_rows": [{"condition": "A", "outcome": "X"}]},
         {"condition": "B", "action": "Second", "decision_logic_rows": [{"condition": "B", "outcome": "Y"}]},
@@ -1117,7 +1156,82 @@ def test_report_formatter_prefers_richer_business_rules_for_display():
     ]
 
     chosen = ReportFormatterAgent._business_rules_for_display(raw_rules, canonical_rules)
+    assert chosen == canonical_rules
+
+
+def test_report_formatter_falls_back_to_raw_rules_only_when_canonical_is_empty():
+    # The one legitimate fallback: if canonical_ir ended up with zero
+    # rules (e.g. every rule failed grounding), showing the raw,
+    # ungrounded rules is still better than an empty report.
+    raw_rules = [{"condition": "A", "action": "First"}]
+    chosen = ReportFormatterAgent._business_rules_for_display(raw_rules, [])
     assert chosen == raw_rules
+
+
+def test_deduplicate_business_rules_merges_same_field_duplicates():
+    # Regression test for a real bug found in production output: the
+    # same reset-negative-DPD logic was extracted twice (once via an
+    # ISNULL() variant covering 5 fields, once via a COALESCE() variant
+    # covering 6 fields, most of them overlapping) and both survived all
+    # the way into the business report as two separate, near-duplicate
+    # rules ("R1" and "R6"). `_deduplicate_business_rules` must collapse
+    # these into one rule with the union of fields and decision rows.
+    rules = [
+        {
+            "rule_name": "Reset negative DPD to zero",
+            "business_meaning": "Ensures that negative overdue days are reset to zero.",
+            "fields_affected": ["DPD_IntService", "DPD_NoCredit", "DPD_Overdrawn", "DPD_Overdue", "DPD_StockStmt"],
+            "decision_logic_rows": [
+                {"condition": "isnull(DPD_IntService,0)<0", "outcome": "0"},
+                {"condition": "isnull(DPD_NoCredit,0)<0", "outcome": "0"},
+            ],
+            "eligibility": [],
+        },
+        {
+            "rule_name": "Reset negative DPD values to zero",
+            "business_meaning": (
+                "Negative overdue-day values are reset to zero before the maximum "
+                "overdue days is calculated."
+            ),
+            "fields_affected": [
+                "DPD_IntService", "DPD_NoCredit", "DPD_Overdrawn", "DPD_Overdue", "DPD_Renewal", "DPD_StockStmt",
+            ],
+            "decision_logic_rows": [
+                {"condition": "COALESCE(DPD_IntService, 0) < 0", "outcome": "0"},
+                {"condition": "COALESCE(DPD_Renewal, 0) < 0", "outcome": "0"},
+            ],
+            "eligibility": [],
+        },
+    ]
+    result = ReportFormatterAgent._deduplicate_business_rules(rules)
+    assert len(result) == 1
+    merged = result[0]
+    assert set(merged["fields_affected"]) == {
+        "DPD_IntService", "DPD_NoCredit", "DPD_Overdrawn", "DPD_Overdue", "DPD_Renewal", "DPD_StockStmt",
+    }
+    # Decision rows from both source rules survive, deduplicated.
+    assert len(merged["decision_logic_rows"]) == 4
+    # The longer, more complete business_meaning wins.
+    assert merged["business_meaning"] == rules[1]["business_meaning"]
+
+
+def test_deduplicate_business_rules_does_not_merge_unrelated_fields():
+    rules = [
+        {"fields_affected": ["SMA_CLASS"], "business_meaning": "Sets classification."},
+        {"fields_affected": ["SMA_REASON"], "business_meaning": "Sets reason code."},
+    ]
+    result = ReportFormatterAgent._deduplicate_business_rules(rules)
+    assert len(result) == 2
+
+
+def test_deduplicate_business_rules_preserves_first_occurrence_order():
+    rules = [
+        {"fields_affected": ["A"], "business_meaning": "first"},
+        {"fields_affected": ["B"], "business_meaning": "second"},
+        {"fields_affected": ["A"], "business_meaning": "first duplicate, much longer text here"},
+    ]
+    result = ReportFormatterAgent._deduplicate_business_rules(rules)
+    assert [r["fields_affected"] for r in result] == [["A"], ["B"]]
 
 
 def test_report_formatter_preserves_synthesized_rule_boundaries_for_display():

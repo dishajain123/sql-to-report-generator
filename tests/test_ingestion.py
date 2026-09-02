@@ -683,7 +683,7 @@ def test_table_sections_do_not_turn_missing_predicates_into_filters():
     # never fabricate a trigger/filter phrase for it, only fall back to
     # the columns touched (or "Not specified" if there are none either).
     assert "Always, on each execution" not in report
-    assert "Touches: DPD_IntService" in report
+    assert "Provides: DPD_IntService" in report
 
 
 def test_ingest_missing_file_raises(agent):

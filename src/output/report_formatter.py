@@ -184,7 +184,7 @@ class ReportFormatterAgent:
             self._end_to_end_flow(synthesis, business_rules_for_display, resolved_merged_extraction),
             self._business_rules_section(business_rules_for_display),
             self._calculations(synthesis, resolved_merged_extraction),
-            self._data_touched_section(consolidated_reads, consolidated_writes),
+            self._data_touched_section(consolidated_reads, consolidated_writes, business_rules_for_display),
             self._exception_handling(synthesis, getattr(ingestion, "raw_code", ""), resolved_merged_extraction),
             self._findings_section(
                 synthesis,
@@ -384,24 +384,129 @@ class ReportFormatterAgent:
         raw_rules: List[Dict[str, Any]],
         canonical_rules: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
+        """Choose which rule list the business report renders.
+
+        `canonical_rules` (from `canonical_ir.business_rules`) is always
+        preferred: it is the only one of the two that has been through
+        grounding against the deterministic extraction AND sorted into
+        actual source execution order (see
+        `_order_business_rules_by_execution_order` in
+        src/ir/canonical_ir.py). Falling back to the raw, unordered,
+        ungrounded LLM output just because it happens to contain more
+        items silently threw both of those away - the report would show
+        whatever arbitrary order the model returned rules in, with none
+        of the grounding checks applied.
+
+        The only legitimate reason to fall back to `raw_rules` is if
+        canonical_ir ended up with NO rules at all (e.g. every rule
+        failed grounding) - in that degraded case, showing the raw,
+        ungrounded rules is still strictly better than showing an empty
+        report. That is the one fallback kept here.
+        """
         raw_rules = [rule for rule in raw_rules if isinstance(rule, dict)]
         canonical_rules = [rule for rule in canonical_rules if isinstance(rule, dict)]
-        if not raw_rules:
+        if canonical_rules:
             return canonical_rules
-        if len(raw_rules) > len(canonical_rules):
-            return raw_rules
-        raw_complexity = sum(
-            1 for rule in raw_rules if rule.get("decision_logic_rows") or rule.get("eligibility") or rule.get("condition")
-        )
-        canonical_complexity = sum(
-            1 for rule in canonical_rules if rule.get("decision_logic_rows") or rule.get("eligibility") or rule.get("condition")
-        )
-        if raw_complexity > canonical_complexity and len(raw_rules) >= len(canonical_rules):
-            return raw_rules
-        return canonical_rules
+        return raw_rules
 
     def _display_business_rules(self, rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return [dict(rule) for rule in rules if isinstance(rule, dict)]
+        rules = [dict(rule) for rule in rules if isinstance(rule, dict)]
+        return self._deduplicate_business_rules(rules)
+
+    @staticmethod
+    def _rule_field_signature(rule: Dict[str, Any]) -> frozenset:
+        fields = {str(f).strip().lower() for f in (rule.get("fields_affected") or []) if str(f).strip()}
+        if fields:
+            return frozenset(fields)
+        output_field = str(rule.get("output_field") or "").strip().lower()
+        return frozenset({output_field}) if output_field else frozenset()
+
+    @staticmethod
+    def _deduplicate_business_rules(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merge rules that write to the same field(s) into one.
+
+        This is a defensive, deterministic safety net enforcing the
+        synthesis prompt's own "group related conditions that drive the
+        same output field into one rule" instruction - upstream steps
+        (LLM synthesis, or the deterministic completeness backfill in
+        `_augment_rules_from_executable_operations` /
+        `_complete_synthesis_from_deterministic_facts` in
+        src/synthesis/rule_synthesizer.py) can each independently emit a
+        rule for the same field, producing near-duplicate rules with
+        slightly different literal SQL text (e.g. an `ISNULL(...)`
+        variant and a `COALESCE(...)` variant of the same reset logic,
+        or two separate branches of what should be one decision table -
+        see report design notes for concrete examples). Rather than try
+        to prevent every possible source of duplication upstream, this
+        guarantees the *displayed* report never shows two rules for the
+        same field(s) regardless of where the duplicate came from.
+
+        Two rules are merged when their `fields_affected` (or, absent
+        that, `output_field`) sets are identical or one is a subset of
+        the other - never merged on partial/fuzzy overlap, to avoid
+        accidentally combining genuinely different rules that happen to
+        touch one shared field. Merging unions eligibility, decision
+        table rows (deduplicated by condition+outcome), source evidence,
+        and source chunks; keeps the longer/more complete business
+        meaning and rule name; and keeps the position of the FIRST
+        occurrence so execution ordering from canonical_ir is preserved.
+        """
+        merged: List[Dict[str, Any]] = []
+        signatures: List[frozenset] = []
+
+        for rule in rules:
+            sig = ReportFormatterAgent._rule_field_signature(rule)
+            match_idx = None
+            if sig:
+                for i, existing_sig in enumerate(signatures):
+                    if not existing_sig:
+                        continue
+                    if sig == existing_sig or sig <= existing_sig or existing_sig <= sig:
+                        match_idx = i
+                        break
+            if match_idx is None:
+                merged.append(dict(rule))
+                signatures.append(sig)
+                continue
+
+            target = merged[match_idx]
+            # Union the wider field set so a subsequent, even-more-complete
+            # duplicate can still match against it.
+            signatures[match_idx] = signatures[match_idx] | sig
+            target["fields_affected"] = sorted(
+                {str(f) for f in (target.get("fields_affected") or [])}
+                | {str(f) for f in (rule.get("fields_affected") or [])}
+            )
+            if len(str(rule.get("business_meaning") or "")) > len(str(target.get("business_meaning") or "")):
+                target["business_meaning"] = rule.get("business_meaning")
+            if len(str(rule.get("rule_name") or "")) > len(str(target.get("rule_name") or "")):
+                target["rule_name"] = rule.get("rule_name")
+            target["eligibility"] = ReportFormatterAgent._unique_ordered(
+                list(target.get("eligibility") or []) + list(rule.get("eligibility") or [])
+            )
+            existing_rows = target.get("decision_logic_rows") or []
+            incoming_rows = rule.get("decision_logic_rows") or []
+            seen_rows = {
+                (str(r.get("condition") or ""), str(r.get("outcome") or ""))
+                for r in existing_rows
+                if isinstance(r, dict)
+            }
+            for row in incoming_rows:
+                if not isinstance(row, dict):
+                    continue
+                key = (str(row.get("condition") or ""), str(row.get("outcome") or ""))
+                if key not in seen_rows:
+                    existing_rows.append(row)
+                    seen_rows.add(key)
+            target["decision_logic_rows"] = existing_rows
+            target["source_evidence"] = ReportFormatterAgent._unique_ordered(
+                list(target.get("source_evidence") or []) + list(rule.get("source_evidence") or [])
+            )
+            target["source_chunks"] = ReportFormatterAgent._unique_ordered(
+                list(target.get("source_chunks") or []) + list(rule.get("source_chunks") or [])
+            )
+
+        return merged
 
     def _run_metadata_section(self, ingestion: IngestionResult, run_metadata: Optional[RunMetadata]) -> str:
         data = run_metadata_to_dict(run_metadata)
@@ -605,26 +710,14 @@ class ReportFormatterAgent:
         return "## Process Flow\n\n" + "\n".join(lines)
 
     # ------------------------------------------------------------------
-    # 4. Eligibility
+    # (Dead "Eligibility" section removed - this used to pool every
+    # rule's eligibility conditions into one flat cross-rule list, which
+    # is exactly the anti-pattern this report design moved away from:
+    # eligibility is now rendered per-rule inside each rule's own block
+    # in _render_business_rule_block, next to the fields it gates. This
+    # section was defined but never wired into `format()`'s section
+    # list, so its removal changes nothing about current report output.)
     # ------------------------------------------------------------------
-
-    def _eligibility_section(self, rules: List[Dict[str, Any]]) -> str:
-        conditions: List[str] = []
-        for rule in rules:
-            conditions.extend(self._rule_text_lines(rule.get("eligibility") or rule.get("condition")))
-        deduped = self._unique_ordered(conditions)
-        lines = ["## Eligibility", ""]
-        if not deduped:
-            lines.append(f"_{_NOT_DETERMINED}_")
-            return "\n".join(lines)
-        lines.append(
-            "The extracted business rules reference the following eligibility conditions "
-            "(gathered from each rule's own eligibility criteria; see the Business Rules "
-            "section below for which condition applies to which rule):"
-        )
-        lines.append("")
-        lines.extend(f"- {c}" for c in deduped[:15])
-        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # 5. Business Rules
@@ -644,6 +737,7 @@ class ReportFormatterAgent:
         rule_name = self._business_rule_name(rule, idx)
         output_field = self._business_rule_output(rule)
         business_meaning = self._business_rule_business_meaning(rule)
+        eligibility = self._rule_text_lines(rule.get("eligibility"))
         decision_logic_rows = self._decision_logic_rows(rule)
         tie_handling = self._rule_text_lines(rule.get("tie_priority_handling"))
         default_value = self._rule_text_lines(rule.get("default"))
@@ -652,6 +746,16 @@ class ReportFormatterAgent:
         lines = [f"### R{idx} — {rule_name}", ""]
         if output_field != "Not specified":
             lines.append(f"**Applies to:** `{output_field}`")
+        # Eligibility rendered per-rule, directly under the fields it
+        # gates, rather than pooled into one flat cross-rule list at the
+        # top of the report - a reader must never have to cross-reference
+        # a separate section to know which conditions gate THIS rule.
+        if eligibility:
+            if len(eligibility) == 1:
+                lines.append(f"**Eligibility:** {eligibility[0]}")
+            else:
+                lines.append("**Eligibility (all must hold):**")
+                lines.extend(f"- {e}" for e in eligibility)
         lines.append(f"**Meaning:** {business_meaning}")
         lines.append("")
 
@@ -916,73 +1020,12 @@ class ReportFormatterAgent:
         )
 
     # ------------------------------------------------------------------
-    # 10. Data Touched (single deduplicated table, replaces the old
-    #     "Important Business Updates" + "Technical Data Lineage" /
-    #     "Tables Read" / "Tables Written" sections, which rendered the
-    #     same per-table facts twice in different shapes with no added
-    #     value - see report design notes).
+    # (Dead duplicate of "Data Touched" removed here - see the live
+    # definition further below, which is the one Python actually uses
+    # since a class body keeps only the LAST definition of a given
+    # method name. Keeping two copies in sync by hand was itself a
+    # source of bugs - see report design notes.)
     # ------------------------------------------------------------------
-
-    def _data_touched_section(
-        self,
-        consolidated_reads: List[Dict[str, Any]],
-        consolidated_writes: List[Dict[str, Any]],
-    ) -> str:
-        reads_by_table = {b["table"].upper(): b for b in consolidated_reads}
-        writes_by_table = {b["table"].upper(): b for b in consolidated_writes}
-        all_keys = list(OrderedDict.fromkeys(list(writes_by_table.keys()) + list(reads_by_table.keys())))
-        # Working/temp tables (leading '#') are intermediate calculation
-        # steps only - they hold no data once the object finishes running,
-        # so they add noise rather than business value in this summary.
-        # (They remain fully visible in the verification/traceability
-        # artifact for technical review.)
-        display_keys = [k for k in all_keys if not k.startswith("#")]
-        if not display_keys:
-            return "## Data Touched\n\n_None identified._"
-
-        header = ["| Table | Read/Write | Purpose |", "|---|---|---|"]
-        rows: List[str] = []
-        for key in display_keys:
-            write_bucket = writes_by_table.get(key)
-            read_bucket = reads_by_table.get(key)
-            bucket = write_bucket or read_bucket
-            table_name = bucket["table"]
-            if write_bucket and read_bucket:
-                rw = "Read + Write"
-            elif write_bucket:
-                rw = "Write"
-            else:
-                rw = "Read"
-            purpose = self._table_purpose_text(write_bucket, read_bucket)
-            rows.append(f"| `{self._escape_table_cell(table_name)}` | {rw} | {self._escape_table_cell(purpose)} |")
-
-        note = ""
-        skipped = len(all_keys) - len(display_keys)
-        if skipped:
-            note = (
-                f"\n\n_{skipped} working/temporary table(s) used only for intermediate calculation "
-                "steps are omitted here - see the verification report for the full technical lineage._"
-            )
-        return "## Data Touched\n\n" + self._render_split_table(header, rows) + note
-
-    @staticmethod
-    def _table_purpose_text(write_bucket: Optional[Dict[str, Any]], read_bucket: Optional[Dict[str, Any]]) -> str:
-        """Best-effort one-line business purpose for a table row: prefer
-        the write-side filter/trigger condition (why it gets updated),
-        fall back to the read-side filter (what it's selected for), fall
-        back to the columns touched. Never fabricates a purpose that
-        isn't already present in the extracted evidence.
-        """
-        for bucket in (write_bucket, read_bucket):
-            if bucket and bucket.get("filters"):
-                text = ReportFormatterAgent._shorten_text("; ".join(bucket["filters"][:2]), 160)
-                if text:
-                    return text
-        for bucket in (write_bucket, read_bucket):
-            if bucket and bucket.get("target_columns"):
-                cols = ", ".join(bucket["target_columns"][:6])
-                return f"Touches: {cols}"
-        return "Not specified"
 
     def _consolidate_rows(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Groups raw per-statement table_operations rows by table name
@@ -1253,11 +1296,29 @@ class ReportFormatterAgent:
         self,
         consolidated_reads: List[Dict[str, Any]],
         consolidated_writes: List[Dict[str, Any]],
+        rules: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         reads_by_table = {b["table"].upper(): b for b in consolidated_reads}
         writes_by_table = {b["table"].upper(): b for b in consolidated_writes}
         all_keys = list(OrderedDict.fromkeys(list(writes_by_table.keys()) + list(reads_by_table.keys())))
         display_keys = [k for k in all_keys if not k.startswith("#")]
+        # Defensive filter against unresolved SQL aliases leaking through
+        # as if they were table names (e.g. a self-join alias like "AA"
+        # that the deterministic table-resolution step couldn't map back
+        # to its real table within this chunk's boundaries). A real
+        # schema-qualified or standalone table name is never a single
+        # bare word of 1-3 letters with no schema prefix and no
+        # underscore - that shape is a strong, cheap signal of a raw
+        # alias rather than a resolved table, and printing one as a
+        # "table" in the business report is exactly what must never
+        # happen (see the synthesis prompt's alias-naming rule). Anything
+        # this filter removes is still fully visible in the verification
+        # report's technical lineage, so no evidence is silently lost -
+        # only this specific display is protected from a bad name.
+        display_keys = [
+            k for k in display_keys
+            if not (len(k) <= 3 and k.isalpha() and "." not in k and "_" not in k)
+        ]
         if not display_keys:
             return "## Data Touched\n\n_None identified._"
 
@@ -1274,7 +1335,7 @@ class ReportFormatterAgent:
                 rw = "Write"
             else:
                 rw = "Read"
-            purpose = self._table_purpose_text(write_bucket, read_bucket)
+            purpose = self._table_purpose_text(write_bucket, read_bucket, rules)
             rows.append(
                 f"| `{self._escape_table_cell(table_name)}` | {rw} | "
                 f"{self._escape_table_cell(purpose)} |"
@@ -1293,16 +1354,62 @@ class ReportFormatterAgent:
     def _table_purpose_text(
         write_bucket: Optional[Dict[str, Any]],
         read_bucket: Optional[Dict[str, Any]],
+        rules: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
-        for bucket in (write_bucket, read_bucket):
-            if bucket and bucket.get("filters"):
-                text = ReportFormatterAgent._shorten_text("; ".join(bucket["filters"][:2]), 160)
-                if text:
-                    return text
-        for bucket in (write_bucket, read_bucket):
+        """One-line business purpose for a table row.
+
+        MUST NEVER be raw SQL. Business rules already carry a clean,
+        plain-English `business_meaning` naming exactly what changes and
+        why - reuse that instead of falling back to WHERE-clause/filter
+        text, which is developer detail with no place in the business
+        report (compare the verification report, which does carry the
+        full literal predicates for technical review).
+
+        Preference order:
+          1. business_meaning of any rule that writes a column in this
+             table (fields_affected overlaps this table's target_columns).
+          2. business_meaning of any rule that reads from this table.
+          3. the literal columns touched, framed as plain text ("Provides
+             <cols>" / "Updates <cols>") - still not raw SQL, just a
+             last-resort fact when no rule could be matched.
+          4. "Not specified" - never a fabricated purpose.
+        """
+        rules = rules or []
+
+        def _meaning_for(bucket: Optional[Dict[str, Any]]) -> str:
+            if not bucket:
+                return ""
+            columns = {
+                str(c).strip().lower()
+                for c in (bucket.get("target_columns") or [])
+                if str(c).strip()
+            }
+            if not columns:
+                return ""
+            matched_meanings: List[str] = []
+            for rule in rules:
+                fields = {
+                    str(f).strip().lower()
+                    for f in (rule.get("fields_affected") or [])
+                    if str(f).strip()
+                }
+                if fields & columns:
+                    meaning = str(rule.get("business_meaning") or "").strip()
+                    if meaning and meaning not in matched_meanings:
+                        matched_meanings.append(meaning)
+            if matched_meanings:
+                return ReportFormatterAgent._shorten_text(" ".join(matched_meanings[:2]), 200)
+            return ""
+
+        meaning = _meaning_for(write_bucket) or _meaning_for(read_bucket)
+        if meaning:
+            return meaning
+
+        for bucket, verb in ((write_bucket, "Updates"), (read_bucket, "Provides")):
             if bucket and bucket.get("target_columns"):
                 cols = ", ".join(bucket["target_columns"][:6])
-                return f"Touches: {cols}"
+                return f"{verb}: {cols}"
+        return "Not specified"
         return "Not specified"
 
     def _validation_summary(

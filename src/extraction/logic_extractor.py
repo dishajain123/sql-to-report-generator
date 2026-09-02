@@ -96,12 +96,19 @@ class LogicExtractionAgent:
         provider: str = "openai",
         telemetry_tracker: Optional[LLMTelemetryTracker] = None,
         response_cache: Optional[PersistentLLMResponseCache] = None,
+        max_tokens: int = 6000,
     ):
         """
         Args:
             client: an initialized OpenAI-compatible chat client instance.
             model: the model name to call (configurable per pipeline run).
             temperature: sampling temperature (kept low for extraction tasks).
+            max_tokens: explicit output-token cap passed on every completion
+                call - see the matching note in
+                `RuleSynthesizerAgent.__init__` (src/synthesis/rule_synthesizer.py):
+                the Bedrock-backed client defaults to 1024 output tokens when
+                this isn't passed explicitly, silently truncating extraction
+                JSON for any code chunk whose extracted facts exceed that.
         """
         self.client = client
         self.model = model
@@ -110,6 +117,7 @@ class LogicExtractionAgent:
         self.provider = provider
         self.telemetry_tracker = telemetry_tracker
         self.response_cache = response_cache
+        self.max_tokens = max_tokens
 
     def extract(
         self,
@@ -155,6 +163,7 @@ class LogicExtractionAgent:
             user_prompt=user_prompt,
             temperature=self.temperature,
             seed=effective_seed,
+            max_tokens=self.max_tokens,
         )
         tracker = telemetry_tracker or self.telemetry_tracker
         if self.response_cache is not None:
@@ -188,6 +197,7 @@ class LogicExtractionAgent:
         completion_kwargs = {
             "model": model or self.model,
             "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
             "messages": [
                 {"role": "system", "content": prompt_set["system"]},
                 {"role": "user", "content": user_prompt},
@@ -252,6 +262,7 @@ class LogicExtractionAgent:
         user_prompt: str,
         temperature: float,
         seed: Optional[int],
+        max_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
         return {
             "pipeline_version": PIPELINE_VERSION,
@@ -261,6 +272,12 @@ class LogicExtractionAgent:
             "dialect": dialect,
             "temperature": temperature,
             "seed": seed,
+            # Included so any change to the output-token ceiling correctly
+            # invalidates previously cached responses (a response cached
+            # under a smaller max_tokens may have been truncated - see the
+            # max_tokens note on __init__ - and must never be replayed once
+            # the ceiling changes).
+            "max_tokens": max_tokens,
             "response_format": None,
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,

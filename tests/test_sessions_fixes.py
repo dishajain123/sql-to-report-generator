@@ -292,6 +292,13 @@ def test_data_touched_row_with_embedded_pipe_and_newline_does_not_break_table():
     # Written" sections with a single deduplicated table - see report
     # design notes. It's driven by `_consolidate_rows` output rather than
     # raw tables_read/tables_written dicts directly.
+    #
+    # The Purpose column no longer surfaces raw WHERE-predicate text at
+    # all (that was a separate bug - see the business_meaning-based
+    # `_table_purpose_text` rewrite), so this regression test exercises
+    # table-escaping robustness through the business_meaning path instead:
+    # a business rule's own text is the only remaining source of
+    # arbitrary characters that could reach this table.
     fmt = ReportFormatterAgent()
     consolidated_reads = fmt._consolidate_rows(
         [
@@ -303,9 +310,17 @@ def test_data_touched_row_with_embedded_pipe_and_newline_does_not_break_table():
             }
         ]
     )
-    report = fmt._data_touched_section(consolidated_reads, [])
+    rules = [
+        {
+            "fields_affected": ["DATE"],
+            "business_meaning": "Resolves the run date | also used for legacy jobs\nsecond line",
+        }
+    ]
+    report = fmt._data_touched_section(consolidated_reads, [], rules)
     assert _no_broken_table_rows(report)
     assert "\\|" in report  # pipe survived, escaped
+    # The raw WHERE-predicate text itself must never appear verbatim.
+    assert "TIMEKEY = @TIMEKEY" not in report
 
 
 def test_large_table_is_split_with_repeated_headers_and_no_rows_lost():

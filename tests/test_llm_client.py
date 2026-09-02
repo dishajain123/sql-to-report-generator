@@ -79,6 +79,18 @@ def test_bedrock_client_exposes_openai_like_chat_api(monkeypatch):
     assert "user prompt" in captured["body"]
 
 
+def test_bedrock_client_caps_output_limit_for_nova_lite(monkeypatch):
+    monkeypatch.setattr(llm_client, "boto3", None)
+    monkeypatch.setattr(llm_client, "BotoConfig", None)
+
+    payload = llm_client._BedrockRuntimeTransport._build_payload(
+        [{"role": "user", "content": "prompt"}],
+        max_tokens=16000,
+    )
+
+    assert payload["inferenceConfig"]["maxTokens"] == 9999
+
+
 def test_bedrock_client_uses_boto3_default_chain_when_explicit_credentials_are_absent(monkeypatch):
     calls = {}
 

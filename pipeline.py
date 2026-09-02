@@ -62,6 +62,19 @@ logger = logging.getLogger("logic_rules_extractor.pipeline")
 
 DEFAULT_TEMPERATURE = 0.1  # low-temperature extraction / synthesis task
 DEFAULT_SEED = 0
+# Explicit output-token ceilings for every LLM call. These MUST be passed
+# explicitly rather than relying on provider defaults: the OpenAI client
+# defaults to a large ceiling when omitted, but the Bedrock-backed client
+# (`_BedrockChatCompletions.create` in src/core/llm_client.py) defaults its
+# own `max_tokens` to 1024 when the caller doesn't pass one - silently
+# truncating extraction/synthesis JSON well before it's complete for any
+# object of realistic size (a single stored procedure's synthesis call can
+# need ~15-20K completion tokens). Truncated JSON then fails validation and
+# the pipeline falls back to a degraded result with no obvious root cause.
+# Override via LLM_EXTRACTION_MAX_TOKENS / LLM_SYNTHESIS_MAX_TOKENS if a
+# particular model/provider needs a different ceiling.
+DEFAULT_EXTRACTION_MAX_TOKENS = int(os.environ.get("LLM_EXTRACTION_MAX_TOKENS", "6000"))
+DEFAULT_SYNTHESIS_MAX_TOKENS = int(os.environ.get("LLM_SYNTHESIS_MAX_TOKENS", "16000"))
 
 # Stage 4 (embedded SQL / per-chunk technical extraction) is the slowest
 # stage because it makes one LLM call per chunk. Chunks are independent, so
@@ -126,6 +139,8 @@ class LogicRulesExtractorPipeline:
         retrieval_k: int = 4,
         chunk_workers: Optional[int] = None,
         dialect: str = "auto",
+        extraction_max_tokens: int = DEFAULT_EXTRACTION_MAX_TOKENS,
+        synthesis_max_tokens: int = DEFAULT_SYNTHESIS_MAX_TOKENS,
     ):
         self.llm_config = llm_config or load_llm_config()
         self.model_name = self.llm_config.model_name
@@ -153,6 +168,7 @@ class LogicRulesExtractorPipeline:
             seed=seed,
             provider=self.provider,
             response_cache=self.response_cache,
+            max_tokens=extraction_max_tokens,
         )
 
         self.synthesizer_agent = RuleSynthesizerAgent(
@@ -162,6 +178,7 @@ class LogicRulesExtractorPipeline:
             seed=seed,
             provider=self.provider,
             response_cache=self.response_cache,
+            max_tokens=synthesis_max_tokens,
         )
         self.formatter_agent = ReportFormatterAgent()
 

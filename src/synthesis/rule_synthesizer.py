@@ -87,12 +87,26 @@ class RuleSynthesizerAgent:
         seed: Optional[int] = 0,
         provider: str = "openai",
         response_cache: Optional[PersistentLLMResponseCache] = None,
+        max_tokens: int = 16000,
     ):
         """
         Args:
             client: an initialized OpenAI-compatible chat client instance.
             model: the model name to call (configurable per pipeline run).
             temperature: sampling temperature (kept low for extraction tasks).
+            max_tokens: explicit output-token cap passed on every completion
+                call. This must always be set, even though OpenAI's API
+                itself defaults to a generous ceiling when omitted: the
+                Bedrock-backed client (`_BedrockChatCompletions.create` in
+                `llm_client.py`) defaults its OWN `max_tokens` parameter to
+                1024 when the caller doesn't pass one explicitly, which
+                silently truncates synthesis JSON for any object whose
+                business-rule output exceeds ~1024 tokens (this procedure's
+                sample run alone produced ~17K completion tokens) -
+                truncated JSON then fails to parse and the pipeline falls
+                back to a degraded/empty result with no clear error. Passing
+                max_tokens on every call removes the ambiguity for both
+                providers instead of relying on a per-provider default.
         """
         self.client = client
         self.model = model
@@ -100,6 +114,7 @@ class RuleSynthesizerAgent:
         self.seed = seed
         self.provider = provider
         self.response_cache = response_cache
+        self.max_tokens = max_tokens
 
     def synthesize(
         self,
@@ -145,6 +160,7 @@ class RuleSynthesizerAgent:
             user_prompt=user_prompt,
             temperature=self.temperature,
             seed=effective_seed,
+            max_tokens=self.max_tokens,
         )
         tracker = telemetry_tracker
         if self.response_cache is not None:
@@ -196,6 +212,7 @@ class RuleSynthesizerAgent:
         completion_kwargs = {
             "model": model or self.model,
             "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
             "messages": [
                 {"role": "system", "content": prompt_set["system"]},
                 {"role": "user", "content": user_prompt},
@@ -1010,6 +1027,7 @@ class RuleSynthesizerAgent:
         user_prompt: str,
         temperature: float,
         seed: Optional[int],
+        max_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
         return {
             "pipeline_version": PIPELINE_VERSION,
@@ -1019,6 +1037,12 @@ class RuleSynthesizerAgent:
             "dialect": dialect,
             "temperature": temperature,
             "seed": seed,
+            # Included so any change to the output-token ceiling correctly
+            # invalidates previously cached responses (a response cached
+            # under a smaller max_tokens may have been truncated - see the
+            # max_tokens note on __init__ - and must never be replayed once
+            # the ceiling changes).
+            "max_tokens": max_tokens,
             "response_format": None,
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,

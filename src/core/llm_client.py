@@ -25,6 +25,12 @@ from urllib.request import Request, urlopen
 
 from openai import OpenAI
 
+
+# Amazon Nova Lite rejects Converse requests whose requested output limit is
+# 10,000 or higher. Keep this constraint local to the Bedrock transport so
+# other providers and the pipeline's existing configuration are unchanged.
+BEDROCK_MAX_OUTPUT_TOKENS = 9999
+
 try:  # pragma: no cover - optional dependency in developer environments
     import boto3  # type: ignore
     from botocore.config import Config as BotoConfig  # type: ignore
@@ -365,6 +371,7 @@ class _BedrockRuntimeTransport:
             else:
                 if text:
                     user_parts.append(text)
+        safe_max_tokens = min(max_tokens, BEDROCK_MAX_OUTPUT_TOKENS)
         payload: dict[str, Any] = {
             "messages": [
                 {
@@ -374,7 +381,7 @@ class _BedrockRuntimeTransport:
             ],
             "inferenceConfig": {
                 "temperature": temperature,
-                "maxTokens": max_tokens,
+                "maxTokens": safe_max_tokens,
             },
         }
         if system_parts:
