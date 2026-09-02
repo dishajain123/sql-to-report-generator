@@ -14,7 +14,13 @@ import pytest
 from src.ingestion.ingestion import CodeChunk, IngestionResult
 from src.output.report_formatter import ReportFormatterAgent
 from src.synthesis.rule_synthesizer import SynthesisResult
-from src.validation.reconciliation import ReconciliationRecord, _gather_contradictions, reconcile_deterministic_evidence
+from src.validation.reconciliation import (
+    ContradictionFinding,
+    ReconciliationRecord,
+    _build_quality_assessment,
+    _gather_contradictions,
+    reconcile_deterministic_evidence,
+)
 
 
 def _make_ingestion(dialect: str = "ORACLE") -> IngestionResult:
@@ -1350,3 +1356,53 @@ def test_llm_only_rule_reduces_quality_score():
     assert result.quality["factors"]["llm_only_rules"] == 1
     assert result.quality["score"] < 100
     assert result.quality["status"] in {"REVIEW_REQUIRED", "LOW_CONFIDENCE"}
+
+
+def test_quality_score_does_not_double_count_llm_only_and_contradiction_review_items():
+    """Regression test for a scoring bug: review_required_items previously folded in
+    both LLM_ONLY records and review-required contradictions, which were *also* each
+    penalized separately (llm_only_rules bucket, and the HIGH/MEDIUM/LOW contradiction
+    severity buckets). That double-penalty could drive the score to 0 even when the
+    grounding coverage was high, purely from the same handful of findings being
+    subtracted twice. This test locks in that each finding is only charged once."""
+
+    records = [ReconciliationRecord(reconciliation_id="r1", kind="rule", status="MATCHED", object_id="obj_1") for _ in range(11)]
+    records += [ReconciliationRecord(reconciliation_id="r2", kind="rule", status="LLM_ONLY", object_id="obj_1") for _ in range(2)]
+
+    contradictions = [
+        ContradictionFinding(contradiction_id=f"c{i}", type="source", severity="MEDIUM", object_id="obj_1", review_required=True)
+        for i in range(3)
+    ]
+
+    coverage_without_dedup = {
+        "llm_only_rules": 2,
+        "deterministic_only_facts": 0,
+        # Old (buggy) behavior: review_required_items double-counts the 2 LLM_ONLY
+        # records and the 3 review-required contradictions that already have their
+        # own dedicated penalty buckets below.
+        "review_required_items": 2 + 3,
+        "business_review_required_items": 2 + 3,
+        "statement_parse_success_pct": 100.0,
+        "rule_grounding_pct": 84.6,
+        "total_statements": 13,
+        "synthesized_rules": 13,
+    }
+    coverage_with_dedup = dict(coverage_without_dedup)
+    # New behavior: unresolved_for_scoring excludes items already penalized via
+    # llm_only_rules / contradiction-severity buckets.
+    coverage_with_dedup["unresolved_for_scoring"] = 0
+
+    double_counted = _build_quality_assessment(
+        coverage=coverage_without_dedup, contradictions=contradictions, unsupported_dialect=False, records=records
+    )
+    deduplicated = _build_quality_assessment(
+        coverage=coverage_with_dedup, contradictions=contradictions, unsupported_dialect=False, records=records
+    )
+
+    assert deduplicated["score"] > double_counted["score"], (
+        "Deduplicated scoring should never score lower than the double-counted formula "
+        "for the same underlying findings."
+    )
+    # The review flag must still correctly reflect that real issues exist — dedup must
+    # not hide genuine problems, only stop charging the score for them twice.
+    assert deduplicated["status"] == "REVIEW_REQUIRED"

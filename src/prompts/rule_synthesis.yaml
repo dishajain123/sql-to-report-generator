@@ -188,11 +188,43 @@ system:
           "assignments" does not include this field at all, use the outcome "unchanged"
           for that row rather than omitting it or guessing a value - every field's rule
           must have exactly one row per chain branch, never a subset.
+    - OUTCOME MUST BE THE LITERAL ASSIGNED VALUE, NEVER A PARAPHRASE: when a
+      "decision_logic_rows" entry corresponds to a direct SET/assignment statement (e.g.
+      SET CustMoveDescription = 'STD' WHERE SYSASSETCLASSALT_KEY = 1), the "outcome"
+      field MUST be the literal value being assigned ("STD"), copied exactly as it
+      appears in the source. NEVER substitute a generic description of the field's
+      purpose (e.g. "updated to reflect the current asset class for reporting and
+      tracking") as the outcome — that describes what the rule does in general, not what
+      THIS branch sets. If every row in a "decision_logic_rows" table would otherwise
+      show the same repeated sentence, that is a signal the literal values were not
+      extracted — go back to the source and use the actual assigned value for each row.
+    - SEQUENTIAL UPDATE PASSES ON THE SAME FIELDS: when the source runs two or more
+      UPDATE statements against the same table and the same output field(s), one after
+      another, with different grouping/join keys, the LATER statement's effect wins for
+      any row it touches. State this explicitly in "business_meaning" (e.g. "Pass 2
+      overrides Pass 1 for rows it matches") - do not describe the passes as independent
+      or equivalent.
       Never combine two different fields' rows into one rule, never fabricate a row the
       chain does not contain, and never reorder branches. Each such rule's "condition"
       (the rule-level field, not the row-level one) may restate the chain's "subject" in
       short compact form; its "action" stays a one-line summary naming only that rule's
       own field, per the rule above.
+    - OUTCOME MUST BE THE LITERAL ASSIGNED VALUE, NEVER A PARAPHRASE: when a
+      "decision_logic_rows" entry corresponds to a direct SET/assignment statement (e.g.
+      SET CustMoveDescription = 'STD' WHERE SYSASSETCLASSALT_KEY = 1), the "outcome"
+      field MUST be the literal value being assigned ("STD"), copied exactly as it
+      appears in the source. NEVER substitute a generic description of the field's
+      purpose (e.g. "updated to reflect the current asset class for reporting and
+      tracking") as the outcome — that describes what the rule does in general, not
+      what THIS branch sets. If every row in a "decision_logic_rows" table would otherwise
+      show the same repeated sentence, that is a signal the literal values were not
+      extracted — go back to the source and use the actual assigned value for each row.
+    - SEQUENTIAL UPDATE PASSES ON THE SAME FIELDS: when the source runs two or more
+      UPDATE statements against the same table and the same output field(s), one after
+      another, with different grouping/join keys, the LATER statement's effect wins for
+      any row it touches. State this explicitly in "business_meaning" (e.g. "Pass 2
+      overrides Pass 1 for rows it matches") - do not describe the passes as independent
+      or equivalent.
     - RULE NAMES MUST BE SHORT LABELS, NOT SENTENCES: "rule_name" is a 4-8 word label a
       reader could scan in a table of contents (e.g. "Reset negative DPD to zero", "Assign
       SMA class from days overdue"), never a restatement of the full condition.
@@ -484,6 +516,22 @@ system:
       (the rule-level field, not the row-level one) may restate the chain's "subject" in
       short compact form; its "action" stays a one-line summary naming only that rule's
       own field, per the rule above.
+    - OUTCOME MUST BE THE LITERAL ASSIGNED VALUE, NEVER A PARAPHRASE: when a
+      "decision_logic_rows" entry corresponds to a direct SET/assignment statement (e.g.
+      SET CustMoveDescription = 'STD' WHERE SYSASSETCLASSALT_KEY = 1), the "outcome"
+      field MUST be the literal value being assigned ("STD"), copied exactly as it
+      appears in the source. NEVER substitute a generic description of the field's
+      purpose (e.g. "updated to reflect the current asset class for reporting and
+      tracking") as the outcome — that describes what the rule does in general, not
+      what THIS branch sets. If every row in a "decision_logic_rows" table would otherwise
+      show the same repeated sentence, that is a signal the literal values were not
+      extracted — go back to the source and use the actual assigned value for each row.
+    - SEQUENTIAL UPDATE PASSES ON THE SAME FIELDS: when the source runs two or more
+      UPDATE statements against the same table and the same output field(s), one after
+      another, with different grouping/join keys, the LATER statement's effect wins for
+      any row it touches. State this explicitly in "business_meaning" (e.g. "Pass 2
+      overrides Pass 1 for rows it matches") - do not describe the passes as independent
+      or equivalent.
     - RULE NAMES MUST BE SHORT LABELS, NOT SENTENCES: "rule_name" is a 4-8 word label a
       reader could scan in a table of contents (e.g. "Reset negative DPD to zero", "Assign
       SMA class from days overdue"), never a restatement of the full condition.

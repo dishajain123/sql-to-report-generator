@@ -1580,6 +1580,17 @@ def _build_coverage_metrics(
         if record.status in {"CONFLICT", "LLM_ONLY", "UNRESOLVED"}
         or (record.status == "MATCHED" and unsupported_dialect)
     ) + sum(1 for contradiction in contradictions if contradiction.review_required)
+    # Scoring-only count: excludes LLM_ONLY records and review-required contradictions,
+    # since both are already penalized separately (llm_only_rules bucket, and the
+    # HIGH/MEDIUM/LOW contradiction-severity buckets) in _build_quality_assessment.
+    # review_required_items itself stays unchanged above — it is the accurate,
+    # user-facing "N items need review" count and must not undercount.
+    unresolved_for_scoring = sum(
+        1
+        for record in records
+        if record.status in {"CONFLICT", "UNRESOLVED"}
+        or (record.status == "MATCHED" and unsupported_dialect)
+    )
 
     metrics: Dict[str, Any] = {
         "total_statements": total_statements,
@@ -1593,6 +1604,7 @@ def _build_coverage_metrics(
         "conflicts": conflicts,
         "contradictions": len(contradictions),
         "review_required_items": review_required_items,
+        "unresolved_for_scoring": unresolved_for_scoring,
         "duplicate_rule_groups": len(list(duplicate_rule_groups)),
     }
     if classification_summary:
@@ -1627,7 +1639,9 @@ def _build_quality_assessment(
     low_contradictions = sum(1 for item in contradictions if item.severity == "LOW")
     llm_only_rules = int(coverage.get("llm_only_rules", 0) or 0)
     deterministic_only_facts = int(coverage.get("deterministic_only_facts", 0) or 0)
-    unresolved_items = int(coverage.get("review_required_items", 0) or 0)
+    unresolved_items = int(
+        coverage.get("unresolved_for_scoring", coverage.get("review_required_items", 0)) or 0
+    )
     business_review_items = int(coverage.get("business_review_required_items", unresolved_items) or unresolved_items)
     parse_success_pct = float(coverage.get("statement_parse_success_pct") or 0.0)
     grounding_pct = float(coverage.get("rule_grounding_pct") or 0.0)
