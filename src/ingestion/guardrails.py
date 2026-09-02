@@ -425,6 +425,10 @@ _TECHNICAL_SECTIONS = (
     "conditions",
     "decision_chains",
     "loops",
+    # Deterministic per-statement SQL/AST facts.  These records carry the
+    # exact source statement and are required to ground rules reconstructed
+    # from assignment evidence.
+    "table_operations",
     "tables_read",
     "tables_written",
     "calculations",

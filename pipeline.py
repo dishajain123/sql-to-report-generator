@@ -44,10 +44,10 @@ from src.parsing.technical_sql_ops import extract_table_operations_from_chunks, 
 from src.ingestion.guardrails import InputGuardrailError, run_input_guardrails
 from src.dialect.detector import UnsupportedDialectError, detect_dialect
 from src.core.llm_client import LLMConfig, create_llm_client, load_llm_config
+from src.core.llm_response_cache import PersistentLLMResponseCache
 from src.validation.confidence import derive_chunk_support_confidence
 from src.validation.reconciliation import reconcile_deterministic_evidence
 from src.ir.canonical_ir import CanonicalBusinessIR
-from src.core.llm_response_cache import PersistentLLMResponseCache
 from src.core.pipeline_utils import (
     PIPELINE_VERSION,
     RunMetadata,
@@ -136,8 +136,9 @@ class LogicRulesExtractorPipeline:
         self.project_root = Path(__file__).resolve().parent
         self.pipeline_version = PIPELINE_VERSION
         self.provider = self.llm_config.provider
-        self.response_cache = PersistentLLMResponseCache()
-
+        # Keep the benchmark-facing handle for explicit opt-in runs, but do
+        # not enable persistent caching in the normal application pipeline.
+        self.response_cache = PersistentLLMResponseCache(enabled=False)
         self.client = create_llm_client(self.llm_config)
 
         self.ingestion_agent = CodeIngestionAgent(max_chunk_chars=max_chunk_chars, dialect=dialect)
@@ -245,7 +246,7 @@ class LogicRulesExtractorPipeline:
             provider=self.provider,
             dialect=ingestion.dialect,
             dialect_confidence=ingestion.dialect_confidence,
-            raw_source=ingestion.raw_code,
+            raw_source=ingestion.original_code or ingestion.raw_code,
             object_id=ingestion.object_id,
         )
         ingestion.run_metadata = run_metadata
@@ -381,6 +382,7 @@ class LogicRulesExtractorPipeline:
             canonical_ir=canonical_ir,
             run_metadata=run_metadata,
             report_filename=report_filename,
+            extraction_guardrail_warnings=extraction_guardrail_warnings,
         )
         logger.info("Stage 7/7 completed in %.2fs (final report generation)", time.perf_counter() - stage_start)
         return PipelineRunResult(report=report, verification_report=verification_report, ingestion=ingestion)

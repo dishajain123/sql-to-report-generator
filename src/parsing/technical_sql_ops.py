@@ -353,7 +353,25 @@ def _extract_table_ops_from_tree(
 
     operations: List[Dict[str, Any]] = []
     if isinstance(tree, exp.Select):
-        for occurrence_index, table in enumerate(table_nodes, start=1):
+        # `SELECT ... INTO <table> FROM ...` (T-SQL) creates a brand-new
+        # table from the result set - sqlglot models the INTO target as
+        # just another `exp.Table` node inside the tree, so without this
+        # check it gets swept up by `_collect_table_nodes` and reported
+        # as a READ alongside the real FROM-clause tables. That silently
+        # mis-tags every SELECT..INTO target as "read", which in turn
+        # made temp tables built this way (a common pattern) invisible
+        # to write-only/dead-table detection. Split it out and report it
+        # as its own write operation instead.
+        into_table_node = None
+        into_clause = tree.args.get("into")
+        if into_clause is not None:
+            into_table_node = into_clause.this if isinstance(into_clause.this, exp.Table) else None
+        into_signature = _table_signature(into_table_node) if into_table_node is not None else None
+        read_table_nodes = [
+            t for t in table_nodes
+            if into_signature is None or _table_signature(t) != into_signature
+        ]
+        for occurrence_index, table in enumerate(read_table_nodes, start=1):
             operations.append(
                 _build_operation_record(
                     operation="READ",
@@ -373,6 +391,26 @@ def _extract_table_ops_from_tree(
                     table_occurrence=occurrence_index,
                 )
             )
+        if into_table_node is not None:
+            operations.append(
+                _build_operation_record(
+                    operation="INSERT",
+                    table=into_table_node,
+                    target_columns=_render_select_projection_columns(tree, dialect),
+                    source_columns=all_columns,
+                    where_predicate=where_predicate,
+                    having_predicate=having_predicate,
+                    join_predicates=join_predicates,
+                    exists_predicates=exists_predicates,
+                    constants=constants,
+                    statement_kind="SELECT_INTO",
+                    statement_text=statement_text,
+                    statement_id=statement_id,
+                    chunk=chunk,
+                    dialect=dialect,
+                    table_occurrence=1,
+                )
+            )
         # `SELECT ... FOR UPDATE` (Oracle) / `SELECT ... WITH (UPDLOCK)`
         # style row-locking reads are read-and-lock, not read-only: the
         # locked rows are held for a subsequent write, so any table
@@ -381,7 +419,7 @@ def _extract_table_ops_from_tree(
         # sqlglot represents this generically as a `Lock` node with
         # `update=True` on the SELECT, regardless of dialect.
         if _select_has_update_lock(tree):
-            for occurrence_index, table in enumerate(table_nodes, start=1):
+            for occurrence_index, table in enumerate(read_table_nodes, start=1):
                 operations.append(
                     _build_operation_record(
                         operation="LOCK",
@@ -461,6 +499,48 @@ def _extract_table_ops_from_tree(
                     chunk=chunk,
                     dialect=dialect,
                     table_occurrence=1,
+                )
+            )
+        # T-SQL's `UPDATE A SET ... FROM real_table A INNER JOIN other B
+        # ON ...` idiom (used throughout T-SQL stored procedures) puts
+        # every table the UPDATE actually depends on - the real target
+        # table via its FROM-clause alias, plus every JOINed table -
+        # into the FROM/JOIN clauses, not the `UPDATE <name>` head.
+        # `table_nodes` (collected once above from the whole statement
+        # tree) already contains all of them; only the resolved update
+        # target has been recorded as a write so far, so every other
+        # distinct table referenced is a genuine read dependency of this
+        # statement and needs its own READ record - without this, any
+        # table joined-but-not-updated in an UPDATE...FROM...JOIN
+        # statement was invisible to "tables read", reconciliation, and
+        # dead-table detection.
+        target_key = (
+            (_table_signature(target_table), _table_alias(target_table))
+            if target_table is not None
+            else None
+        )
+        read_table_nodes = [
+            t for t in table_nodes
+            if target_key is None or (_table_signature(t), _table_alias(t)) != target_key
+        ]
+        for occurrence_index, table in enumerate(read_table_nodes, start=1):
+            operations.append(
+                _build_operation_record(
+                    operation="READ",
+                    table=table,
+                    target_columns=[],
+                    source_columns=source_columns,
+                    where_predicate=where_predicate,
+                    having_predicate=having_predicate,
+                    join_predicates=join_predicates,
+                    exists_predicates=exists_predicates,
+                    constants=constants,
+                    statement_kind=statement_kind,
+                    statement_text=statement_text,
+                    statement_id=statement_id,
+                    chunk=chunk,
+                    dialect=dialect,
+                    table_occurrence=occurrence_index,
                 )
             )
         return operations

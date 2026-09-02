@@ -60,6 +60,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 import copy
+import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -68,6 +69,7 @@ from src.ir.canonical_ir import CanonicalBusinessIR
 from src.synthesis.rule_synthesizer import SynthesisResult
 from src.dialect.detector import AMBIGUOUS, ORACLE, TSQL, UNKNOWN, UNSUPPORTED, normalize_dialect_name
 from src.core.pipeline_utils import RunMetadata, run_metadata_to_dict
+from src.parsing.dedup import find_write_only_temp_tables
 
 _NOT_DETERMINED = "Not explicitly determined from source SQL."
 
@@ -114,6 +116,8 @@ class ReportFormatterAgent:
         reconciled data - nothing computed for one can silently drift
         from the other."""
         raw_business_rules = copy.deepcopy(list((synthesis.data or {}).get("business_rules") or []))
+        raw_merged_extraction = copy.deepcopy(merged_extraction)
+        raw_synthesis_data = copy.deepcopy(synthesis.data)
         run_metadata = run_metadata or getattr(ingestion, "run_metadata", None) or self._metadata_from_merged(
             merged_extraction
         )
@@ -130,6 +134,8 @@ class ReportFormatterAgent:
             "run_metadata": run_metadata,
             "canonical_ir": canonical_ir,
             "merged_extraction": merged_extraction,
+            "raw_merged_extraction": raw_merged_extraction,
+            "raw_synthesis_data": raw_synthesis_data,
             "synthesis": synthesis,
             "rules": rules,
             "business_rules_for_display": business_rules_for_display,
@@ -160,25 +166,33 @@ class ReportFormatterAgent:
         business_rules_for_display = ctx["business_rules_for_display"]
         consolidated_reads = ctx["consolidated_reads"]
         consolidated_writes = ctx["consolidated_writes"]
+        resolved_merged_extraction = ctx["merged_extraction"]
+        raw_merged_extraction = ctx["raw_merged_extraction"]
+        raw_synthesis_data = ctx["raw_synthesis_data"]
 
         sections = [
             self._title_block(ingestion, synthesis),
-            self._at_a_glance(ingestion, synthesis, consolidated_reads, consolidated_writes, business_rules_for_display),
-            self._what_this_does(synthesis, business_rules_for_display),
-            self._end_to_end_flow(synthesis),
-            self._eligibility_section(business_rules_for_display),
+            self._at_a_glance(
+                ingestion,
+                synthesis,
+                consolidated_reads,
+                consolidated_writes,
+                business_rules_for_display,
+                resolved_merged_extraction,
+            ),
+            self._what_this_does(synthesis, business_rules_for_display, resolved_merged_extraction),
+            self._end_to_end_flow(synthesis, business_rules_for_display, resolved_merged_extraction),
             self._business_rules_section(business_rules_for_display),
-            self._decision_priority_section(synthesis, business_rules_for_display),
-            self._fallback_section(business_rules_for_display),
-            self._rollup_section(business_rules_for_display),
-            self._history_section(business_rules_for_display, consolidated_writes, consolidated_reads),
-            self._important_updates_section(consolidated_writes),
-            self._technical_lineage_section(consolidated_reads, consolidated_writes),
-            self._important_fields_section(ingestion, business_rules_for_display),
-            self._business_rule_summary_table(business_rules_for_display),
-            self._calculations(synthesis),
-            self._exception_handling(synthesis),
-            self._ambiguities(ingestion, synthesis, extraction_guardrail_warnings or []),
+            self._calculations(synthesis, resolved_merged_extraction),
+            self._data_touched_section(consolidated_reads, consolidated_writes),
+            self._exception_handling(synthesis, getattr(ingestion, "raw_code", ""), resolved_merged_extraction),
+            self._findings_section(
+                synthesis,
+                resolved_merged_extraction,
+                getattr(ingestion, "raw_code", ""),
+                raw_merged_extraction=raw_merged_extraction,
+                raw_synthesis_data=raw_synthesis_data,
+            ),
             self._verification_pointer(verification_filename),
         ]
         sections = [s for s in sections if s and s.strip()]
@@ -192,13 +206,15 @@ class ReportFormatterAgent:
         canonical_ir: Optional[CanonicalBusinessIR] = None,
         run_metadata: Optional[RunMetadata] = None,
         report_filename: Optional[str] = None,
+        extraction_guardrail_warnings: Optional[List[str]] = None,
     ) -> str:
         """Assembles the companion verification / traceability artifact:
         run metadata, rule-to-source mapping (rule IDs, chunk IDs,
         statement IDs, source file/line spans), reconciliation summary,
-        and quality/confidence scoring. None of this belongs in the
-        business report `format()` produces - it exists so that detail
-        isn't lost, just kept out of the document business users read.
+        quality/confidence scoring, and low-level pipeline/guardrail
+        diagnostics. None of this belongs in the business report
+        `format()` produces - it exists so that detail isn't lost, just
+        kept out of the document business users read.
         """
         ctx = self._prepare(ingestion, merged_extraction, synthesis, canonical_ir, run_metadata)
         run_metadata_resolved = ctx["run_metadata"]
@@ -215,9 +231,42 @@ class ReportFormatterAgent:
             self._validation_summary(rules, merged_extraction, synthesis),
             self._reconciliation_summary(merged_extraction, synthesis),
             self._quality_summary(merged_extraction, synthesis),
+            self._pipeline_diagnostics_section(ingestion, synthesis, extraction_guardrail_warnings or []),
         ]
         sections = [s for s in sections if s and s.strip()]
         return "\n\n".join(sections).strip() + "\n"
+
+    def _pipeline_diagnostics_section(
+        self,
+        ingestion: IngestionResult,
+        synthesis: SynthesisResult,
+        extraction_guardrail_warnings: List[str],
+    ) -> str:
+        """Low-level parser/guardrail/jargon-scanner noise that is pipeline
+        plumbing, not a business finding - kept here (verification-only)
+        instead of the business report. See `_findings_section` in the
+        business report for the genuinely business-relevant subset
+        (deterministic dead-code findings + LLM-flagged ambiguities).
+        """
+        items: List[str] = []
+        items.extend(getattr(ingestion, "parse_warnings", []) or [])
+        items.extend(extraction_guardrail_warnings)
+        items.extend(synthesis.guardrail_warnings)
+        if synthesis.jargon_flags:
+            items.append(
+                "Automated style check flagged possible leftover technical "
+                f"jargon in the synthesized output: {', '.join(synthesis.jargon_flags)}."
+            )
+        if synthesis.parse_error:
+            items.append(
+                "The business rule synthesis response could not be parsed as "
+                "valid JSON; the object's rules should be regenerated."
+            )
+        if not items:
+            return "## Pipeline Diagnostics\n\nNone."
+        deduped = list(dict.fromkeys(items))
+        lines = [f"- {item}" for item in deduped]
+        return "## Pipeline Diagnostics\n\n" + "\n".join(lines)
 
     # ------------------------------------------------------------------
     # 0. Title
@@ -225,8 +274,24 @@ class ReportFormatterAgent:
 
     def _title_block(self, ingestion: IngestionResult, synthesis: SynthesisResult) -> str:
         object_name = self._display_object_name(ingestion)
-        tagline = self._one_line_purpose(synthesis)
-        return f"# {object_name} — Business Logic Report\n\n> {tagline}"
+        schema = str(getattr(ingestion, "schema", "") or "").strip()
+        technical_name = f"{schema}.{getattr(ingestion, 'object_name', object_name)}" if schema else object_name
+        dialect = self._display_dialect(getattr(ingestion, "dialect", ""))
+        parameters = getattr(ingestion, "parameters", None) or []
+        if parameters:
+            input_display = ", ".join(
+                f"`{parameter.name}` ({parameter.datatype}"
+                + (", the processing day" if "timekey" in str(parameter.name).lower() else "")
+                + ")"
+                for parameter in parameters
+            )
+        else:
+            input_display = "None"
+        return (
+            f"# {object_name} — Business Logic Report\n\n"
+            f"**Procedure:** `{technical_name}`  ·  **Dialect:** {dialect}  ·  "
+            f"**Input:** {input_display}"
+        )
 
     @staticmethod
     def _verification_pointer(verification_filename: Optional[str]) -> str:
@@ -336,103 +401,7 @@ class ReportFormatterAgent:
         return canonical_rules
 
     def _display_business_rules(self, rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        collapsed: List[Dict[str, Any]] = []
-        used_indices: set[int] = set()
-        for idx, rule in enumerate(rules):
-            if idx in used_indices:
-                continue
-            family_key = self._display_rule_family_key(rule)
-            if family_key == "reset_negative_dpd_zero":
-                group_indices = [
-                    other_idx
-                    for other_idx, other_rule in enumerate(rules)
-                    if other_idx not in used_indices
-                    and self._display_rule_family_key(other_rule) == family_key
-                ]
-                if len(group_indices) > 1:
-                    collapsed.append(self._merge_negative_dpd_reset_rules([rules[i] for i in group_indices]))
-                    used_indices.update(group_indices)
-                    continue
-            collapsed.append(dict(rule))
-            used_indices.add(idx)
-        return collapsed
-
-    @staticmethod
-    def _display_rule_family_key(rule: Dict[str, Any]) -> str:
-        blob = " ".join(
-            [
-                str(rule.get("rule_name") or ""),
-                str(rule.get("action") or ""),
-                str(rule.get("business_meaning") or ""),
-                str(rule.get("output_field") or ""),
-                " ".join(str(field) for field in rule.get("fields_affected") or []),
-            ]
-        ).lower()
-        blob = re.sub(r"dpd[_ ]?[a-z0-9]+", "dpd_field", blob)
-        blob = re.sub(r"\s+", " ", blob).strip()
-        if "reset" in blob and "zero" in blob and "dpd_field" in blob:
-            return "reset_negative_dpd_zero"
-        return blob
-
-    @staticmethod
-    def _merge_negative_dpd_reset_rules(rules: List[Dict[str, Any]]) -> Dict[str, Any]:
-        merged = dict(rules[0]) if rules else {}
-
-        def _append_unique(container: List[str], values: List[str]) -> None:
-            for value in values:
-                text = str(value or "").strip()
-                if text and text not in container:
-                    container.append(text)
-
-        def _extract_dpd_field(text: str) -> str:
-            match = re.search(r"(?i)\b(DPD(?:[_ ]?[A-Za-z0-9]+)?)\b", text or "")
-            return match.group(1).replace(" ", "_") if match else ""
-
-        field_order: List[str] = []
-        eligibility_order: List[str] = []
-        source_evidence: List[str] = []
-        source_chunks: List[str] = []
-        source_statements: List[str] = []
-
-        for rule in rules:
-            _append_unique(field_order, [field for field in (rule.get("fields_affected") or []) if str(field).strip()])
-            _append_unique(eligibility_order, [cond for cond in (rule.get("eligibility") or []) if str(cond).strip()])
-            _append_unique(source_evidence, [item for item in (rule.get("source_evidence") or []) if str(item).strip()])
-            _append_unique(source_chunks, [item for item in (rule.get("source_chunks") or []) if str(item).strip()])
-            _append_unique(source_statements, [item for item in (rule.get("source_statements") or []) if str(item).strip()])
-            for value in (rule.get("rule_name"), rule.get("condition"), rule.get("action")):
-                field = _extract_dpd_field(str(value or ""))
-                if field and field not in field_order:
-                    field_order.append(field)
-
-        merged["rule_name"] = "Reset negative DPD values to zero"
-        merged["business_meaning"] = (
-            "Any negative Days Past Due values are reset to zero to prevent invalid overdue calculations."
-        )
-        merged["output_field"] = ""
-        merged["fields_affected"] = field_order
-        summary_condition = ""
-        if field_order:
-            if len(field_order) == 1:
-                summary_condition = f"{field_order[0]} is less than zero"
-            else:
-                summary_condition = ", ".join(field_order[:-1]) + f", or {field_order[-1]} is less than zero"
-        merged["eligibility"] = [summary_condition] if summary_condition else eligibility_order or [
-            "DPD_IntService, DPD_NoCredit, DPD_Overdrawn, DPD_Overdue, DPD_Renewal, or DPD_StockStmt is less than zero"
-        ]
-        merged["condition"] = summary_condition or "DPD_IntService, DPD_NoCredit, DPD_Overdrawn, DPD_Overdue, DPD_Renewal, or DPD_StockStmt is less than zero"
-        merged["action"] = merged["business_meaning"]
-        merged["decision_logic_rows"] = [
-            {
-                "condition": merged["condition"],
-                "outcome": merged["business_meaning"],
-            }
-        ]
-        merged["source_evidence"] = source_evidence
-        merged["source_chunks"] = source_chunks
-        if source_statements:
-            merged["source_statements"] = source_statements
-        return merged
+        return [dict(rule) for rule in rules if isinstance(rule, dict)]
 
     def _run_metadata_section(self, ingestion: IngestionResult, run_metadata: Optional[RunMetadata]) -> str:
         data = run_metadata_to_dict(run_metadata)
@@ -574,36 +543,22 @@ class ReportFormatterAgent:
         consolidated_reads: List[Dict[str, Any]],
         consolidated_writes: List[Dict[str, Any]],
         rules: List[Dict[str, Any]],
+        merged_extraction: Optional[Dict[str, Any]] = None,
     ) -> str:
-        dialect_label = self._display_dialect(getattr(ingestion, "dialect", ""))
-        confidence_label = self._title_confidence(getattr(ingestion, "dialect_confidence", ""))
-        object_name = self._display_object_name(ingestion)
-        object_type = self._display_object_type(getattr(ingestion, "object_type", ""))
-
-        if getattr(ingestion, "parameter_parse_status", "parameterless") == "failed":
-            params_display = "Not specified (extraction failed / Needs Review)"
-        elif getattr(ingestion, "parameters", None):
-            params_display = "; ".join(
-                f"`{p.name}` ({p.direction}, {p.datatype})" for p in ingestion.parameters
-            )
-        else:
-            params_display = "None"
-
-        primary_tables = self._summarize_table_list(consolidated_writes)
-        hierarchy_levels = self._detect_hierarchy_levels(rules)
-        entity_display = " → ".join(level.title() for level in hierarchy_levels) if hierarchy_levels else "Not explicitly determined from source SQL"
-
+        purpose = str(synthesis.data.get("purpose_summary") or "").strip() or _NOT_DETERMINED
+        history_present = any(
+            _HISTORY_TABLE_PATTERN.search(str(row.get("table") or ""))
+            for row in (consolidated_reads or []) + (consolidated_writes or [])
+            if isinstance(row, dict)
+        )
         rows = [
-            ("Object", f"`{object_name}`"),
-            ("Type", object_type),
-            ("SQL Dialect", dialect_label),
-            ("Dialect Confidence", confidence_label),
-            ("Parameters", params_display),
-            ("Primary Business Entity", entity_display),
-            ("Tables Updated", primary_tables),
-            ("Business Rules Identified", str(len(rules))),
+            ("Purpose", purpose),
+            ("Business rules", str(len(rules))),
+            ("Tables read", str(len(consolidated_reads or []))),
+            ("Tables written", str(len(consolidated_writes or []))),
+            ("Produces audit trail", "Yes — account and customer movement history" if history_present else "No"),
         ]
-        lines = ["## At a Glance", "", "| Item | Details |", "|---|---|"]
+        lines = ["## At a Glance", "", "| | |", "|---|---|"]
         lines.extend(f"| {label} | {value} |" for label, value in rows)
         if normalize_dialect_name(getattr(ingestion, "dialect", "")) in {UNKNOWN, AMBIGUOUS, UNSUPPORTED}:
             lines.extend(
@@ -619,41 +574,35 @@ class ReportFormatterAgent:
     # 2. What This Procedure Does
     # ------------------------------------------------------------------
 
-    def _what_this_does(self, synthesis: SynthesisResult, rules: List[Dict[str, Any]]) -> str:
+    def _what_this_does(
+        self,
+        synthesis: SynthesisResult,
+        rules: List[Dict[str, Any]],
+        merged_extraction: Optional[Dict[str, Any]] = None,
+    ) -> str:
         summary = str(synthesis.data.get("purpose_summary") or "").strip() or _NOT_DETERMINED
-        outputs = self._unique_ordered(
-            [self._business_rule_output(rule) for rule in rules if self._business_rule_output(rule) != "Not specified"]
-        )
         lines = [
-            "## What This Procedure Does",
-            "",
-            "### In Simple Terms",
+            "## What This Does",
             "",
             summary,
         ]
-        if outputs:
-            lines.extend(
-                [
-                    "",
-                    "### Business Outcome",
-                    "",
-                    "After this procedure completes, the following fields have been evaluated and, where applicable, updated:",
-                    "",
-                ]
-            )
-            lines.extend(f"- `{field}`" for field in outputs[:15])
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # 3. End-to-End Business Flow
     # ------------------------------------------------------------------
 
-    def _end_to_end_flow(self, synthesis: SynthesisResult) -> str:
+    def _end_to_end_flow(
+        self,
+        synthesis: SynthesisResult,
+        rules: Optional[List[Dict[str, Any]]] = None,
+        merged_extraction: Optional[Dict[str, Any]] = None,
+    ) -> str:
         steps: List[str] = synthesis.data.get("step_by_step_flow", []) or []
         if not steps:
-            return f"## End-to-End Business Flow\n\n_{_NOT_DETERMINED}_"
+            return f"## Process Flow\n\n_{_NOT_DETERMINED}_"
         lines = [f"{i + 1}. {self._strip_leading_numbering(step)}" for i, step in enumerate(steps)]
-        return "## End-to-End Business Flow\n\n" + "\n".join(lines)
+        return "## Process Flow\n\n" + "\n".join(lines)
 
     # ------------------------------------------------------------------
     # 4. Eligibility
@@ -695,22 +644,16 @@ class ReportFormatterAgent:
         rule_name = self._business_rule_name(rule, idx)
         output_field = self._business_rule_output(rule)
         business_meaning = self._business_rule_business_meaning(rule)
-        eligibility = self._rule_text_lines(rule.get("eligibility") or rule.get("condition"))
         decision_logic_rows = self._decision_logic_rows(rule)
         tie_handling = self._rule_text_lines(rule.get("tie_priority_handling"))
         default_value = self._rule_text_lines(rule.get("default"))
         when_not_eligible = self._rule_text_lines(rule.get("when_not_eligible"))
 
-        lines = [f"## Rule: {rule_name}", ""]
+        lines = [f"### R{idx} — {rule_name}", ""]
         if output_field != "Not specified":
             lines.append(f"**Applies to:** `{output_field}`")
-        lines.append(f"**Business meaning:** {business_meaning}")
+        lines.append(f"**Meaning:** {business_meaning}")
         lines.append("")
-
-        if eligibility:
-            lines.append("### Eligibility")
-            lines.extend(f"- {e}" for e in eligibility)
-            lines.append("")
 
         # Only shown for a genuine multi-band/lookup mapping (see
         # _decision_logic_rows) - an ordinary single condition -> single
@@ -917,29 +860,37 @@ class ReportFormatterAgent:
     ) -> str:
         return (
             "## Technical Data Lineage\n\n"
-            + self._tables_read({"tables_read": []}, _precomputed=consolidated_reads)
+            + self._tables_read(_precomputed=consolidated_reads)
             + "\n\n"
-            + self._tables_written({"tables_written": []}, _precomputed=consolidated_writes)
+            + self._tables_written(_precomputed=consolidated_writes)
         )
 
-    def _tables_read(self, merged_extraction: Dict[str, Any], _precomputed: Optional[List[Dict[str, Any]]] = None) -> str:
+    def _tables_read(
+        self,
+        merged_extraction: Optional[Dict[str, Any]] = None,
+        _precomputed: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
         consolidated = _precomputed if _precomputed is not None else self._consolidate_rows(
-            merged_extraction.get("tables_read", []) or []
+            (merged_extraction or {}).get("tables_read", []) or []
         )
         if not consolidated:
             return "## Tables Read\n\n_None identified._"
         header = ["| Table Name | Key Columns | Filter Conditions |", "|---|---|---|"]
-        rows = [self._render_consolidated_read_row(b) for b in consolidated]
+        rows = [self._render_consolidated_read_row(bucket) for bucket in consolidated]
         return "## Tables Read\n\n" + self._render_split_table(header, rows)
 
-    def _tables_written(self, merged_extraction: Dict[str, Any], _precomputed: Optional[List[Dict[str, Any]]] = None) -> str:
+    def _tables_written(
+        self,
+        merged_extraction: Optional[Dict[str, Any]] = None,
+        _precomputed: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
         consolidated = _precomputed if _precomputed is not None else self._consolidate_rows(
-            merged_extraction.get("tables_written", []) or []
+            (merged_extraction or {}).get("tables_written", []) or []
         )
         if not consolidated:
             return "## Tables Written\n\n_None identified._"
         header = ["| Table Name | Operation Type | Columns Affected | Business Trigger |", "|---|---|---|---|"]
-        rows = [self._render_consolidated_written_row(b) for b in consolidated]
+        rows = [self._render_consolidated_written_row(bucket) for bucket in consolidated]
         return "## Tables Written\n\n" + self._render_split_table(header, rows)
 
     def _render_consolidated_read_row(self, bucket: Dict[str, Any]) -> str:
@@ -963,6 +914,75 @@ class ReportFormatterAgent:
             f"| `{bucket['table']}` | `{self._escape_table_cell(operation)}` | "
             f"{self._escape_table_cell(columns)} | {self._escape_table_cell(filters)}{extra} |"
         )
+
+    # ------------------------------------------------------------------
+    # 10. Data Touched (single deduplicated table, replaces the old
+    #     "Important Business Updates" + "Technical Data Lineage" /
+    #     "Tables Read" / "Tables Written" sections, which rendered the
+    #     same per-table facts twice in different shapes with no added
+    #     value - see report design notes).
+    # ------------------------------------------------------------------
+
+    def _data_touched_section(
+        self,
+        consolidated_reads: List[Dict[str, Any]],
+        consolidated_writes: List[Dict[str, Any]],
+    ) -> str:
+        reads_by_table = {b["table"].upper(): b for b in consolidated_reads}
+        writes_by_table = {b["table"].upper(): b for b in consolidated_writes}
+        all_keys = list(OrderedDict.fromkeys(list(writes_by_table.keys()) + list(reads_by_table.keys())))
+        # Working/temp tables (leading '#') are intermediate calculation
+        # steps only - they hold no data once the object finishes running,
+        # so they add noise rather than business value in this summary.
+        # (They remain fully visible in the verification/traceability
+        # artifact for technical review.)
+        display_keys = [k for k in all_keys if not k.startswith("#")]
+        if not display_keys:
+            return "## Data Touched\n\n_None identified._"
+
+        header = ["| Table | Read/Write | Purpose |", "|---|---|---|"]
+        rows: List[str] = []
+        for key in display_keys:
+            write_bucket = writes_by_table.get(key)
+            read_bucket = reads_by_table.get(key)
+            bucket = write_bucket or read_bucket
+            table_name = bucket["table"]
+            if write_bucket and read_bucket:
+                rw = "Read + Write"
+            elif write_bucket:
+                rw = "Write"
+            else:
+                rw = "Read"
+            purpose = self._table_purpose_text(write_bucket, read_bucket)
+            rows.append(f"| `{self._escape_table_cell(table_name)}` | {rw} | {self._escape_table_cell(purpose)} |")
+
+        note = ""
+        skipped = len(all_keys) - len(display_keys)
+        if skipped:
+            note = (
+                f"\n\n_{skipped} working/temporary table(s) used only for intermediate calculation "
+                "steps are omitted here - see the verification report for the full technical lineage._"
+            )
+        return "## Data Touched\n\n" + self._render_split_table(header, rows) + note
+
+    @staticmethod
+    def _table_purpose_text(write_bucket: Optional[Dict[str, Any]], read_bucket: Optional[Dict[str, Any]]) -> str:
+        """Best-effort one-line business purpose for a table row: prefer
+        the write-side filter/trigger condition (why it gets updated),
+        fall back to the read-side filter (what it's selected for), fall
+        back to the columns touched. Never fabricates a purpose that
+        isn't already present in the extracted evidence.
+        """
+        for bucket in (write_bucket, read_bucket):
+            if bucket and bucket.get("filters"):
+                text = ReportFormatterAgent._shorten_text("; ".join(bucket["filters"][:2]), 160)
+                if text:
+                    return text
+        for bucket in (write_bucket, read_bucket):
+            if bucket and bucket.get("target_columns"):
+                cols = ", ".join(bucket["target_columns"][:6])
+                return f"Touches: {cols}"
+        return "Not specified"
 
     def _consolidate_rows(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Groups raw per-statement table_operations rows by table name
@@ -1201,21 +1221,89 @@ class ReportFormatterAgent:
     # Supplementary technical sections
     # ------------------------------------------------------------------
 
-    def _calculations(self, synthesis: SynthesisResult) -> str:
-        calcs = synthesis.data.get("calculations", [])
+    def _calculations(
+        self,
+        synthesis: SynthesisResult,
+        merged_extraction: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        calcs = list(synthesis.data.get("calculations", []) or [])
         if not calcs:
-            return "## Calculations / Formulas\n\n_None identified._"
-        lines = [
-            f"- **{c.get('metric', 'Metric')}:** {c.get('explanation', 'N/A')}"
-            for c in calcs
-        ]
-        return "## Calculations / Formulas\n\n" + "\n".join(lines)
+            return "## Calculations\n\n_None identified._"
+        lines = []
+        for calculation in calcs:
+            if not isinstance(calculation, dict):
+                continue
+            field = calculation.get("field") or calculation.get("metric") or "Metric"
+            formula = calculation.get("formula") or calculation.get("explanation") or "N/A"
+            lines.append(f"- **{field}:** {formula}")
+        if not lines:
+            return "## Calculations\n\n_None identified._"
+        return "## Calculations\n\n" + "\n".join(lines)
 
-    def _exception_handling(self, synthesis: SynthesisResult) -> str:
-        summary = synthesis.data.get("exception_handling_summary") or (
-            "No explicit failure-path behavior identified."
-        )
-        return f"## Exception Handling Behavior\n\n{summary}"
+    def _exception_handling(
+        self,
+        synthesis: SynthesisResult,
+        raw_source: str = "",
+        merged_extraction: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        summary = synthesis.data.get("exception_handling_summary") or "No explicit failure-path behavior identified."
+        return f"## Exception Handling\n\n{summary}"
+
+    def _data_touched_section(
+        self,
+        consolidated_reads: List[Dict[str, Any]],
+        consolidated_writes: List[Dict[str, Any]],
+    ) -> str:
+        reads_by_table = {b["table"].upper(): b for b in consolidated_reads}
+        writes_by_table = {b["table"].upper(): b for b in consolidated_writes}
+        all_keys = list(OrderedDict.fromkeys(list(writes_by_table.keys()) + list(reads_by_table.keys())))
+        display_keys = [k for k in all_keys if not k.startswith("#")]
+        if not display_keys:
+            return "## Data Touched\n\n_None identified._"
+
+        header = ["| Table | Read/Write | Purpose |", "|---|---|---|"]
+        rows: List[str] = []
+        for key in display_keys:
+            write_bucket = writes_by_table.get(key)
+            read_bucket = reads_by_table.get(key)
+            bucket = write_bucket or read_bucket
+            table_name = bucket["table"]
+            if write_bucket and read_bucket:
+                rw = "Read + Write"
+            elif write_bucket:
+                rw = "Write"
+            else:
+                rw = "Read"
+            purpose = self._table_purpose_text(write_bucket, read_bucket)
+            rows.append(
+                f"| `{self._escape_table_cell(table_name)}` | {rw} | "
+                f"{self._escape_table_cell(purpose)} |"
+            )
+
+        skipped = len(all_keys) - len(display_keys)
+        note = ""
+        if skipped:
+            note = (
+                f"\n\n_{skipped} working/temporary table(s) used only for intermediate calculation "
+                "steps are omitted here - see the verification report for the full technical lineage._"
+            )
+        return "## Data Touched\n\n" + self._render_split_table(header, rows) + note
+
+    @staticmethod
+    def _table_purpose_text(
+        write_bucket: Optional[Dict[str, Any]],
+        read_bucket: Optional[Dict[str, Any]],
+    ) -> str:
+        for bucket in (write_bucket, read_bucket):
+            if bucket and bucket.get("filters"):
+                text = ReportFormatterAgent._shorten_text("; ".join(bucket["filters"][:2]), 160)
+                if text:
+                    return text
+        for bucket in (write_bucket, read_bucket):
+            if bucket and bucket.get("target_columns"):
+                cols = ", ".join(bucket["target_columns"][:6])
+                return f"Touches: {cols}"
+        return "Not specified"
 
     def _validation_summary(
         self,
@@ -1232,7 +1320,7 @@ class ReportFormatterAgent:
             return (
                 "## Rule Provenance Summary\n\n"
                 "_No business rules were synthesized for this object - see "
-                "Ambiguities section._"
+                "Pipeline Diagnostics section._"
             )
 
         type_counts: Dict[str, int] = {}
@@ -1249,6 +1337,14 @@ class ReportFormatterAgent:
             f"- **Total business rules:** {len(rules)}",
             "- **By rule type:** " + ", ".join(f"{k} = {v}" for k, v in sorted(type_counts.items())),
             "- **By validation status:** " + ", ".join(f"{k} = {v}" for k, v in sorted(status_counts.items())),
+            "",
+            "_This count reflects every individually traceable rule (one per source "
+            "statement/field, for full auditability). The business report may show a "
+            "smaller number, because closely related rules that apply the same pattern "
+            "to several fields (e.g. \"reset each of these six DPD fields to zero if "
+            "negative\") are presented there as one combined rule for readability. "
+            "Every rule counted here is still individually traceable in the Source "
+            "Traceability table below - none are dropped, only grouped for display._",
         ]
         if status_counts.get("unverified"):
             lines.append(
@@ -1395,36 +1491,76 @@ class ReportFormatterAgent:
             )
         return "\n".join(lines)
 
-    def _ambiguities(
+    def _findings_section(
         self,
-        ingestion: IngestionResult,
         synthesis: SynthesisResult,
-        extraction_guardrail_warnings: List[str],
+        merged_extraction: Dict[str, Any],
+        raw_source: str = "",
+        raw_merged_extraction: Optional[Dict[str, Any]] = None,
+        raw_synthesis_data: Optional[Dict[str, Any]] = None,
     ) -> str:
+        """Business-relevant findings only: deterministic dead-code /
+        disabled-logic detection first (highest signal - these are
+        concrete, verifiable facts about the object's actual behavior),
+        followed by genuine LLM-flagged ambiguities from the source. Pure
+        pipeline/parser/guardrail plumbing noise has moved to
+        `_pipeline_diagnostics_section` in the verification report - it
+        was drowning out the findings that actually matter to a business
+        reader (see report design notes).
+        """
         items: List[str] = []
-        items.extend(getattr(ingestion, "parse_warnings", []) or [])
-        items.extend(extraction_guardrail_warnings)
-        items.extend(synthesis.data.get("ambiguities", []) or [])
-        items.extend(synthesis.guardrail_warnings)
-        if synthesis.jargon_flags:
+
+        table_operations = merged_extraction.get("table_operations", []) or []
+        dead_tables = find_write_only_temp_tables(table_operations, raw_source=raw_source)
+        for table in dead_tables:
             items.append(
-                "Automated style check flagged possible leftover technical "
-                f"jargon in the synthesized output: {', '.join(synthesis.jargon_flags)}. "
-                "Recommend a human pass to rephrase in business terms."
+                f"**Working table `{table}` appears to be unused.** It is built during "
+                "processing but never subsequently read anywhere else in this object - it "
+                "has no effect on the final outcome and may be safe to remove, or may "
+                "indicate logic that was intended to use it but doesn't."
             )
-        if synthesis.parse_error:
-            items.append(
-                "The business rule synthesis response could not be parsed as "
-                "valid JSON; the object's rules should be regenerated or "
-                "reviewed manually."
-            )
+
+        source_merged_extraction = raw_merged_extraction or merged_extraction
+        source_synthesis_data = raw_synthesis_data or synthesis.data
+
+        merged_ambiguities = source_merged_extraction.get("ambiguities", []) or []
+        items.extend(str(item).strip() for item in merged_ambiguities if str(item).strip())
+        for chunk in source_merged_extraction.get("chunk_provenance", []) or []:
+            if not isinstance(chunk, dict):
+                continue
+            parse_error = str(chunk.get("parse_error") or "").strip()
+            if not parse_error:
+                continue
+            chunk_id = str(chunk.get("chunk_id") or "").strip() or "this chunk"
+            chunk_kind = str(chunk.get("chunk_kind") or "").strip()
+            if chunk_id == "this chunk":
+                items.append(
+                    "Automatic extraction for this chunk returned malformed JSON and could not be parsed; "
+                    "this chunk needs manual review."
+                )
+            else:
+                suffix = f" ({chunk_kind})" if chunk_kind else ""
+                items.append(
+                    f"Chunk '{chunk_id}'{suffix} technical extraction returned malformed JSON and needs manual review."
+                )
+        items.extend(str(item).strip() for item in (source_synthesis_data.get("ambiguities", []) or []) if str(item).strip())
 
         if not items:
-            return "## Ambiguities / Needs Review\n\nNone."
+            return "## Findings / Needs Review\n\nNone identified."
 
         deduped = list(dict.fromkeys(items))
-        lines = [f"- {item}" for item in deduped]
-        return "## Ambiguities / Needs Review\n\n" + "\n".join(lines)
+        def _finding_sort_key(text: str) -> tuple[int, int]:
+            normalized = text.strip().lower()
+            if normalized.startswith("automatic extraction for this chunk returned malformed json"):
+                return (0, 0)
+            if normalized.startswith("chunk '"):
+                return (1, 0)
+            return (2, 0)
+
+        deduped = sorted(enumerate(deduped), key=lambda pair: (_finding_sort_key(pair[1]), pair[0]))
+        ordered_items = [item for _, item in deduped]
+        lines = [f"- {item}" for item in ordered_items]
+        return "## Findings / Needs Review\n\n" + "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Legacy curated glossary (kept for backward compatibility - small,
@@ -1624,11 +1760,22 @@ class ReportFormatterAgent:
     def _display_object_name(ingestion: IngestionResult) -> str:
         canonical = str(getattr(ingestion, "canonical_object_name", "") or "").strip()
         if canonical and canonical.upper() not in {"UNKNOWN_OBJECT", "UNKNOWN", "NONE"}:
-            return canonical
+            return ReportFormatterAgent._humanize_object_name(canonical)
         object_name = str(getattr(ingestion, "object_name", "") or "").strip()
         if object_name and object_name.upper() not in {"UNKNOWN_OBJECT", "UNKNOWN", "NONE"}:
-            return object_name
+            return ReportFormatterAgent._humanize_object_name(object_name)
         return "Not specified"
+
+    @staticmethod
+    def _humanize_object_name(name: str) -> str:
+        if "_" not in str(name):
+            return str(name)
+        parts = re.split(r"[_\s]+", str(name).strip())
+        return " ".join(
+            part if part.isupper() and len(part) <= 4 else part.capitalize()
+            for part in parts
+            if part
+        )
 
     @staticmethod
     def _display_object_type(object_type: str) -> str:

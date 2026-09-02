@@ -1,5 +1,8 @@
 # LLM provider - OpenAI-compatible chat completions API
 openai>=1.0.0,<2.0.0
+
+# AWS Bedrock runtime client and default credential chain
+boto3>=1.34.0,<2.0.0
  
 # Vector DB (RAG layer). Chroma 1.5 bundles its native index in a
 # platform wheel, avoiding the source-only chroma-hnswlib dependency.

@@ -85,7 +85,7 @@ def _execute_benchmark_run(config: BenchmarkRunConfig) -> BenchmarkRunRecord:
             provider=pipeline.provider,
             dialect=ingestion.dialect,
             dialect_confidence=ingestion.dialect_confidence,
-            raw_source=ingestion.raw_code,
+            raw_source=ingestion.original_code or ingestion.raw_code,
             object_id=ingestion.object_id,
         )
         ingestion.run_metadata = run_metadata

@@ -51,7 +51,9 @@ def _hash_file(path: Path) -> str:
 
 
 def prompt_version(project_root: Path) -> str:
-    prompt_dir = project_root / "prompts"
+    prompt_dir = project_root / "src" / "prompts"
+    if not prompt_dir.exists():
+        prompt_dir = project_root / "prompts"
     files = [prompt_dir / "logic_extraction.yaml", prompt_dir / "rule_synthesis.yaml"]
     payload = "|".join(f"{file.name}:{_hash_file(file)}" for file in files)
     return stable_hash_text(payload)

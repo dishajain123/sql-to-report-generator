@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest
 
 from src.output.report_formatter import ReportFormatterAgent
-from src.synthesis.rule_synthesizer import RuleSynthesizerAgent
+from src.synthesis.rule_synthesizer import RuleSynthesizerAgent, SynthesisResult
 from src.ingestion.guardrails import ground_business_rules_against_extraction
 
 
@@ -97,13 +97,20 @@ def _make_agent(canned_response: str) -> RuleSynthesizerAgent:
 
 
 def test_compact_synthesis_payload_keeps_only_synthesis_facts():
+    # The synthesis prompt intentionally keeps a compact technical
+    # evidence view: only the branch-reasoning fields the LLM actually
+    # needs are serialized into the prompt. Heavier transport/provenance
+    # fields stay in `merged_extraction` for verification/reporting.
     merged_extraction = {
         "conditions": [{"condition": "x"}],
         "decision_chains": [{"subject": "x"}],
         "loops": [{"loop": "x"}],
-        "tables_read": [{"table": "A"}],
-        "tables_written": [{"table": "B"}],
-        "table_operations": [{"operation": "READ", "table": "A"}],
+        "tables_read": [{"table": "A", "operation": "READ"}],
+        "tables_written": [{"table": "B", "operation": "UPDATE"}],
+        "table_operations": [
+            {"operation": "READ", "table": "A", "target_columns": ["COL1"]},
+            {"operation": "READ", "table": "A", "target_columns": ["COL1"], "where_predicate": "COL1 > 0"},
+        ],
         "statement_provenance": [{"statement_id": "stmt_1"}],
         "chunk_provenance": [{"chunk_id": "chunk_1"}],
         "calculations": [{"metric": "m"}],
@@ -125,25 +132,26 @@ def test_compact_synthesis_payload_keeps_only_synthesis_facts():
         "conditions",
         "decision_chains",
         "loops",
-        "tables_read",
-        "tables_written",
         "table_operations",
-        "statement_provenance",
-        "chunk_provenance",
         "calculations",
         "exception_handling",
         "ambiguities",
     ]
     assert compact["conditions"] == [{"condition": "x"}]
-    assert compact["tables_written"] == [{"table": "B"}]
-    assert compact["table_operations"] == [{"operation": "READ", "table": "A"}]
-    assert compact["statement_provenance"] == [{"statement_id": "stmt_1"}]
-    assert compact["chunk_provenance"] == [{"chunk_id": "chunk_1"}]
+    # The two near-duplicate READ records for table A collapse into one
+    # deduplicated entry, with the distinct predicate preserved.
+    assert len(compact["table_operations"]) == 1
+    assert compact["table_operations"][0]["table"] == "A"
+    assert compact["table_operations"][0]["operation"] == "READ"
+    assert compact["table_operations"][0]["where_predicates"] == ["COL1 > 0"]
+    assert compact["table_operations"][0]["statement_count"] == 2
     assert json.dumps(compact, separators=(",", ":"), default=str) == json.dumps(
         RuleSynthesizerAgent._build_compact_synthesis_payload(merged_extraction),
         separators=(",", ":"),
         default=str,
     )
+    assert "tables_read" not in compact
+    assert "tables_written" not in compact
     assert "run_metadata" not in compact
     assert "telemetry" not in compact
     assert "llm_tables_read" not in compact
@@ -153,6 +161,36 @@ def test_compact_synthesis_payload_keeps_only_synthesis_facts():
     assert "quality" not in compact
     assert "canonical_ir" not in compact
     assert merged_extraction["run_metadata"]["model_name"] == "model"
+
+
+def test_compact_synthesis_payload_falls_back_to_tables_read_written_when_no_table_operations():
+    # Objects where deterministic statement parsing produced nothing
+    # (unsupported dialect / parse failure) still need *some* table
+    # evidence in the synthesis prompt - fall back to the LLM-extracted
+    # tables_read/tables_written, deduplicated the same way.
+    merged_extraction = {
+        "tables_read": [{"table": "A", "operation": "READ", "target_columns": ["X"]}],
+        "tables_written": [{"table": "B", "operation": "UPDATE", "target_columns": ["Y"]}],
+        "table_operations": [],
+    }
+    compact = RuleSynthesizerAgent._build_compact_synthesis_payload(merged_extraction)
+    tables = {op["table"] for op in compact["table_operations"]}
+    assert tables == {"A", "B"}
+
+
+def test_synthesis_payload_includes_original_source_only_when_available():
+    merged_extraction = {"conditions": [{"condition": "DPD_MAX >= 30"}]}
+    compact = RuleSynthesizerAgent._build_compact_synthesis_payload(
+        merged_extraction,
+        raw_source="UPDATE ACCOUNT SET SMA_CLASS = 'SMA_1' WHERE DPD_MAX >= 30;",
+    )
+
+    assert compact["source_sql"] == (
+        "UPDATE ACCOUNT SET SMA_CLASS = 'SMA_1' WHERE DPD_MAX >= 30;"
+    )
+    assert "source_sql" not in RuleSynthesizerAgent._build_compact_synthesis_payload(
+        merged_extraction
+    )
 
 
 def test_synthesize_parses_valid_json():
@@ -185,7 +223,7 @@ def test_synthesize_serializes_compact_payload_without_transport_fields():
         "llm_tables_read": [{"table": "LOAN_ACCOUNT"}],
         "llm_tables_written": [{"table": "ACCOUNT_STATUS"}],
         "statement_provenance": [{"statement_id": "stmt_1"}],
-        "table_operations": [{"operation": "READ"}],
+        "table_operations": [{"operation": "READ", "table": "LOAN_ACCOUNT", "target_columns": ["STATUS"]}],
         "reconciliation": {"status": "MATCHED"},
         "coverage": {"total_statements": 1},
         "quality": {"status": "PASS"},
@@ -208,10 +246,17 @@ def test_synthesize_serializes_compact_payload_without_transport_fields():
     assert '"coverage"' not in user_prompt
     assert '"quality"' not in user_prompt
     assert '"canonical_ir"' not in user_prompt
+    assert '"tables_read"' not in user_prompt
+    assert '"tables_written"' not in user_prompt
+    assert '"statement_provenance"' not in user_prompt
+    assert '"chunk_provenance"' not in user_prompt
+    assert '"table_operations"' in user_prompt
     assert '"conditions":[{"condition":"overdue_days > 90"}]' in user_prompt
-    assert '"table_operations":[{"operation":"READ"}]' in user_prompt
-    assert '"statement_provenance":[{"statement_id":"stmt_1"}]' in user_prompt
-    assert '"chunk_provenance":[{"chunk_id":"chunk_1"}]' in user_prompt
+    # Deduplicated shape: table/operation plus the union of columns and
+    # the distinct predicates actually used, not the raw per-statement dict.
+    assert '"table":"LOAN_ACCOUNT"' in user_prompt
+    assert '"operation":"READ"' in user_prompt
+    assert '"target_columns":["STATUS"]' in user_prompt
     assert '\n    "conditions"' not in user_prompt
     assert '\n      "conditions"' not in user_prompt
 
@@ -240,6 +285,55 @@ def test_synthesize_handles_malformed_json():
     assert result.parse_error != ""
     assert result.data["ambiguities"]  # fallback ambiguity note populated
     assert "manual review" in result.data["ambiguities"][0]
+
+
+def test_synthesize_recovers_json_wrapped_in_prose():
+    wrapped = (
+        "Here is the requested synthesis:\n"
+        "```json\n"
+        + VALID_SYNTHESIS_JSON
+        + "\n```\n"
+        "Please review the result."
+    )
+    agent = _make_agent(wrapped)
+    result = agent.synthesize(
+        object_name="obj",
+        object_type="PROCEDURE",
+        parameter_summary="none",
+        merged_extraction={},
+    )
+    assert result.parse_error == ""
+    assert len(result.data["business_rules"]) == 1
+    assert result.data["business_rules"][0]["action"].startswith("Classified as Standard")
+
+
+def test_synthesize_parse_failure_short_circuits_without_normalization(monkeypatch):
+    validate_calls = {"count": 0}
+    ground_calls = {"count": 0}
+
+    def _unexpected_validate(data):
+        validate_calls["count"] += 1
+        return data, []
+
+    def _unexpected_ground(*args, **kwargs):
+        ground_calls["count"] += 1
+        return []
+
+    monkeypatch.setattr("src.synthesis.rule_synthesizer.validate_synthesis_shape", _unexpected_validate)
+    monkeypatch.setattr("src.synthesis.rule_synthesizer.ground_business_rules_against_extraction", _unexpected_ground)
+
+    agent = _make_agent("this is not valid json at all {{{")
+    result = agent.synthesize(
+        object_name="classify_npa_and_provision",
+        object_type="PROCEDURE",
+        parameter_summary="p_account_id (IN NUMBER)",
+        merged_extraction={},
+    )
+
+    assert result.parse_error != ""
+    assert validate_calls["count"] == 0
+    assert ground_calls["count"] == 0
+    assert result.data["business_rules"] == []
 
 
 def test_synthesize_strips_markdown_fences():
@@ -288,6 +382,68 @@ def test_synthesize_missing_keys_default_safely():
     assert result.data["purpose_summary"] == "Only a summary provided."
     assert result.data["business_rules"] == []
     assert result.data["ambiguities"] == []
+
+
+def test_partial_synthesis_is_completed_from_assignment_evidence():
+    agent = _make_agent(json.dumps({"business_rules": []}))
+    extraction = {
+        "table_operations": [
+            {
+                "operation": "UPDATE",
+                "table": "ACCOUNT",
+                "target_columns": ["SMA_CLASS"],
+                "assigned_values": [{"column": "SMA_CLASS", "expression": "'SMA_1'"}],
+                "where_predicate": "DPD_MAX BETWEEN 31 AND 60",
+                "source_statement_id": "stmt_1",
+                "statement_id": "stmt_1",
+                "source_chunk_id": "chunk_1",
+                "source_statement_text": "UPDATE ACCOUNT SET SMA_CLASS='SMA_1' WHERE DPD_MAX BETWEEN 31 AND 60",
+                "source_location_status": "available",
+                "source_line_start": 10,
+                "source_line_end": 10,
+            },
+            {
+                "operation": "UPDATE",
+                "table": "ACCOUNT",
+                "target_columns": ["DPD_MAX"],
+                "assigned_values": [{"column": "DPD_MAX", "expression": "MAX(DPD_OVERDUE, DPD_OVERDRAWN)"}],
+                "where_predicate": "ACCOUNT_ID IS NOT NULL",
+                "statement_id": "stmt_2",
+                "source_chunk_id": "chunk_1",
+                "source_statement_text": "UPDATE ACCOUNT SET DPD_MAX=MAX(DPD_OVERDUE, DPD_OVERDRAWN)",
+                "source_location_status": "available",
+                "source_line_start": 11,
+                "source_line_end": 11,
+            },
+        ],
+        "chunk_provenance": [{"chunk_id": "chunk_1", "chunk_kind": "statement"}],
+        "statement_provenance": [{
+            "statement_id": "stmt_1",
+            "source_chunk_id": "chunk_1",
+            "source_line_start": 10,
+            "source_line_end": 10,
+            "source_location_status": "available",
+        }],
+        "exception_handling": [{"handler": "CATCH", "behavior": "records the error"}],
+    }
+
+    result = agent.synthesize(
+        object_name="account_proc",
+        object_type="PROCEDURE",
+        parameter_summary="none",
+        merged_extraction=extraction,
+        raw_source="UPDATE ACCOUNT SET SMA_CLASS='SMA_1' WHERE DPD_MAX BETWEEN 31 AND 60",
+    )
+
+    assert result.data["purpose_summary"]
+    assert result.data["step_by_step_flow"]
+    assert result.data["calculations"]
+    assert result.data["exception_handling_summary"]
+    rule = result.data["business_rules"][0]
+    assert rule["fields_affected"] == ["SMA_CLASS"]
+    assert rule["source_statement_ids"] == ["stmt_1"]
+    assert rule["evidence_spans"][0]["statement_id"] == "stmt_1"
+    assert "SMA_1" in rule["source_evidence"][0]
 
 
 def test_business_rule_provenance_fields_are_normalized():
@@ -931,17 +1087,23 @@ def test_report_formatter_surfaces_provenance_fields():
         extraction_guardrail_warnings=[],
     )
     assert "# obj — Business Logic Report" in report
-    assert "## Rule: overdue_days <= 90" in report
-    assert "## Rule: DPD_Max > 90" in report
+    assert "### R1 — overdue_days <= 90" in report
+    assert "### R2 — DPD_Max > 90" in report
     assert "**Applies to:**" in report
     assert "### Decision Logic" in report
+    assert "## Eligibility" not in report
+    assert "### Eligibility" not in report
+    assert "## Rule Priority" not in report
     assert "SMA-0" in report and "SMA-1" in report and "SMA-2" in report
-    assert "Business Rule Summary" in report
+    assert "## Data Touched" in report
+    assert "### In Simple Terms" not in report
+    assert "### Business Outcome" not in report
     assert "verification artifact rather than in this report" in report
-    assert "## Tables Read" in report
+    assert "## Data Touched" in report
+    assert "## Important Business Updates" not in report
     assert "1. 1." not in report
     assert "business rules / validations" not in report.lower()
-    assert "Dialect Confidence" in report
+    assert "**Dialect:** Oracle" in report
 
 
 def test_report_formatter_prefers_richer_business_rules_for_display():
@@ -958,7 +1120,7 @@ def test_report_formatter_prefers_richer_business_rules_for_display():
     assert chosen == raw_rules
 
 
-def test_report_formatter_collapses_split_negative_dpd_rules_for_display():
+def test_report_formatter_preserves_synthesized_rule_boundaries_for_display():
     rules = [
         {
             "rule_name": "Reset negative DPD_IntService to zero",
@@ -979,10 +1141,9 @@ def test_report_formatter_collapses_split_negative_dpd_rules_for_display():
     ]
 
     display_rules = ReportFormatterAgent()._display_business_rules(rules)
-    assert len(display_rules) == 1
-    assert display_rules[0]["rule_name"] == "Reset negative DPD values to zero"
-    assert "DPD_IntService" in display_rules[0]["eligibility"][0]
-    assert "DPD_NoCredit" in display_rules[0]["eligibility"][0]
+    assert len(display_rules) == 2
+    assert display_rules[0]["rule_name"] == "Reset negative DPD_IntService to zero"
+    assert display_rules[1]["rule_name"] == "Reset negative DPD_NoCredit to zero"
 
 
 def test_report_formatter_renders_single_decision_logic_row():
@@ -1000,3 +1161,241 @@ def test_report_formatter_derives_business_meaning_from_rule_name_when_needed():
         }
     )
     assert meaning == "The maximum DPD is calculated for the account."
+
+
+def test_synthesis_completeness_audit_reports_missing_deterministic_families_without_inventing_rules():
+    extraction = {
+        "conditions": [
+            {"condition": "DPD_Overdue < 0", "true_branch": "DPD_Overdue = 0"},
+            {"condition": "DPD_Max > 0", "true_branch": "SMA_CLASS = 'SMA_1'"},
+        ],
+        "calculations": [{"expression": "MAX(DPD_Overdue, DPD_Overdrawn) AS DPD_Max"}],
+        "table_operations": [
+            {"table": "PRO.CUSTOMERCAL", "operation": "UPDATE", "target_columns": ["FLGSMA"]},
+            {"table": "PRO.SMA_MOVEMENT_HISTORY", "operation": "INSERT", "target_columns": []},
+        ],
+    }
+    data = {"business_rules": [{"rule_name": "Assign SMA class", "action": "Classifies the account"}]}
+
+    RuleSynthesizerAgent._append_completeness_warnings(data, extraction)
+
+    assert len(data["business_rules"]) == 1
+    assert any("negative DPD reset" in item for item in data["ambiguities"])
+    assert any("DPD maximum calculation" in item for item in data["ambiguities"])
+    assert any("SMA flag assignment" in item for item in data["ambiguities"])
+
+
+def test_deterministic_completion_adds_only_executable_assignment_families_with_provenance():
+    extraction = {
+        "table_operations": [
+            {
+                "table": "#DPD",
+                "operation": "UPDATE",
+                "target_columns": ["DPD_Overdue"],
+                "where_predicate": "DPD_Overdue < 0",
+                "assigned_values": [{"column": "DPD_Overdue", "expression": "0"}],
+                "source_chunk_id": "chunk_1",
+                "statement_id": "stmt_1",
+                "source_file": "sample.sql",
+                "source_line_start": 10,
+                "source_line_end": 10,
+                "source_location_status": "available",
+                "statement_parse_status": "parsed",
+                "confidence": "high",
+                "active_status": "ACTIVE",
+            },
+            {
+                "table": "PRO.CUSTOMERCAL",
+                "operation": "UPDATE",
+                "target_columns": ["CustMoveDescription"],
+                "where_predicate": "SYSASSETCLASSALT_KEY = 1",
+                "assigned_values": [{"column": "CustMoveDescription", "expression": "'STD'"}],
+                "source_chunk_id": "chunk_2",
+                "statement_id": "stmt_2",
+                "source_file": "sample.sql",
+                "source_line_start": 20,
+                "source_line_end": 20,
+                "source_location_status": "available",
+                "statement_parse_status": "parsed",
+                "confidence": "high",
+                "active_status": "ACTIVE",
+            },
+            {
+                "table": "BANDAUDITSTATUS",
+                "operation": "UPDATE",
+                "target_columns": ["CompletedCount"],
+                "where_predicate": "BandName = 'ASSET CLASSIFICATION'",
+                "source_chunk_id": "commented",
+                "statement_id": "commented_1",
+                "active_status": "COMMENTED",
+            },
+        ]
+    }
+
+    rules = RuleSynthesizerAgent._augment_rules_from_executable_operations([], extraction)
+
+    assert {rule["rule_name"] for rule in rules} == {
+        "Reset negative DPD values to zero",
+        "Assign customer movement description by key",
+    }
+    reset = next(rule for rule in rules if rule["rule_name"].startswith("Reset"))
+    assert reset["source_chunks"] == ["chunk_1"]
+    assert reset["technical_references"] == ["stmt_1"]
+    assert reset["evidence_spans"][0]["line_start"] == 10
+    movement = next(rule for rule in rules if rule["rule_name"].startswith("Assign customer"))
+    assert movement["decision_logic_rows"] == [
+        {"condition": "SYSASSETCLASSALT_KEY = 1", "outcome": "STD", "field": "CustMoveDescription"}
+    ]
+
+
+def test_deterministic_completion_keeps_history_as_technical_lineage():
+    def op(table, statement_id, columns, assigned=None):
+        return {
+            "table": table,
+            "operation": "UPDATE" if assigned else "INSERT",
+            "target_columns": columns,
+            "assigned_values": assigned or [],
+            "source_chunk_id": "chunk_1",
+            "statement_id": statement_id,
+            "source_file": "sample.sql",
+            "source_line_start": 10,
+            "source_line_end": 12,
+            "source_location_status": "available",
+            "statement_parse_status": "parsed",
+            "confidence": "high",
+            "active_status": "ACTIVE",
+        }
+
+    extraction = {
+        "table_operations": [
+            op(
+                "PRO.AccountCal",
+                "clear_account",
+                ["SMA_CLASS", "SMA_REASON", "SMA_DT", "FLGSMA"],
+                [{"column": "SMA_CLASS", "expression": "NULL"}],
+            ),
+            op(
+                "PRO.ACCOUNT_MOVEMENT_HISTORY",
+                "account_history",
+                ["MovementFromStatus", "EffectiveToTimeKey"],
+            ),
+            op(
+                "PRO.CUSTOMER_MOVEMENT_HISTORY",
+                "customer_history",
+                ["MovementToStatus", "EffectiveToTimeKey"],
+            ),
+        ]
+    }
+
+    rules = RuleSynthesizerAgent._augment_rules_from_executable_operations([], extraction)
+
+    assert {rule["rule_name"] for rule in rules} == {"Clear SMA fields before reprocessing"}
+    clear = next(rule for rule in rules if rule["rule_name"].startswith("Clear"))
+    assert clear["fields_affected"] == ["SMA_CLASS", "SMA_REASON", "SMA_DT", "FLGSMA"]
+    assert clear["evidence_spans"][0]["statement_id"] == "clear_account"
+
+
+def test_operational_process_status_is_not_promoted_to_business_rule():
+    rules = [
+        {
+            "rule_name": "Update process status on completion",
+            "action": "Update the running process status on completion or failure",
+            "fields_affected": ["COMPLETED", "ERRORDESCRIPTION", "COUNT"],
+        },
+        {
+            "rule_name": "Assign SMA class",
+            "action": "Assign the SMA classification",
+            "fields_affected": ["SMA_CLASS"],
+        },
+    ]
+    context = {
+        "table_operations": [
+            {"table": "PRO.ACLRUNNINGPROCESSSTATUS", "operation": "UPDATE"}
+        ]
+    }
+
+    filtered = RuleSynthesizerAgent._remove_operational_status_rules(rules, context)
+
+    assert [rule["rule_name"] for rule in filtered] == ["Assign SMA class"]
+
+
+def test_deterministic_completion_recognizes_qualified_dpd_fields_and_max_calculation():
+    extraction = {
+        "table_operations": [
+            {
+                "table": "#DPD",
+                "operation": "UPDATE",
+                "target_columns": ["A.DPD_StockStmt"],
+                "where_predicate": "isnull(DPD_StockStmt,0)<0",
+                "assigned_values": [{"column": "A.DPD_StockStmt", "expression": "0"}],
+                "source_chunk_id": "chunk_reset",
+                "statement_id": "stmt_reset",
+                "active_status": "ACTIVE",
+            },
+            {
+                "table": "#DPD",
+                "operation": "UPDATE",
+                "target_columns": ["A.DPD_Max"],
+                "assigned_values": [{"column": "A.DPD_Max", "expression": "CASE WHEN A.DPD_Overdue >= A.DPD_NoCredit THEN A.DPD_Overdue ELSE A.DPD_NoCredit END"}],
+                "source_chunk_id": "chunk_max",
+                "statement_id": "stmt_max",
+                "active_status": "ACTIVE",
+            },
+        ]
+    }
+
+    rules = RuleSynthesizerAgent._augment_rules_from_executable_operations([], extraction)
+
+    assert {rule["rule_name"] for rule in rules} == {
+        "Reset negative DPD values to zero",
+        "Calculate maximum DPD for account",
+    }
+    reset = next(rule for rule in rules if rule["rule_name"].startswith("Reset"))
+    assert reset["fields_affected"] == ["DPD_StockStmt"]
+    maximum = next(rule for rule in rules if rule["rule_name"].startswith("Calculate"))
+    assert maximum["technical_references"] == ["stmt_max"]
+
+
+def test_synthesis_family_canonicalization_deduplicates_wrapped_branch_rows():
+    rules = [
+        {
+            "rule_name": "Assign customer movement description by key",
+            "output_field": "CustMoveDescription",
+            "decision_logic_rows": [
+                {"condition": "KEY = 1", "outcome": "assigned value from source statement"},
+                {"condition": "KEY=1 IF OBJECT_ID('TEMPDB..#T') IS NOT NULL DROP TABLE #T", "outcome": "STD"},
+            ],
+        }
+    ]
+
+    normalized = RuleSynthesizerAgent._canonicalize_synthesis_families(rules, {})
+
+    assert normalized[0]["decision_logic_rows"] == [{"condition": "KEY=1", "outcome": "STD"}]
+
+
+def test_formatter_preserves_dynamic_synthesis_values_without_reference_fallbacks():
+    formatter = ReportFormatterAgent()
+    synthesis = SynthesisResult(
+        data={
+            "purpose_summary": "Reconciles inventory quantities for the supplied warehouse.",
+            "step_by_step_flow": ["Read warehouse stock", "Update inventory balance"],
+            "business_rules": [],
+        }
+    )
+    ingestion = type(
+        "Ingestion",
+        (),
+        {
+            "object_name": "INVENTORY_PROC",
+            "canonical_object_name": "INVENTORY_PROC",
+            "object_type": "PROCEDURE",
+            "dialect": "tsql",
+            "parameters": [],
+            "parse_warnings": [],
+            "raw_code": "",
+        },
+    )()
+    report = formatter.format(ingestion, {}, synthesis)
+    assert "Reconciles inventory quantities" in report
+    assert "Read warehouse stock" in report
+    assert "SMA-0" not in report

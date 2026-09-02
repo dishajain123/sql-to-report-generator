@@ -77,7 +77,9 @@ class PersistentLLMResponseCache:
         path: str | Path | None = None,
         enabled: Optional[bool] = None,
     ) -> None:
-        self.enabled = _env_flag("LLM_RESPONSE_CACHE_ENABLED", default=True) if enabled is None else bool(enabled)
+        # Cache is opt-in unless explicitly enabled in the environment. This
+        # prevents stale local responses from silently replacing fresh runs.
+        self.enabled = _env_flag("LLM_RESPONSE_CACHE_ENABLED", default=False) if enabled is None else bool(enabled)
         self.path = self._resolve_path(path)
         self._lock = threading.Lock()
         self._schema_ready = False
@@ -183,4 +185,3 @@ class PersistentLLMResponseCache:
             return True
         except Exception:  # pragma: no cover - exercised in failure-safety tests
             return False
-

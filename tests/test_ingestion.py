@@ -642,40 +642,48 @@ def test_regex_fallback_captures_insert_and_delete(monkeypatch):
 
 
 def test_table_sections_do_not_turn_missing_predicates_into_filters():
-    report = ReportFormatterAgent()._tables_read(
-        {
-            "tables_read": [
-                {
-                    "statement_id": "00_main_body:stmt_01",
-                    "table": "SYSDAYMATRIX",
-                    "table_alias": "",
-                    "target_columns": ["DATE"],
-                    "source_columns": ["TIMEKEY"],
-                    "where_predicate": "TIMEKEY = @TIMEKEY",
-                    "join_predicates": [],
-                    "exists_predicates": [],
-                    "constants": ["@TIMEKEY"],
-                    "active_status": "ACTIVE",
-                    "provenance": {"chunk_id": "00_main_body", "chunk_kind": "main_body"},
-                },
-                {
-                    "statement_id": "00_main_body:stmt_02",
-                    "table": "#DPD",
-                    "table_alias": "A",
-                    "target_columns": ["DPD_IntService"],
-                    "source_columns": ["DPD_IntService"],
-                    "where_predicate": "",
-                    "join_predicates": [],
-                    "exists_predicates": [],
-                    "constants": [],
-                    "active_status": "ACTIVE",
-                    "provenance": {"chunk_id": "00_main_body", "chunk_kind": "main_body"},
-                },
-            ]
-        }
+    fmt = ReportFormatterAgent()
+    consolidated_reads = fmt._consolidate_rows(
+        [
+            {
+                "statement_id": "00_main_body:stmt_01",
+                "table": "SYSDAYMATRIX",
+                "table_alias": "",
+                "operation": "READ",
+                "target_columns": ["DATE"],
+                "source_columns": ["TIMEKEY"],
+                "where_predicate": "TIMEKEY = @TIMEKEY",
+                "join_predicates": [],
+                "exists_predicates": [],
+                "constants": ["@TIMEKEY"],
+                "active_status": "ACTIVE",
+                "provenance": {"chunk_id": "00_main_body", "chunk_kind": "main_body"},
+            },
+            {
+                "statement_id": "00_main_body:stmt_02",
+                # Not a temp table (no leading '#') so it isn't excluded
+                # from the business-facing "Data Touched" section - this
+                # specifically exercises the no-predicate fallback path.
+                "table": "PRO.DPD_WORK",
+                "table_alias": "A",
+                "operation": "READ",
+                "target_columns": ["DPD_IntService"],
+                "source_columns": ["DPD_IntService"],
+                "where_predicate": "",
+                "join_predicates": [],
+                "exists_predicates": [],
+                "constants": [],
+                "active_status": "ACTIVE",
+                "provenance": {"chunk_id": "00_main_body", "chunk_kind": "main_body"},
+            },
+        ]
     )
+    report = fmt._data_touched_section(consolidated_reads, [])
+    # No predicate was extracted for PRO.DPD_WORK - the formatter must
+    # never fabricate a trigger/filter phrase for it, only fall back to
+    # the columns touched (or "Not specified" if there are none either).
     assert "Always, on each execution" not in report
-    assert "None" in report
+    assert "Touches: DPD_IntService" in report
 
 
 def test_ingest_missing_file_raises(agent):

@@ -42,6 +42,57 @@ def _merge_extra(source: Dict[str, Any], consumed_keys: Sequence[str]) -> Dict[s
     return {key: value for key, value in source.items() if key not in consumed}
 
 
+def _order_business_rules_by_execution_order(
+    business_rules: List["BusinessRuleIR"], statements: List["StatementIR"]
+) -> List["BusinessRuleIR"]:
+    """Order rules by where their evidence first appears in the source
+    file, instead of leaving them in whatever order the synthesis LLM
+    happened to return them.
+
+    Purely deterministic - no LLM judgment involved. For each rule, take
+    the smallest known source line number across:
+      1. the rule's own `evidence_spans[*].line_start` (set during output
+         guardrail grounding), then
+      2. the source line of any statement whose chunk_id matches one of
+         the rule's `source_chunks`.
+    Rules for which no line number can be resolved (e.g. no evidence
+    spans and no matching statement - genuinely rare, but possible for a
+    rule synthesized from cross-chunk reasoning) keep their original
+    relative order and sort after every rule with a known position, so
+    nothing is ever dropped or arbitrarily reordered on missing data.
+    """
+    chunk_first_line: Dict[str, int] = {}
+    for statement in statements:
+        line = statement.source_line_start
+        if line is None or line < 0:
+            continue
+        chunk_id = statement.source_chunk_id
+        if not chunk_id:
+            continue
+        if chunk_id not in chunk_first_line or line < chunk_first_line[chunk_id]:
+            chunk_first_line[chunk_id] = line
+
+    _UNKNOWN = float("inf")
+
+    def _rule_line(rule: "BusinessRuleIR") -> float:
+        candidates: List[int] = []
+        for span in rule.evidence_spans:
+            if span.line_start is not None and span.line_start >= 0:
+                candidates.append(span.line_start)
+        for chunk_ref in rule.source_chunks:
+            # source_chunks entries look like "<chunk_id>:<chunk_kind>" -
+            # only the chunk_id portion (before the first colon) matches
+            # StatementIR.source_chunk_id.
+            chunk_id = str(chunk_ref).split(":", 1)[0]
+            if chunk_id in chunk_first_line:
+                candidates.append(chunk_first_line[chunk_id])
+        return min(candidates) if candidates else _UNKNOWN
+
+    indexed = list(enumerate(business_rules))
+    indexed.sort(key=lambda pair: (_rule_line(pair[1]), pair[0]))
+    return [rule for _, rule in indexed]
+
+
 def _filter_none(mapping: Dict[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in mapping.items() if value not in (None, "", [], {}, ())}
 
@@ -548,6 +599,7 @@ class CanonicalBusinessIR:
         table_operations = [TableOperationIR.from_dict(item) for item in deduped_table_rows]
 
         business_rules = [BusinessRuleIR.from_dict(item) for item in _dict_list(synthesis.data.get("business_rules"))]
+        business_rules = _order_business_rules_by_execution_order(business_rules, statements)
         calculations = [dict(item) for item in _dict_list(synthesis.data.get("calculations"))]
         exceptions = _string_list(synthesis.data.get("exception_handling_summary"))
         ambiguities = _string_list(merged_extraction.get("ambiguities")) + _string_list(synthesis.data.get("ambiguities"))

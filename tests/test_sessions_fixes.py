@@ -286,41 +286,67 @@ def test_escape_table_cell_neutralizes_pipes_newlines_and_backticks():
     assert "`" not in escaped
 
 
-def test_table_read_row_with_embedded_pipe_and_newline_does_not_break_table():
-    merged_extraction = {
-        "tables_read": [
+def test_data_touched_row_with_embedded_pipe_and_newline_does_not_break_table():
+    # "Data Touched" (src/output/report_formatter.py) replaced the old,
+    # duplicated "Important Business Updates" + "Tables Read" / "Tables
+    # Written" sections with a single deduplicated table - see report
+    # design notes. It's driven by `_consolidate_rows` output rather than
+    # raw tables_read/tables_written dicts directly.
+    fmt = ReportFormatterAgent()
+    consolidated_reads = fmt._consolidate_rows(
+        [
             {
                 "table": "SYSDAYMATRIX",
                 "target_columns": ["DATE"],
                 "where_predicate": "TIMEKEY = @TIMEKEY | LEGACY\nAND FLAG = 1",
+                "operation": "READ",
             }
-        ],
-        "tables_written": [],
-    }
-    report = ReportFormatterAgent()._tables_read(merged_extraction)
+        ]
+    )
+    report = fmt._data_touched_section(consolidated_reads, [])
     assert _no_broken_table_rows(report)
     assert "\\|" in report  # pipe survived, escaped
 
 
 def test_large_table_is_split_with_repeated_headers_and_no_rows_lost():
-    tables_read = [
-        {"table": f"PRO.TABLE_{i}", "target_columns": ["COL_A"], "where_predicate": "X = 1"}
-        for i in range(75)
-    ]
-    report = ReportFormatterAgent()._tables_read({"tables_read": tables_read, "tables_written": []})
+    fmt = ReportFormatterAgent()
+    consolidated_reads = fmt._consolidate_rows(
+        [
+            {"table": f"PRO.TABLE_{i}", "target_columns": ["COL_A"], "where_predicate": "X = 1", "operation": "READ"}
+            for i in range(75)
+        ]
+    )
+    report = fmt._data_touched_section(consolidated_reads, [])
     assert _no_broken_table_rows(report)
     assert "continued" in report
     # every table name must still be present somewhere in the split output
     for i in range(75):
         assert f"PRO.TABLE_{i}" in report
     # header line repeated more than once (split happened)
-    assert report.count("| Table Name | Key Columns | Filter Conditions |") > 1
+    assert report.count("| Table | Read/Write | Purpose |") > 1
 
 
 def test_small_table_is_not_split():
-    tables_read = [{"table": "PRO.ONE_TABLE", "target_columns": ["COL_A"], "where_predicate": ""}]
-    report = ReportFormatterAgent()._tables_read({"tables_read": tables_read, "tables_written": []})
+    fmt = ReportFormatterAgent()
+    consolidated_reads = fmt._consolidate_rows(
+        [{"table": "PRO.ONE_TABLE", "target_columns": ["COL_A"], "where_predicate": "", "operation": "READ"}]
+    )
+    report = fmt._data_touched_section(consolidated_reads, [])
     assert "continued" not in report
+
+
+def test_data_touched_omits_temp_working_tables_but_notes_the_omission():
+    fmt = ReportFormatterAgent()
+    consolidated_reads = fmt._consolidate_rows(
+        [
+            {"table": "#DPD", "target_columns": ["X"], "operation": "READ"},
+            {"table": "PRO.ACCOUNTCAL", "target_columns": ["Y"], "operation": "READ"},
+        ]
+    )
+    report = fmt._data_touched_section(consolidated_reads, [])
+    assert "#DPD" not in report
+    assert "PRO.ACCOUNTCAL" in report
+    assert "working/temporary table" in report
 
 
 def test_when_not_eligible_omitted_when_source_has_no_negative_path():
@@ -515,3 +541,48 @@ def test_business_rule_block_shows_compact_source_location():
     )
     assert "## Source Traceability" in verification
     assert "demo.sql \\| Lines 12-14 \\| Chunk 01_main \\| Statement STMT-01" in verification
+
+def test_find_write_only_temp_tables_flags_genuinely_dead_table():
+    from src.parsing.dedup import find_write_only_temp_tables
+
+    table_operations = [
+        {"table": "#DEAD", "operation": "INSERT", "source_statement_text": "SELECT 1 INTO #DEAD"},
+    ]
+    raw_source = (
+        "IF OBJECT_ID('TEMPDB..#DEAD') IS NOT NULL\n"
+        "   DROP TABLE #DEAD\n"
+        "SELECT 1 INTO #DEAD\n"
+    )
+    assert find_write_only_temp_tables(table_operations, raw_source=raw_source) == ["#DEAD"]
+
+
+def test_find_write_only_temp_tables_does_not_flag_table_read_via_missed_join():
+    """Regression test for a real false positive found while validating
+    against a production sample: a temp table read only inside an
+    `UPDATE ... FROM ... JOIN` clause that a statement-boundary edge case
+    merged with a following `IF EXISTS (...)` block, so the structural
+    parser never emitted a READ record for it. The table is still
+    written-only per `table_operations`, but its name appears again in
+    the raw source outside of its own creation boilerplate - that must
+    be enough to keep it off the confident "dead code" list.
+    """
+    from src.parsing.dedup import find_write_only_temp_tables
+
+    table_operations = [
+        {
+            "table": "#ALIVE",
+            "operation": "INSERT",
+            "source_statement_text": "SELECT A.ID INTO #ALIVE FROM SOURCE_TABLE A",
+        },
+    ]
+    raw_source = (
+        "IF OBJECT_ID('TEMPDB..#ALIVE') IS NOT NULL\n"
+        "   DROP TABLE #ALIVE\n"
+        "SELECT A.ID INTO #ALIVE FROM SOURCE_TABLE A\n"
+        "UPDATE A SET A.X = B.Y FROM TARGET_TABLE A INNER JOIN #ALIVE B ON A.ID = B.ID\n"
+    )
+    # Structurally, only the write is known (the JOIN-read was missed) -
+    # but the raw-source cross-check must still exclude it.
+    structural_only = find_write_only_temp_tables(table_operations)
+    assert structural_only == ["#ALIVE"]
+    assert find_write_only_temp_tables(table_operations, raw_source=raw_source) == []

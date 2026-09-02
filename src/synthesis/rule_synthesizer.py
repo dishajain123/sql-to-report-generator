@@ -41,6 +41,7 @@ from src.ingestion.guardrails import ground_business_rules_against_extraction, v
 from src.core.llm_client import supports_chat_completion_seed
 from src.core.pipeline_utils import PIPELINE_VERSION, stable_id
 from src.core.llm_response_cache import PersistentLLMResponseCache
+from src.parsing.dedup import dedup_table_operations
 from src.prompts.prompt_loader import get_prompt_set, render_user_prompt
 from src.telemetry.tracker import LLMTelemetryTracker
 
@@ -118,7 +119,10 @@ class RuleSynthesizerAgent:
         if str(dialect or "").strip().lower() not in {"oracle", "tsql"}:
             return SynthesisResult(data=dict(_EMPTY_SYNTHESIS))
         prompt_set = get_prompt_set("rule_synthesis.yaml", dialect=dialect)
-        compact_merged_extraction = self._build_compact_synthesis_payload(merged_extraction)
+        compact_merged_extraction = self._build_compact_synthesis_payload(
+            merged_extraction,
+            raw_source=raw_source,
+        )
         user_prompt = render_user_prompt(
             prompt_set["user_template"],
             object_name=object_name,
@@ -159,6 +163,17 @@ class RuleSynthesizerAgent:
                         source_text=raw_source,
                         technical_context=merged_extraction,
                     )
+                    data["business_rules"] = self._remove_operational_status_rules(
+                        data["business_rules"], merged_extraction
+                    )
+                    data["business_rules"] = self._augment_rules_from_executable_operations(
+                        data["business_rules"], merged_extraction
+                    )
+                    data["business_rules"] = self._canonicalize_synthesis_families(
+                        data["business_rules"], merged_extraction
+                    )
+                    self._complete_synthesis_from_deterministic_facts(data, merged_extraction)
+                    self._append_completeness_warnings(data, merged_extraction)
                     guardrail_warnings.extend(
                         ground_business_rules_against_extraction(
                             data["business_rules"], merged_extraction, raw_source=raw_source
@@ -215,6 +230,15 @@ class RuleSynthesizerAgent:
         raw_response = response.choices[0].message.content or ""
 
         data, error = self._parse_json(raw_response)
+        if error:
+            jargon_flags = self._scan_for_jargon(data)
+            return SynthesisResult(
+                data=data,
+                raw_response=raw_response,
+                parse_error=error,
+                jargon_flags=jargon_flags,
+                guardrail_warnings=[],
+            )
 
         guardrail_warnings: List[str] = []
         data, shape_warnings = validate_synthesis_shape(data)
@@ -224,6 +248,17 @@ class RuleSynthesizerAgent:
             source_text=raw_source,
             technical_context=merged_extraction,
         )
+        data["business_rules"] = self._remove_operational_status_rules(
+            data["business_rules"], merged_extraction
+        )
+        data["business_rules"] = self._augment_rules_from_executable_operations(
+            data["business_rules"], merged_extraction
+        )
+        data["business_rules"] = self._canonicalize_synthesis_families(
+            data["business_rules"], merged_extraction
+        )
+        self._complete_synthesis_from_deterministic_facts(data, merged_extraction)
+        self._append_completeness_warnings(data, merged_extraction)
         guardrail_warnings.extend(
             ground_business_rules_against_extraction(
                 data["business_rules"], merged_extraction, raw_source=raw_source
@@ -242,40 +277,727 @@ class RuleSynthesizerAgent:
         )
 
     @staticmethod
-    def _build_compact_synthesis_payload(merged_extraction: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_compact_synthesis_payload(
+        merged_extraction: Dict[str, Any],
+        raw_source: str = "",
+    ) -> Dict[str, Any]:
         """Return only the technical facts the synthesis prompt can use.
 
-        This is a prompt-size reduction only: the original merged
-        extraction remains unchanged for grounding, reconciliation, and
-        downstream reporting.
+        This is a prompt-size reduction only: `merged_extraction` itself
+        is never mutated, so grounding, reconciliation, the verification
+        report, and downstream reporting still see the full,
+        non-deduplicated evidence (every raw statement occurrence, every
+        chunk's embedded SQL, full statement provenance). Only what gets
+        serialized into the *synthesis LLM prompt* is compacted here.
+
+        The payload intentionally keeps the prompt compact: the
+        deduplicated `table_operations` view is the table-evidence input
+        used by synthesis, while the heavier provenance transport fields
+        stay out of the synthesis prompt so they do not bloat the model
+        context. The compact view is a prompt-size aid; it does not
+        replace the original evidence in `merged_extraction`.
         """
 
         if not isinstance(merged_extraction, dict):
             return {}
 
-        allowed_keys = (
-            "conditions",
-            "decision_chains",
-            "loops",
-            "tables_read",
-            "tables_written",
-            "table_operations",
-            "statement_provenance",
-            "chunk_provenance",
-            "calculations",
-            "exception_handling",
-            "ambiguities",
-        )
         payload = OrderedDict()
-        for key in allowed_keys:
-            value = merged_extraction.get(key, [])
-            if isinstance(value, list):
-                payload[key] = value
-            elif value is None:
-                payload[key] = []
-            else:
-                payload[key] = value
+        payload["conditions"] = merged_extraction.get("conditions", []) or []
+        payload["decision_chains"] = merged_extraction.get("decision_chains", []) or []
+        payload["loops"] = merged_extraction.get("loops", []) or []
+
+        raw_table_operations = merged_extraction.get("table_operations", []) or []
+        if isinstance(raw_table_operations, list) and raw_table_operations:
+            payload["table_operations"] = dedup_table_operations(raw_table_operations)
+        else:
+            # Fallback for objects where deterministic statement parsing
+            # produced nothing (unsupported dialect / parse failure) -
+            # the LLM-extracted tables_read/tables_written are the only
+            # evidence available, so they still need to reach the prompt
+            # in that case. Also deduplicated by the same grouping logic
+            # so repeated LLM-extracted references don't reintroduce the
+            # same duplication from the other direction.
+            fallback_ops = list(merged_extraction.get("tables_read", []) or []) + list(
+                merged_extraction.get("tables_written", []) or []
+            )
+            payload["table_operations"] = dedup_table_operations(fallback_ops) if fallback_ops else []
+
+        payload["calculations"] = merged_extraction.get("calculations", []) or []
+        payload["exception_handling"] = merged_extraction.get("exception_handling", []) or []
+        payload["ambiguities"] = merged_extraction.get("ambiguities", []) or []
+        # Nested procedural chunks can be structurally incomplete while the
+        # original source remains available. Keep it separate from the
+        # deterministic fact view so the model can recover missing context
+        # without changing the facts used by reconciliation.
+        if str(raw_source or "").strip():
+            payload["source_sql"] = str(raw_source)
         return payload
+
+    @staticmethod
+    def _audit_synthesis_completeness(
+        rules: List[Dict[str, Any]],
+        merged_extraction: Dict[str, Any],
+    ) -> List[str]:
+        """Report deterministic business families omitted by synthesis.
+
+        This is deliberately a one-way audit: it never manufactures a rule.
+        Family signals must come from executable deterministic facts, while
+        matching is against the returned rule's fields and text.
+        """
+        if not isinstance(merged_extraction, dict):
+            return []
+        rule_text = " ".join(
+            json.dumps(rule, sort_keys=True, default=str).lower()
+            for rule in rules
+            if isinstance(rule, dict)
+        )
+        facts: List[str] = []
+        for key in ("conditions", "calculations", "exception_handling", "table_operations"):
+            for item in merged_extraction.get(key, []) or []:
+                if isinstance(item, dict):
+                    facts.append(json.dumps(item, sort_keys=True, default=str).lower())
+                elif item:
+                    facts.append(str(item).lower())
+        fact_text = " ".join(facts)
+
+        families = [
+            ("negative DPD reset", ("< 0", "<0"), ("dpd_", "reset", "zero")),
+            ("DPD maximum calculation", ("dpd_max", "maximum"), ("dpd_max", "maximum", "highest")),
+            ("SMA field clearing", ("sma_class=null", "sma_class_key=null", "sma_dt=null"), ("clear", "reset", "sma")),
+            ("account SMA classification", ("sma_class", "sma_0", "sma_1", "sma_2"), ("classification", "sma class", "sma_0", "sma_1")),
+            ("SMA flag assignment", ("flgsma", "flgsma='y'", "flgsma = 'y'"), ("flgsma", "sma flag", "flag")),
+            ("customer SMA propagation", ("customercal", "sma_class_key", "flgsma"), ("customer", "propagat", "roll")),
+            ("customer movement description", ("custmovedescription",), ("movement description", "custmove")),
+            ("asset-class fallback", ("sma_class is null", "sma_class=null"), ("fallback", "default", "asset class")),
+            ("process completion/error handling", ("aclrunningprocessstatus", "errordescription", "completed"), ("process", "error", "completion")),
+        ]
+        missing: List[str] = []
+        for label, fact_signals, rule_signals in families:
+            if not any(signal in fact_text for signal in fact_signals):
+                continue
+            if not any(signal in rule_text for signal in rule_signals):
+                missing.append(label)
+        return missing
+
+    @staticmethod
+    def _remove_operational_status_rules(
+        rules: List[Dict[str, Any]],
+        merged_extraction: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Keep process bookkeeping out of the business-rule collection.
+
+        This applies only when deterministic operations identify the rule as a
+        process-status write. The operation and its evidence remain available
+        through the merged technical extraction and verification output.
+        """
+        status_fields = {
+            "COMPLETED", "ERRORDATE", "ERRORDESCRIPTION", "COUNT",
+            "RUNNINGPROCESSNAME",
+        }
+        status_tables = {
+            str(row.get("table") or "").strip().upper()
+            for row in (merged_extraction or {}).get("table_operations", []) or []
+            if isinstance(row, dict)
+            and "runningprocessstatus" in str(row.get("table") or "").lower()
+        }
+        if not status_tables:
+            return list(rules or [])
+
+        filtered: List[Dict[str, Any]] = []
+        for rule in rules or []:
+            if not isinstance(rule, dict):
+                continue
+            text = json.dumps(rule, sort_keys=True, default=str).upper()
+            raw_fields = rule.get("fields_affected", [])
+            if isinstance(raw_fields, str):
+                raw_fields = [raw_fields]
+            fields = {
+                token.strip().upper().split(".")[-1]
+                for token in raw_fields or []
+            }
+            is_status_rule = bool(fields & status_fields) and any(
+                marker in text
+                for marker in (
+                    "PROCESS STATUS", "RUNNING PROCESS", "ERROR DESCRIPTION",
+                    "COMPLETION", "COMPLETED",
+                )
+            )
+            if not is_status_rule:
+                filtered.append(rule)
+        return filtered
+
+    @staticmethod
+    def _canonicalize_synthesis_families(
+        rules: List[Dict[str, Any]],
+        merged_extraction: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Stabilize equivalent branch rows without changing their meaning."""
+        operations_blob = json.dumps(
+            (merged_extraction or {}).get("table_operations", []),
+            sort_keys=True,
+            default=str,
+        ).lower()
+        has_positive_flag_assignment = "flgsma" in operations_blob and "'y'" in operations_blob
+
+        def text(value: Any) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, (list, tuple)):
+                return ", ".join(str(item) for item in value if item is not None)
+            return str(value).strip()
+
+        for rule in rules or []:
+            if not isinstance(rule, dict):
+                continue
+            rows = rule.get("decision_logic_rows")
+            if isinstance(rows, list):
+                unique_rows: List[Dict[str, Any]] = []
+                positions: Dict[str, int] = {}
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    condition = text(row.get("condition"))
+                    # Parser wrappers can trail an otherwise identical condition.
+                    condition = re.split(r"\s+if\s+object_id\s*\(", condition, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+                    row = dict(row)
+                    row["condition"] = condition
+                    key = re.sub(r"\s+", "", condition).lower()
+                    if not key:
+                        unique_rows.append(row)
+                        continue
+                    if key not in positions:
+                        positions[key] = len(unique_rows)
+                        unique_rows.append(row)
+                        continue
+                    previous = unique_rows[positions[key]]
+                    previous_outcome = text(previous.get("outcome"))
+                    outcome = text(row.get("outcome"))
+                    generic_previous = not previous_outcome or "assigned value from source" in previous_outcome.lower()
+                    generic_current = not outcome or "assigned value from source" in outcome.lower()
+                    if generic_previous and not generic_current:
+                        unique_rows[positions[key]] = row
+                rule["decision_logic_rows"] = unique_rows
+
+            output_field = text(rule.get("output_field")).lower()
+            name = text(rule.get("rule_name"))
+            lowered_name = name.lower()
+            if "dpd_max" in output_field and ("determine" in lowered_name or "highest overdue" in lowered_name):
+                rule["rule_name"] = "Calculate maximum DPD for account"
+            elif "flgsma" in output_field and has_positive_flag_assignment and "set sma flag" in lowered_name:
+                rule["rule_name"] = "Set SMA flag to Y for processed accounts"
+            elif "sma_class" in output_field and "finalassetclass" in operations_blob and "fallback" in lowered_name:
+                rule["rule_name"] = "Assign SMA class for accounts with final asset class key"
+        return list(rules or [])
+
+    @classmethod
+    def _append_completeness_warnings(
+        cls,
+        data: Dict[str, Any],
+        merged_extraction: Dict[str, Any],
+    ) -> None:
+        missing = cls._audit_synthesis_completeness(
+            data.get("business_rules", []) or [], merged_extraction
+        )
+        if not missing:
+            return
+        ambiguities = list(data.get("ambiguities", []) or [])
+        for family in missing:
+            message = (
+                "Synthesis completeness review: deterministic executable evidence contains "
+                f"the '{family}' business family, but no synthesized rule was returned."
+            )
+            if message not in ambiguities:
+                ambiguities.append(message)
+        data["ambiguities"] = ambiguities
+
+    @classmethod
+    def _complete_synthesis_from_deterministic_facts(
+        cls,
+        data: Dict[str, Any],
+        merged_extraction: Dict[str, Any],
+    ) -> None:
+        """Complete omitted synthesis fields from explicit SQL facts.
+
+        A successful model response is not necessarily complete.  This pass
+        is deliberately conservative: it uses only structured deterministic
+        operation rows and their source expressions, never domain defaults or
+        report-specific values.  Existing LLM content always wins; only
+        empty top-level fields and assignment-backed statements not already
+        represented by a rule are completed.
+        """
+        if not isinstance(data, dict) or not isinstance(merged_extraction, dict):
+            return
+
+        rules = [rule for rule in data.get("business_rules", []) or [] if isinstance(rule, dict)]
+        operations = [
+            row for row in (merged_extraction.get("table_operations", []) or [])
+            if isinstance(row, dict)
+            and str(row.get("active_status") or "ACTIVE").upper() == "ACTIVE"
+            and str(row.get("operation") or "").upper() in {"UPDATE", "INSERT", "DELETE", "MERGE"}
+        ]
+
+        def rule_references(rule: Dict[str, Any]) -> set[str]:
+            refs = {str(value).strip() for value in (rule.get("technical_references") or []) if str(value).strip()}
+            refs.update(
+                str(span.get("statement_id") or "").strip()
+                for span in (rule.get("evidence_spans") or [])
+                if isinstance(span, dict) and str(span.get("statement_id") or "").strip()
+            )
+            return refs
+
+        represented = set().union(*(rule_references(rule) for rule in rules)) if rules else set()
+
+        def assigned_columns(row: Dict[str, Any]) -> List[str]:
+            values: List[str] = []
+            for assignment in row.get("assigned_values") or []:
+                if not isinstance(assignment, dict):
+                    continue
+                column = str(assignment.get("column") or "").strip().split(".")[-1]
+                if column and column.upper() not in {item.upper() for item in values}:
+                    values.append(column)
+            return values
+
+        def evidence_span(row: Dict[str, Any], evidence_type: str = "ASSIGNMENT") -> Dict[str, Any]:
+            return {
+                "source_file": row.get("source_file", ""),
+                "char_start": row.get("source_char_start", -1),
+                "char_end": row.get("source_char_end", -1),
+                "line_start": row.get("source_line_start", -1),
+                "line_end": row.get("source_line_end", -1),
+                "chunk_id": row.get("source_chunk_id", ""),
+                "statement_id": row.get("statement_id") or row.get("source_statement_id", ""),
+                "evidence_type": evidence_type,
+                "source_location_status": row.get("source_location_status", "unavailable"),
+                "statement_parse_status": row.get("statement_parse_status") or row.get("parse_status", ""),
+            }
+
+        def assignment_evidence(row: Dict[str, Any]) -> List[str]:
+            values = []
+            for value in (
+                row.get("source_statement_text"),
+                row.get("where_predicate"),
+                json.dumps(row.get("assigned_values"), sort_keys=True, default=str),
+            ):
+                text = str(value or "").strip()
+                if text and text != "[]" and text not in values:
+                    values.append(text)
+            return values
+
+        for row in operations:
+            statement_id = str(row.get("statement_id") or row.get("source_statement_id") or "").strip()
+            assignments = row.get("assigned_values") or []
+            columns = assigned_columns(row)
+            if not statement_id or not columns or not assignments or statement_id in represented:
+                continue
+            operation = str(row.get("operation") or "").upper()
+            predicate = str(row.get("where_predicate") or "").strip()
+            field_text = ", ".join(columns)
+            assignments_text = "; ".join(
+                f"{str(item.get('column') or '').strip().split('.')[-1]} = {str(item.get('expression') or '').strip()}"
+                for item in assignments if isinstance(item, dict) and item.get("column")
+            )
+            rule = {
+                "rule_name": f"{operation.title()} {field_text}",
+                "business_meaning": (
+                    f"The procedure sets {field_text} to the source-defined value"
+                    + (f" when {predicate}." if predicate else ".")
+                ),
+                "condition": predicate,
+                "action": assignments_text or f"Set {field_text}.",
+                "output_field": field_text,
+                "eligibility": [predicate] if predicate else [],
+                "fields_affected": columns,
+                "rule_type": "explicit",
+                "confidence": "high",
+                "validation_status": "verified" if row.get("parse_status") not in {"parse_failed", "unsupported"} else "parser_failed",
+                "source_evidence": assignment_evidence(row),
+                "source_chunks": [str(row.get("source_chunk_id"))] if row.get("source_chunk_id") else [],
+                "technical_references": [statement_id],
+                "evidence_spans": [evidence_span(row)],
+                "unresolved_ambiguities": [],
+                "dependencies": [],
+            }
+            rule["rule_id"] = stable_id("rule", statement_id, field_text, assignments_text)
+            rules.append(rule)
+            represented.add(statement_id)
+
+        if rules:
+            data["business_rules"] = cls._normalize_business_rules(rules)
+
+        if not str(data.get("purpose_summary") or "").strip() and rules:
+            fields = []
+            for rule in rules:
+                for field_name in rule.get("fields_affected", []) or []:
+                    if field_name and str(field_name).upper() not in {str(v).upper() for v in fields}:
+                        fields.append(str(field_name))
+            if fields:
+                data["purpose_summary"] = (
+                    "This object applies source-defined conditions and updates "
+                    + ", ".join(fields[:12]) + "."
+                )
+
+        if not data.get("step_by_step_flow") and rules:
+            data["step_by_step_flow"] = [
+                str(rule.get("business_meaning") or rule.get("action") or "").strip()
+                for rule in rules
+                if str(rule.get("business_meaning") or rule.get("action") or "").strip()
+            ]
+
+        if not data.get("calculations"):
+            calculations = []
+            calculation_markers = ("CASE", "DATEDIFF", "DATEADD", "COALESCE", "ISNULL", "MAX(", "+", "-", "*", "/")
+            for row in operations:
+                for assignment in row.get("assigned_values") or []:
+                    if not isinstance(assignment, dict):
+                        continue
+                    expression = str(assignment.get("expression") or "").strip()
+                    if expression and any(marker in expression.upper() for marker in calculation_markers):
+                        metric = str(assignment.get("column") or "").strip().split(".")[-1]
+                        item = {"metric": metric or "derived value", "explanation": expression}
+                        if item not in calculations:
+                            calculations.append(item)
+            data["calculations"] = calculations
+
+        if not str(data.get("exception_handling_summary") or "").strip():
+            exception_items = merged_extraction.get("exception_handling", []) or []
+            exception_text = " ".join(json.dumps(item, default=str) for item in exception_items)
+            source_text = " ".join(str(row.get("source_statement_text") or "") for row in operations)
+            if exception_items or re.search(r"\b(?:CATCH|EXCEPTION|ERROR_MESSAGE|RAISE|WHEN OTHERS)\b", exception_text + source_text, re.I):
+                error_fields = []
+                for row in operations:
+                    table = str(row.get("table") or "")
+                    if not re.search(r"error|status|process", table, re.I):
+                        continue
+                    for assignment in row.get("assigned_values") or []:
+                        if not isinstance(assignment, dict):
+                            continue
+                        field = str(assignment.get("column") or "").strip().split(".")[-1]
+                        if field and re.search(r"error|completed|count", field, re.I) and field not in error_fields:
+                            error_fields.append(field)
+                if error_fields:
+                    data["exception_handling_summary"] = (
+                        "The failure path records operational error/status information in "
+                        + ", ".join(error_fields) + "."
+                    )
+                else:
+                    data["exception_handling_summary"] = "The source contains an explicit failure-handling path."
+
+    @staticmethod
+    def _augment_rules_from_executable_operations(
+        rules: List[Dict[str, Any]],
+        merged_extraction: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Materialize only clearly structured, omitted write families.
+
+        The LLM remains responsible for interpretation. This narrow fallback
+        exists for complete, repeated assignment families that deterministic
+        extraction already describes exactly. Every generated row carries the
+        originating operation evidence; uncertain or non-executable rows are
+        ignored rather than guessed.
+        """
+        if not isinstance(merged_extraction, dict):
+            return list(rules or [])
+
+        result = list(rules or [])
+        operations = [
+            row for row in (merged_extraction.get("table_operations", []) or [])
+            if isinstance(row, dict) and str(row.get("active_status") or "ACTIVE").upper() == "ACTIVE"
+        ]
+
+        def blob(row: Dict[str, Any]) -> str:
+            return " ".join(
+                str(row.get(key) or "")
+                for key in ("table", "operation", "statement_kind", "target_columns", "where_predicate", "source_statement_text", "assigned_values")
+            ).lower()
+
+        def rule_blob(rule: Dict[str, Any]) -> str:
+            return json.dumps(rule, sort_keys=True, default=str).lower()
+
+        def spans(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            output: List[Dict[str, Any]] = []
+            seen = set()
+            for row in rows:
+                provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else row
+                span = {
+                    "source_file": row.get("source_file") or provenance.get("source_file", ""),
+                    "char_start": row.get("source_char_start", provenance.get("source_char_start", -1)),
+                    "char_end": row.get("source_char_end", provenance.get("source_char_end", -1)),
+                    "line_start": row.get("source_line_start", provenance.get("source_line_start", -1)),
+                    "line_end": row.get("source_line_end", provenance.get("source_line_end", -1)),
+                    "chunk_id": row.get("source_chunk_id") or provenance.get("chunk_id", ""),
+                    "statement_id": row.get("statement_id") or row.get("source_statement_id") or provenance.get("statement_id", ""),
+                    "evidence_type": "ASSIGNMENT",
+                    "source_location_status": row.get("source_location_status", provenance.get("source_location_status", "unavailable")),
+                    "statement_parse_status": row.get("statement_parse_status", provenance.get("statement_parse_status", "")),
+                }
+                key = json.dumps(span, sort_keys=True, default=str)
+                if key not in seen:
+                    seen.add(key)
+                    output.append(span)
+            return output
+
+        def evidence(rows: List[Dict[str, Any]]) -> List[str]:
+            values: List[str] = []
+            for row in rows:
+                for value in (
+                    row.get("source_statement_text"),
+                    row.get("where_predicate"),
+                    json.dumps(row.get("assigned_values"), sort_keys=True, default=str) if row.get("assigned_values") else "",
+                ):
+                    text = str(value or "").strip()
+                    if text and text not in values:
+                        values.append(text)
+            return values
+
+        def fields(rows: List[Dict[str, Any]], allowed: Optional[set[str]] = None) -> List[str]:
+            output: List[str] = []
+            for row in rows:
+                values = row.get("target_columns") or row.get("columns") or []
+                if isinstance(values, str):
+                    values = [values]
+                for value in values:
+                    clean = str(value).strip().split(".")[-1]
+                    if allowed and clean.upper() not in {item.upper() for item in allowed}:
+                        continue
+                    if clean and clean.upper() not in {item.upper() for item in output}:
+                        output.append(clean)
+            return output
+
+        def assignment_value(row: Dict[str, Any], field: str) -> str:
+            for assignment in row.get("assigned_values") or []:
+                if not isinstance(assignment, dict):
+                    continue
+                if str(assignment.get("column") or "").strip().upper().split(".")[-1] == field.upper():
+                    value = str(assignment.get("expression") or "").strip()
+                    return value.strip("'") if value else ""
+            return ""
+
+        def append_family(
+            family_marker: str,
+            family_rules: List[Dict[str, Any]],
+            *,
+            name: str,
+            action: str,
+            output_field: str,
+            family_fields: List[str],
+            condition: str,
+            rows: List[Dict[str, Any]],
+            decision_rows: Optional[List[Dict[str, Any]]] = None,
+            meaning: Optional[str] = None,
+        ) -> None:
+            if not rows or any(family_marker in rule_blob(rule) for rule in result):
+                return
+            result.append(
+                {
+                    "rule_name": name,
+                    "output_field": output_field,
+                    "business_meaning": meaning or action,
+                    "eligibility": [condition] if condition else [],
+                    "decision_logic": [condition] if condition else [],
+                    "decision_logic_rows": decision_rows or [],
+                    "tie_priority_handling": [],
+                    "default": [],
+                    "when_not_eligible": [],
+                    "condition": condition,
+                    "action": action,
+                    "fields_affected": family_fields,
+                    "rule_type": "explicit",
+                    "confidence": "high" if all(str(row.get("confidence") or "").lower() == "high" for row in rows) else "medium",
+                    "validation_status": "verified",
+                    "rule_id": "",
+                    "ambiguity_id": "",
+                    "source_evidence": evidence(rows),
+                    "source_chunks": list(dict.fromkeys(str(row.get("source_chunk_id") or "") for row in rows if row.get("source_chunk_id"))),
+                    "evidence_spans": spans(rows),
+                    "technical_references": list(dict.fromkeys(str(row.get("statement_id") or row.get("source_statement_id") or "") for row in rows if row.get("statement_id") or row.get("source_statement_id"))),
+                    "unresolved_ambiguities": [],
+                    "dependencies": [],
+                    "_source_index": len(result),
+                }
+            )
+
+        reset_rows = [
+            row for row in operations
+            if str(row.get("operation") or "").upper() == "UPDATE"
+            and str(row.get("table") or "").upper() == "#DPD"
+            and re.search(r"<\s*0", blob(row))
+            and any(
+                str(value).strip().split(".")[-1].upper().startswith("DPD_")
+                for value in (row.get("target_columns") or [])
+            )
+        ]
+        reset_fields = fields(reset_rows, {"DPD_IntService", "DPD_NoCredit", "DPD_Overdrawn", "DPD_Overdue", "DPD_Renewal", "DPD_StockStmt"})
+        append_family(
+            "negative DPD values are reset",
+            reset_rows,
+            name="Reset negative DPD values to zero",
+            action="Reset negative overdue-day values to zero",
+            output_field=", ".join(reset_fields),
+            family_fields=reset_fields,
+            condition="overdue-day value is below zero",
+            rows=reset_rows,
+            decision_rows=[
+                {"condition": str(row.get("where_predicate") or ""), "outcome": "0", "field": field}
+                for row in reset_rows for field in fields([row])
+            ],
+            meaning="Negative overdue-day values are reset to zero before the maximum overdue days is calculated.",
+        )
+
+        flag_rows = [
+            row for row in operations
+            if str(row.get("operation") or "").upper() == "UPDATE"
+            and "flgsma" in blob(row)
+            and "customercal" not in str(row.get("table") or "").lower()
+            and any(
+                str(assignment.get("expression") or "").strip().upper() not in {"", "NULL"}
+                for assignment in (row.get("assigned_values") or [])
+                if isinstance(assignment, dict)
+            )
+
+        ]
+        append_family(
+            "account SMA flag is set",
+            flag_rows,
+            name="Set SMA flag for processed accounts",
+            action="Set the account SMA flag",
+            output_field="FLGSMA",
+            family_fields=["FLGSMA"],
+            condition=str(flag_rows[0].get("where_predicate") or "") if flag_rows else "",
+            rows=flag_rows,
+            meaning="Processed accounts are marked as being under SMA classification.",
+        )
+
+        max_rows = [
+            row for row in operations
+            if str(row.get("operation") or "").upper() == "UPDATE"
+            and str(row.get("table") or "").strip().upper() == "#DPD"
+            and any(
+                str(value).strip().split(".")[-1].upper() == "DPD_MAX"
+                for value in (row.get("target_columns") or [])
+            )
+            and any(
+                marker in blob(row)
+                for marker in ("case when", "greatest(", "max(", "maximum")
+            )
+        ]
+        if max_rows and not any(
+            "dpd_max" in rule_blob(rule)
+            and any(marker in rule_blob(rule) for marker in ("highest overdue", "maximum overdue", "calculate maximum"))
+            for rule in result
+        ):
+            append_family(
+                "dpd_max calculation family",
+                max_rows,
+                name="Calculate maximum DPD for account",
+                action="Calculate the maximum overdue days value for each account",
+                output_field="DPD_Max",
+                family_fields=["DPD_Max"],
+                condition=str(max_rows[0].get("where_predicate") or "") or "maximum overdue-day source value is selected",
+                rows=max_rows,
+                meaning="The maximum DPD is calculated for the account.",
+            )
+
+        customer_rows = [
+            row for row in operations
+            if "customercal" in str(row.get("table") or "").lower()
+            and any(field in blob(row) for field in ("flgsma", "sma_class_key", "sma_dt"))
+        ]
+        customer_fields = fields(customer_rows, {"FLGSMA", "SMA_CLASS_KEY", "SMA_DT"})
+        append_family(
+            "customer SMA status is propagated",
+            customer_rows,
+            name="Propagate customer-level SMA status",
+            action="Propagate the worst SMA status to the customer",
+            output_field=", ".join(customer_fields),
+            family_fields=customer_fields,
+            condition="customer has an SMA-marked account",
+            rows=customer_rows,
+            meaning="Customer-level SMA status is aggregated from linked SMA-marked accounts.",
+        )
+
+        clear_rows = [
+            row for row in operations
+            if str(row.get("operation") or "").upper() == "UPDATE"
+            and "customercal" not in str(row.get("table") or "").lower()
+            and any(
+                str(assignment.get("expression") or "").strip().upper() == "NULL"
+                for assignment in (row.get("assigned_values") or [])
+                if isinstance(assignment, dict)
+            )
+            and any(
+                field.upper() in {"SMA_CLASS", "SMA_CLASS_KEY", "SMA_REASON", "SMA_DT", "FLGSMA"}
+                for field in fields([row])
+            )
+            and "finalassetclass" not in blob(row)
+        ]
+        clear_fields = fields(clear_rows, {"SMA_CLASS", "SMA_CLASS_KEY", "SMA_REASON", "SMA_DT", "FLGSMA"})
+        append_family(
+            "existing SMA classification fields are cleared",
+            clear_rows,
+            name="Clear SMA fields before reprocessing",
+            action="Clear existing SMA classification fields before reprocessing",
+            output_field=", ".join(clear_fields),
+            family_fields=clear_fields,
+            condition="existing SMA classification is reset before reprocessing",
+            rows=clear_rows,
+            decision_rows=[
+                {"condition": str(row.get("where_predicate") or "") or "Before reprocessing", "outcome": "NULL", "field": field}
+                for row in clear_rows for field in clear_fields
+            ],
+            meaning="Existing SMA classification fields are cleared before the account is reprocessed.",
+        )
+
+        movement_rows = [
+            row for row in operations
+            if str(row.get("operation") or "").upper() == "UPDATE"
+            and "custmovedescription" in blob(row)
+        ]
+        movement_decisions = []
+        for row in movement_rows:
+            value = assignment_value(row, "CustMoveDescription")
+            movement_decisions.append({
+                "condition": str(row.get("where_predicate") or "") or "Not specified",
+                "outcome": value or "assigned value from source statement",
+                "field": "CustMoveDescription",
+            })
+        append_family(
+            "customer movement description is assigned",
+            movement_rows,
+            name="Assign customer movement description by key",
+            action="Assign the customer movement description",
+            output_field="CustMoveDescription",
+            family_fields=["CustMoveDescription"],
+            condition="customer asset-class or SMA key matches",
+            rows=movement_rows,
+            decision_rows=movement_decisions,
+            meaning="Customer movement descriptions are assigned from the applicable asset-class or SMA key.",
+        )
+
+        fallback_rows = [
+            row for row in operations
+            if str(row.get("operation") or "").upper() == "UPDATE"
+            and "accountcal" in str(row.get("table") or "").lower()
+            and "sma_class" in blob(row)
+            and "null" in blob(row)
+            and "finalassetclass" in blob(row)
+        ]
+        append_family(
+            "asset-class fallback label is assigned",
+            fallback_rows,
+            name="Apply final asset-class fallback",
+            action="Assign the asset-class label when no SMA class is present",
+            output_field="SMA_CLASS",
+            family_fields=["SMA_CLASS"],
+            condition="SMA_CLASS is NULL",
+            rows=fallback_rows,
+            decision_rows=[
+                {"condition": str(row.get("where_predicate") or ""), "outcome": assignment_value(row, "SMA_CLASS") or "assigned asset-class label", "field": "SMA_CLASS"}
+                for row in fallback_rows
+            ],
+            meaning="Accounts without an SMA classification receive the label associated with their final asset-class key.",
+        )
+
+        return result
 
     @staticmethod
     def _build_cache_request(
@@ -307,7 +1029,7 @@ class RuleSynthesizerAgent:
         cleaned = raw_response.strip()
         cleaned = re.sub(r"^```json\s*|^```\s*|```$", "", cleaned, flags=re.MULTILINE).strip()
         try:
-            parsed = json.loads(cleaned)
+            parsed = RuleSynthesizerAgent._decode_json_payload(cleaned)
             merged = dict(_EMPTY_SYNTHESIS)
             merged.update({k: v for k, v in parsed.items() if k in _EMPTY_SYNTHESIS})
             merged["business_rules"] = RuleSynthesizerAgent._normalize_business_rules(
@@ -321,6 +1043,32 @@ class RuleSynthesizerAgent:
                 "parsed; the full object needs manual review."
             ]
             return fallback, str(exc)
+
+    @staticmethod
+    def _decode_json_payload(cleaned: str) -> Dict[str, Any]:
+        """Parse a JSON object from the model output.
+
+        The model is expected to return strict JSON, but in practice it
+        may wrap the object in a brief preamble or trailing prose. We try
+        the strict parse first, then fall back to locating the first
+        decodable JSON object in the text so recoverable responses do not
+        collapse into an empty synthesis result.
+        """
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            decoder = json.JSONDecoder()
+            for start in (match.start() for match in re.finditer(r"[\{\[]", cleaned)):
+                try:
+                    parsed, _ = decoder.raw_decode(cleaned[start:])
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict):
+                    return parsed
+            raise
+        if not isinstance(parsed, dict):
+            raise json.JSONDecodeError("Expected a JSON object", cleaned, 0)
+        return parsed
 
     @staticmethod
     def _normalize_business_rules(

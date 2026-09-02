@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.core.pipeline_utils import RunMetadata, attach_run_telemetry, run_metadata_to_dict
+from src.core.pipeline_utils import RunMetadata, attach_run_telemetry, prompt_version, run_metadata_to_dict
 from src.ingestion.ingestion import CodeChunk, IngestionResult
 from src.output.report_formatter import ReportFormatterAgent
 from src.synthesis.rule_synthesizer import SynthesisResult
@@ -194,3 +194,16 @@ def test_run_metadata_serializes_telemetry_and_verification_only():
     assert "LLM Telemetry" not in report
     assert "## LLM Telemetry" in verification
     assert "Total Tokens" in verification
+
+
+def test_prompt_version_reads_actual_src_prompts_directory(tmp_path):
+    src_prompts = tmp_path / "src" / "prompts"
+    src_prompts.mkdir(parents=True)
+    (src_prompts / "logic_extraction.yaml").write_text("system: {}\nuser_template: x\n", encoding="utf-8")
+    (src_prompts / "rule_synthesis.yaml").write_text("system: {}\nuser_template: y\n", encoding="utf-8")
+
+    version_1 = prompt_version(tmp_path)
+    (src_prompts / "rule_synthesis.yaml").write_text("system: {}\nuser_template: z\n", encoding="utf-8")
+    version_2 = prompt_version(tmp_path)
+
+    assert version_1 != version_2
