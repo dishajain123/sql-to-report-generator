@@ -134,7 +134,15 @@ def extract_nested_decision_chains(source: str) -> List[Dict[str, Any]]:
                 ) or "ELSE"
             else:
                 effective_condition = condition
-            path_condition = " AND ".join(parents + [effective_condition])
+            # An ELSE parent contributes no predicate of its own. Keeping the
+            # marker in a nested path produces invalid conditions such as
+            # ``ELSE AND child_condition`` and prevents structural matching
+            # against the synthesized branch. Preserve the ELSE branch at
+            # the level where it is rendered, but omit it from child paths.
+            path_parts = [item for item in parents if str(item).strip().upper() != "ELSE"]
+            if effective_condition.upper() != "ELSE":
+                path_parts.append(effective_condition)
+            path_condition = " AND ".join(path_parts) or "ELSE"
             if nested_paths:
                 for nested in nested_paths:
                     assignments = list(direct) + list(nested.get("assignments", []))

@@ -56,8 +56,15 @@ def _attach_calculation_destinations(
 ) -> List[Dict[str, Any]]:
     """Link existing calculation expressions through local variables to writes."""
     result = [dict(item) for item in calculations]
+
+    def known(value: Any) -> bool:
+        # Placeholder text is not provenance.  It may be replaced only by an
+        # already parsed source relationship; real model-authored metadata is
+        # otherwise preserved byte-for-byte.
+        return str(value or "").strip().casefold() not in {"", "not specified", "unknown", "n/a"}
+
     for calculation in result:
-        if any(str(calculation.get(key) or "").strip() for key in ("destination", "output", "output_field")):
+        if any(known(calculation.get(key)) for key in ("destination", "output", "output_field")):
             continue
         expression_tokens = _calculation_tokens(calculation.get("expression") or calculation.get("formula"))
         if not expression_tokens:
@@ -614,7 +621,13 @@ def _decision_chain_tokens(value: Any) -> set[str]:
 
 
 def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[Dict[str, Any]]:
-    """Attach rules to source-derived chains for presentation grouping only."""
+    """Represent source chains while keeping results LLM-owned.
+
+    The chain supplies structural membership and branch order only.  Result
+    text is copied exclusively from the matched synthesized rule/row; an
+    unmatched source branch remains present with no fabricated result so the
+    existing coverage/revision path can report it.
+    """
     blocks: List[Dict[str, Any]] = []
     if not isinstance(chains, list):
         return blocks
@@ -622,42 +635,129 @@ def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[D
         branches = chain.get("branches") if isinstance(chain, dict) else None
         if not isinstance(branches, list):
             continue
-        conditions = [str(item.get("branch_condition") or "") for item in branches if isinstance(item, dict)]
+        conditions = [str(item.get("branch_condition") or item.get("condition") or "") for item in branches if isinstance(item, dict)]
         if len(conditions) < 2:
             continue
-        matched = []
+        matched: List[BusinessRuleIR] = []
+        rule_branch_matches: Dict[str, List[int]] = {}
         for rule in rules:
-            candidates = [rule.condition, *rule.evidence]
-            if any(
-                _decision_chain_tokens(condition)
-                and (_decision_chain_tokens(condition) <= _decision_chain_tokens(candidate)
-                     or _decision_chain_tokens(candidate) <= _decision_chain_tokens(condition))
-                for condition in conditions for candidate in candidates if str(candidate or "").strip()
-            ):
+            row_conditions = [
+                str(row.get("condition") or "")
+                for row in rule.decision_logic_rows
+                if isinstance(row, dict)
+            ]
+            candidates = [rule.condition, *row_conditions, *rule.evidence]
+            branch_matches = [index for index, condition in enumerate(conditions) if any(
+                (
+                    str(condition).strip().casefold() == "else"
+                    and str(candidate).strip().casefold() == "else"
+                )
+                or (
+                    _decision_chain_tokens(condition)
+                    and (
+                        _decision_chain_tokens(condition) <= _decision_chain_tokens(candidate)
+                        or _decision_chain_tokens(candidate) <= _decision_chain_tokens(condition)
+                    )
+                )
+                for candidate in candidates if str(candidate or "").strip()
+            )]
+            if branch_matches:
                 matched.append(rule)
+                rule_branch_matches[rule.rule_id] = branch_matches
         if not matched:
             continue
         block_id = f"decision_block_{chain_index:03d}"
         block_branches = []
+        branch_rule_ids: Dict[int, List[str]] = {index: [] for index in range(len(conditions))}
         for rule in matched:
             rule.extra["decision_block_id"] = block_id
+            for branch_index in rule_branch_matches[rule.rule_id]:
+                branch_rule_ids[branch_index].append(rule.rule_id)
+
+        for branch_index, condition in enumerate(conditions):
             results: List[Any] = []
-            if rule.decision_logic_rows:
+            for rule in matched:
+                if branch_index not in rule_branch_matches[rule.rule_id]:
+                    continue
+                row_results = []
                 for row in rule.decision_logic_rows:
                     if not isinstance(row, dict):
                         continue
-                    results.extend(row.get("assignments") or [])
+                    row_condition = str(row.get("condition") or "")
+                    if _decision_chain_tokens(condition) and not (
+                        _decision_chain_tokens(condition) <= _decision_chain_tokens(row_condition)
+                        or _decision_chain_tokens(row_condition) <= _decision_chain_tokens(condition)
+                    ) and row_condition.strip().casefold() != condition.strip().casefold():
+                        continue
+                    row_results.extend(row.get("assignments") or [])
                     if row.get("outcome") not in (None, ""):
-                        results.append(row.get("outcome"))
-            elif rule.action or rule.business_meaning:
-                results.append(rule.action or rule.business_meaning)
+                        row_results.append(row.get("outcome"))
+                if row_results:
+                    results.extend(row_results)
+                elif rule.action or rule.business_meaning:
+                    results.append(rule.action or rule.business_meaning)
             block_branches.append({
-                "rule_id": rule.rule_id,
-                "condition": rule.condition,
+                "branch_index": branch_index,
+                "condition": condition,
+                "rule_ids": list(branch_rule_ids[branch_index]),
                 "results": results,
             })
-        blocks.append({"block_id": block_id, "rule_ids": [rule.rule_id for rule in matched], "branches": block_branches})
+
+        names = [rule.extra.get("rule_name") or "" for rule in matched]
+        meanings = [rule.business_meaning for rule in matched]
+        source_branch_literals = [
+            str(assignment.get("value") or assignment.get("outcome") or "")
+            for branch in branches
+            if isinstance(branch, dict)
+            for assignment in (branch.get("assignments") or [])
+            if isinstance(assignment, dict)
+        ]
+        block_title = _decision_block_title_from_llm_text(
+            names, meanings, matched, conditions, source_branch_literals
+        )
+        for rule in matched:
+            rule.extra["decision_block_title"] = block_title
+        blocks.append({
+            "block_id": block_id,
+            "name": block_title,
+            "rule_ids": [rule.rule_id for rule in matched],
+            "branches": block_branches,
+        })
     return blocks
+
+
+def _decision_block_title_from_llm_text(
+    names: List[str],
+    meanings: List[str],
+    rules: List["BusinessRuleIR"],
+    conditions: List[str],
+    source_branch_literals: List[str],
+) -> str:
+    """Select an overall title from authored text without inventing meaning."""
+    branch_literals = {
+        token.casefold()
+        for value in [*source_branch_literals]
+        for token in re.findall(r"[A-Za-z_][A-Za-z0-9_$#]*|\d+(?:\.\d+)?", value)
+    }
+    candidates = [str(value).strip() for value in [*names, *meanings] if str(value or "").strip()]
+    for candidate in candidates:
+        candidate_tokens = _decision_chain_tokens(candidate)
+        # A name that mentions exactly one structural branch result is a
+        # branch label, not an overall decision purpose.  Names that mention
+        # multiple outcomes (or none) can represent the block as a whole.
+        if candidate_tokens and len(candidate_tokens & branch_literals) != 1:
+            return candidate
+    usable = [name for name in names if str(name or "").strip()]
+    if usable:
+        words = [name.split() for name in usable]
+        prefix: List[str] = []
+        for group in zip(*words):
+            if len({word.casefold() for word in group}) != 1:
+                break
+            prefix.append(group[0])
+        if prefix:
+            return " ".join(prefix)
+    return "Decision block"
 
 
 @dataclass

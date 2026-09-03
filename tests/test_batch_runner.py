@@ -99,6 +99,8 @@ def test_run_batch_processes_multiple_files_independently_and_writes_separate_ou
                 "batch_manifest.json",
                 "dbo.oracle_proc.StoredProcedure_report.md",
                 "dbo.tsql_proc.StoredProcedure_report.md",
+                "logs/dbo.oracle_proc.StoredProcedure_pipeline.log",
+                "logs/dbo.tsql_proc.StoredProcedure_pipeline.log",
                 "verification/dbo.oracle_proc.StoredProcedure_verification.md",
                 "verification/dbo.tsql_proc.StoredProcedure_verification.md",
             ]
@@ -160,6 +162,8 @@ def test_run_batch_keeps_running_after_a_file_fails(tmp_path):
                 "batch_manifest.json",
                 "dbo.first_proc.StoredProcedure_report.md",
                 "dbo.third_proc.StoredProcedure_report.md",
+                "logs/dbo.first_proc.StoredProcedure_pipeline.log",
+                "logs/dbo.third_proc.StoredProcedure_pipeline.log",
                 "verification/dbo.first_proc.StoredProcedure_verification.md",
                 "verification/dbo.third_proc.StoredProcedure_verification.md",
             ]

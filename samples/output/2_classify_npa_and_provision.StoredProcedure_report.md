@@ -6,102 +6,104 @@
 
 | | |
 |---|---|
-| Purpose | This procedure classifies a loan account based on its overdue days and doubtful since days, and calculates the provisioning amount for non-performing assets (NPA). It updates the account's asset classification and last classified date, inserts the classification and provisioning amount into the NPA provision table, and logs changes in the NPA audit log. |
-| Business rules | 7 |
+| Purpose | This procedure classifies a loan account based on its overdue days and updates the asset classification and provisioning amount accordingly. It also logs the classification changes and handles exceptions. |
+| Business rules | 9 |
 | Tables read | 1 |
 | Tables written | 3 |
 | Produces audit trail | Yes — records audit events |
 
 ## What This Does
 
-This procedure classifies a loan account based on its overdue days and doubtful since days, and calculates the provisioning amount for non-performing assets (NPA). It updates the account's asset classification and last classified date, inserts the classification and provisioning amount into the NPA provision table, and logs changes in the NPA audit log.
+This procedure classifies a loan account based on its overdue days and updates the asset classification and provisioning amount accordingly. It also logs the classification changes and handles exceptions.
 
 ## Process Flow
 
 1. Reads overdue days, outstanding amount, unsecured amount, and doubtful since days from the LOAN_ACCOUNT table for the specified account.
-2. Classifies the account based on overdue days and doubtful since days into categories such as STANDARD, SUBSTANDARD, DOUBTFUL1, DOUBTFUL2, DOUBTFUL3, and LOSS.
-3. Calculates the provisioning amount based on the outstanding amount, unsecured amount, and provision percentage.
-4. Updates the asset classification and last classified date in the LOAN_ACCOUNT table for the specified account.
-5. Inserts the account's classification and provisioning amount into the NPA_PROVISION table.
-6. Inserts a log entry into the NPA_AUDIT_LOG table for the specified account.
-7. Handles exceptions by logging an account not found or an error message into the NPA_AUDIT_LOG table.
+2. Classifies the account based on the overdue days and updates the asset classification and provision percentage.
+3. Calculates the provision amount based on the outstanding amount, unsecured amount, and provision percentage.
+4. Updates the asset classification and last classified date in the LOAN_ACCOUNT table.
+5. Inserts the classification and provision amount into the NPA_PROVISION table.
+6. Inserts the account ID, old classification, new classification, and change date into the NPA_AUDIT_LOG table.
+7. Handles exceptions by inserting error details into the NPA_AUDIT_LOG table and raising the exception.
 
 ## Business Rules
 
-### R1 — Classify account as STANDARD
+### R1 — Classify account as Standard
 
 **Affected Field:** `asset_classification, provisioning_percentage`
 
-**Condition:**
+**Explanation:**
 
-- v_overdue_days <= 90
-- v_overdue_days BETWEEN 91 AND 365
-- v_overdue_days BETWEEN 366 AND 1095 AND v_doubtful_since <= 365
-- v_overdue_days BETWEEN 366 AND 1095 AND v_doubtful_since > 365
-- v_overdue_days > 1095 AND v_doubtful_since > 1095
-- v_overdue_days > 1095 AND v_doubtful_since <= 1095
-
-**Then:**
-
-- STANDARD
-- SUBSTANDARD
-- DOUBTFUL1
-- DOUBTFUL2
-- LOSS
-- DOUBTFUL3
+- Classifies the account as Standard if overdue days are less than or equal to 90.
+- Classifies the account as Substandard if overdue days are between 91 and 365.
+- Classifies the account as Doubtful1 if overdue days are between 366 and 1095 and doubtful since days are less than or equal to 365.
 
 ### Decision Logic
 
 | Condition | Result |
 |---|---|
-| v_overdue_days <= 90 | STANDARD |
-| v_overdue_days BETWEEN 91 AND 365 | SUBSTANDARD |
-| v_overdue_days BETWEEN 366 AND 1095 AND v_doubtful_since <= 365 | DOUBTFUL1 |
-| v_overdue_days BETWEEN 366 AND 1095 AND v_doubtful_since > 365 | DOUBTFUL2 |
-| v_overdue_days > 1095 AND v_doubtful_since > 1095 | LOSS |
-| v_overdue_days > 1095 AND v_doubtful_since <= 1095 | DOUBTFUL3 |
+| v_overdue_days <= 90 | Sets the account's asset classification to Standard and the provisioning percentage to 0.40. |
+| v_overdue_days BETWEEN 91 AND 365 | Sets the account's asset classification to Substandard and the provisioning percentage to 15. |
+| v_overdue_days BETWEEN 366 AND 1095 AND v_doubtful_since <= 365 | Sets the account's asset classification to Doubtful1 and the provisioning percentage to 25. |
+| v_overdue_days BETWEEN 366 AND 1095 AND NOT (v_doubtful_since <= 365) | Sets the account's asset classification to Doubtful2 and the provisioning percentage to 40. |
 
-### R2 — Calculate provisioning amount
+### R2 — Classify account as
+
+**Affected Field:** `asset_classification, provisioning_percentage`
+
+**Explanation:**
+
+- Classifies the account as Loss if doubtful since days are greater than 1095.
+- Classifies the account as Doubtful3 if doubtful since days are not greater than 1095.
+
+### Decision Logic
+
+| Condition | Result |
+|---|---|
+| v_doubtful_since > 1095 | Sets the account's asset classification to Loss and the provisioning percentage to 100. |
+| NOT (v_doubtful_since > 1095) | Sets the account's asset classification to Doubtful3 and the provisioning percentage to 100. |
+
+### R3 — Calculate provisioning amount
 
 **Affected Field:** `provisioning_amount`
 
 **Condition:**
 
-- Not specified
+- v_provision_amt := (v_outstanding_amt - v_unsecured_amt) * (v_provision_pct / 100) + (v_unsecured_amt * ((v_provision_pct + 10) / 100))
 
 **Then:**
 
-- Calculates the provisioning amount using the formula: (outstanding amount - unsecured amount) * (provisioning percentage / 100) + (unsecured amount * ((provisioning percentage + 10) / 100)).
+- Calculates the provisioning amount.
 
 
-### R3 — Handle NO_DATA_FOUND exception
+### R4 — Handle NO_DATA_FOUND exception
 
 **Affected Field:** Not specified
 
 **Condition:**
 
-- Not specified
+- NO_DATA_FOUND
 
 **Then:**
 
-- Inserts an audit log entry for 'ACCOUNT_NOT_FOUND' and raises the exception.
+- Inserts an error record into the NPA_AUDIT_LOG table and raises the exception.
 
 
-### R4 — Handle OTHERS exception
+### R5 — Handle OTHERS exception
 
 **Affected Field:** Not specified
 
 **Condition:**
 
-- Not specified
+- OTHERS
 
 **Then:**
 
-- Inserts an audit log entry for 'ERROR: ' || SQLERRM and raises the exception.
+- Inserts an error record into the NPA_AUDIT_LOG table and raises the exception.
 
 ## Calculations
 
-### Calculation — provisioning_amount
+### Calculation — provision_amount
 
 **Expression:**
 (v_outstanding_amt - v_unsecured_amt) * (v_provision_pct / 100) + (v_unsecured_amt * ((v_provision_pct + 10) / 100))
@@ -123,7 +125,7 @@ INSERT INTO NPA_PROVISION
 
 ## Exception Handling
 
-If the account does not exist, logs 'ACCOUNT_NOT_FOUND'. For any other exception, logs the error message and re-raises the exception.
+If no data is found for the account, it logs 'ACCOUNT_NOT_FOUND'. For any other exception, it logs the error message and raises the exception.
 
 ## Findings / Needs Review
 

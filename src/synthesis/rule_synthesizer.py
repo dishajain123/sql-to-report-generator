@@ -186,6 +186,12 @@ class RuleSynthesizerAgent:
                         data["business_rules"], merged_extraction
                     )
                     data["business_rules"] = self._remove_operation_only_rules(data["business_rules"])
+                    data["business_rules"] = self._remove_auxiliary_rules(
+                        data["business_rules"],
+                        merged_extraction,
+                        data.get("calculations"),
+                        data.get("exception_handling_summary"),
+                    )
                     guardrail_warnings.extend(
                         ground_business_rules_against_extraction(
                             data["business_rules"], merged_extraction, raw_source=raw_source
@@ -268,6 +274,12 @@ class RuleSynthesizerAgent:
             data["business_rules"], merged_extraction
         )
         data["business_rules"] = self._remove_operation_only_rules(data["business_rules"])
+        data["business_rules"] = self._remove_auxiliary_rules(
+            data["business_rules"],
+            merged_extraction,
+            data.get("calculations"),
+            data.get("exception_handling_summary"),
+        )
         guardrail_warnings.extend(
             ground_business_rules_against_extraction(
                 data["business_rules"], merged_extraction, raw_source=raw_source
@@ -438,6 +450,12 @@ class RuleSynthesizerAgent:
             data["business_rules"], merged_extraction
         )
         data["business_rules"] = self._remove_operation_only_rules(data["business_rules"])
+        data["business_rules"] = self._remove_auxiliary_rules(
+            data["business_rules"],
+            merged_extraction,
+            data.get("calculations"),
+            data.get("exception_handling_summary"),
+        )
         jargon_flags = self._scan_for_jargon(data)
         return SynthesisResult(
             data=data,
@@ -633,6 +651,56 @@ class RuleSynthesizerAgent:
                 or (name.startswith(("update ", "insert ", "write ")) and not rule.get("eligibility"))
             )
             if is_crud and is_mechanical:
+                continue
+            filtered.append(rule)
+        return filtered
+
+    @staticmethod
+    def _remove_auxiliary_rules(
+        rules: List[Dict[str, Any]],
+        merged_extraction: Dict[str, Any],
+        calculations: Any = None,
+        exception_summary: Any = None,
+    ) -> List[Dict[str, Any]]:
+        """Keep calculation/exception-only items in their own sections.
+
+        This is a deletion-only classification filter. It never changes a
+        rule or creates a replacement. A rule with actual conditions or
+        decision rows is retained because a calculation or failure path can
+        also be a genuine business decision.
+        """
+        calculation_fields = set()
+        for calculation in calculations or []:
+            if not isinstance(calculation, dict):
+                continue
+            for key in ("name", "result", "field", "metric", "output_field", "destination"):
+                value = str(calculation.get(key) or "").strip()
+                if value:
+                    calculation_fields.add(value.casefold().split(".")[-1])
+
+        exception_items = list((merged_extraction or {}).get("exception_handling", []) or [])
+        exception_items.append(exception_summary or "")
+        exception_context = " ".join(str(item) for item in exception_items).casefold()
+        filtered: List[Dict[str, Any]] = []
+        for rule in rules or []:
+            if not isinstance(rule, dict):
+                continue
+            has_condition = bool(str(rule.get("condition") or "").strip() or rule.get("eligibility"))
+            has_decision_rows = bool(rule.get("decision_logic_rows"))
+            if has_condition or has_decision_rows:
+                filtered.append(rule)
+                continue
+
+            fields = [str(rule.get("output_field") or ""), *(rule.get("fields_affected") or [])]
+            field_names = {value.casefold().split(".")[-1] for value in fields if str(value).strip()}
+            rule_text = json.dumps(rule, sort_keys=True, default=str).casefold()
+            is_calculation_only = bool(calculation_fields & field_names) and bool(
+                re.search(r"\bcalculat(?:e|es|ed|ion|ing)\b|\bformula\b|\bexpression\b", rule_text)
+            )
+            is_exception_only = bool(exception_context) and bool(
+                re.search(r"\bexception\b|\braise\b|\bfailure path\b|\berror handling\b", rule_text)
+            )
+            if is_calculation_only or is_exception_only:
                 continue
             filtered.append(rule)
         return filtered

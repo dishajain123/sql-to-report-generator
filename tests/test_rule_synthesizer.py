@@ -1404,3 +1404,42 @@ def test_report_findings_exclude_raw_reconciliation_classifier_text():
     assert "The source uses a dynamic value and needs business review." in findings
     assert "llm_only" not in findings
     assert "contradiction_classifier" not in findings
+
+
+def test_auxiliary_calculation_rule_is_not_duplicated_in_business_rules():
+    rules = [{
+        "rule_name": "Calculate derived total",
+        "business_meaning": "Calculates the derived total.",
+        "action": "Calculates the derived total.",
+        "output_field": "derived_total",
+    }]
+    assert RuleSynthesizerAgent._remove_auxiliary_rules(
+        rules,
+        {},
+        calculations=[{"result": "derived_total", "formula": "base_value + adjustment"}],
+    ) == []
+
+
+def test_auxiliary_filter_keeps_calculation_with_real_decision_logic():
+    rule = {
+        "rule_name": "Calculate conditional total",
+        "condition": "input_code = 1",
+        "action": "Calculates the derived total.",
+        "output_field": "derived_total",
+        "decision_logic_rows": [{"condition": "input_code = 1", "outcome": "derived_total"}],
+    }
+    assert RuleSynthesizerAgent._remove_auxiliary_rules(
+        [rule], {}, calculations=[{"result": "derived_total", "formula": "base + adjustment"}]
+    ) == [rule]
+
+
+def test_auxiliary_exception_rule_is_not_duplicated_in_business_rules():
+    rule = {
+        "rule_name": "Handle failure path",
+        "business_meaning": "Handles the failure path.",
+        "condition": "", "eligibility": [],
+        "action": "Records the failure and raises it.",
+    }
+    assert RuleSynthesizerAgent._remove_auxiliary_rules(
+        [rule], {"exception_handling": ["failure handler records the event"]}
+    ) == []

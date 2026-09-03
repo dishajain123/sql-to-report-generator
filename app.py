@@ -49,6 +49,11 @@ BATCH_DIALECT_OPTIONS = {
 }
 
 
+def _request_kb_rebuild() -> None:
+    """Keep the sidebar rebuild request until the next pipeline run."""
+    st.session_state["rebuild_kb_requested"] = True
+
+
 def _batch_dialect_key(index: int, filename: str) -> str:
     safe_name = re.sub(r"[^A-Za-z0-9_]+", "_", Path(filename).stem or filename).strip("_")
     return f"batch_dialect_mode_{index}_{safe_name or 'file'}"
@@ -145,16 +150,9 @@ def _pipeline_cache_signature() -> tuple[int, ...] | tuple[str, ...]:
     Using source file mtimes keeps the cache tied to the actual report
     generation code rather than the app session lifetime.
     """
-    source_files = [
-        APP_DIR / "dialect_detector.py",
-        APP_DIR / "confidence_utils.py",
-        APP_DIR / "pipeline_utils.py",
-        APP_DIR / "pipeline.py",
-        APP_DIR / "agents" / "ingestion.py",
-        APP_DIR / "agents" / "logic_extractor.py",
-        APP_DIR / "agents" / "report_formatter.py",
-        APP_DIR / "agents" / "rule_synthesizer.py",
-    ]
+    source_files = [APP_DIR / "app.py", APP_DIR / "main.py", APP_DIR / "pipeline.py"]
+    source_files.extend(sorted(APP_DIR.joinpath("src").rglob("*.py")))
+    source_files.extend(sorted(APP_DIR.joinpath("src").rglob("*.yaml")))
     signature: list[int | str] = [PIPELINE_CACHE_VERSION]
     for path in source_files:
         try:
@@ -222,12 +220,18 @@ with st.sidebar:
         )
         persist_directory = st.text_input("Chroma persist directory", value="chroma_store")
         knowledge_base_dir = st.text_input("Knowledge base directory", value="knowledge_base")
-        rebuild_kb = st.button("🔄 Rebuild knowledge base from disk")
+        st.button(
+            "🔄 Rebuild knowledge base from disk",
+            on_click=_request_kb_rebuild,
+            help="Rebuild on the next extraction run using the selected knowledge-base directory.",
+        )
 
     st.divider()
     st.caption(
         "This app reads the provider, API key, model, and base URL from `.env`."
     )
+
+rebuild_kb = bool(st.session_state.get("rebuild_kb_requested", False))
 
 
 # --------------------------------------------------------------------------
@@ -359,6 +363,19 @@ def _render_batch_run_status(batch_state: dict, log_path: Path | None = None) ->
     )
 
 
+def _count_report_findings(report: str) -> int:
+    """Count visible review bullets across current and legacy headings."""
+    sections = re.split(r"^##\s+", str(report or ""), flags=re.MULTILINE)
+    for section in sections:
+        if not re.match(r"(?:Findings\s*/\s*Needs Review|Ambiguities\s*/\s*Needs Review)\b", section, re.IGNORECASE):
+            continue
+        body = section.split("\n", 1)[1] if "\n" in section else ""
+        if body.strip().lower().startswith("none"):
+            return 0
+        return sum(1 for line in body.splitlines() if line.strip().startswith("- "))
+    return 0
+
+
 # --------------------------------------------------------------------------
 # Main — input
 # --------------------------------------------------------------------------
@@ -472,6 +489,7 @@ if run_clicked and batch_mode:
     if rebuild_kb:
         with st.spinner("Rebuilding knowledge base…"):
             pipeline.retrieval_agent.build_or_load(force_rebuild=True)
+        st.session_state.pop("rebuild_kb_requested", None)
 
     pipeline.retrieval_k = retrieval_k
     pipeline.extraction_agent.temperature = temperature
@@ -585,6 +603,7 @@ elif run_clicked:
     if rebuild_kb:
         with st.spinner("Rebuilding knowledge base…"):
             pipeline.retrieval_agent.build_or_load(force_rebuild=True)
+        st.session_state.pop("rebuild_kb_requested", None)
 
     # apply the sidebar's live settings to the cached pipeline instance
     pipeline.retrieval_k = retrieval_k
@@ -752,6 +771,8 @@ if "last_batch_result" in st.session_state:
                 )
                 st.caption(f"Report: `{item.report_path}`")
                 st.caption(f"Verification: `{item.verification_path}`")
+                if item.log_path:
+                    st.caption(f"Pipeline log: `{item.log_path}`")
                 st.download_button(
                     f"⬇️ Download report ({idx})",
                     data=item.run_result.report,
@@ -766,6 +787,16 @@ if "last_batch_result" in st.session_state:
                     mime="text/markdown",
                     key=f"batch-verification-{idx}",
                 )
+                if item.log_path:
+                    log_path = Path(item.log_path)
+                    if log_path.exists():
+                        st.download_button(
+                            f"⬇️ Download log ({idx})",
+                            data=log_path.read_bytes(),
+                            file_name=log_path.name,
+                            mime="text/plain",
+                            key=f"batch-log-{idx}",
+                        )
                 tab_rendered, tab_raw = st.tabs([f"📖 {item.display_name}", "🔤 Raw Markdown"])
                 with tab_rendered:
                     st.markdown(item.run_result.report)
@@ -785,12 +816,7 @@ if "last_report" in st.session_state:
     st.subheader("3. Business logic report")
 
     report_md: str = st.session_state["last_report"]
-    ambiguity_count = 0
-    ambiguities_section = report_md.split("## Ambiguities / Needs Review", 1)
-    if len(ambiguities_section) == 2:
-        tail = ambiguities_section[1].strip()
-        if not tail.lower().startswith("none"):
-            ambiguity_count = sum(1 for line in tail.splitlines() if line.strip().startswith("- "))
+    ambiguity_count = _count_report_findings(report_md)
 
     col1, col2, col3 = st.columns([2, 2, 3])
     with col1:

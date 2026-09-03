@@ -698,7 +698,11 @@ class ReportFormatterAgent:
             else:
                 groups.append([rule])
         for idx, group in enumerate(groups, start=1):
-            if len(group) > 1:
+            # A canonical decision block remains a block even when the LLM
+            # represented the complete chain in one rule.  Group size is not
+            # a safe proxy for structural control flow.
+            has_structural_block = bool(str(group[0].get("decision_block_id") or "").strip())
+            if len(group) > 1 or has_structural_block:
                 lines.extend(self._render_decision_block(idx, group))
             else:
                 lines.extend(self._render_business_rule_block(idx, group[0]))
@@ -707,45 +711,80 @@ class ReportFormatterAgent:
 
     def _render_decision_block(self, idx: int, rules: List[Dict[str, Any]]) -> List[str]:
         names = self._distinct_text([self._business_rule_name(rule, idx) for rule in rules])
-        title = self._decision_block_title(names)
+        authored_block_title = next(
+            (
+                str(rule.get("decision_block_title") or "").strip()
+                for rule in rules
+                if str(rule.get("decision_block_title") or "").strip()
+            ),
+            "",
+        )
+        title = authored_block_title or self._decision_block_title(names)
         affected = self._distinct_text([self._business_rule_output(rule) for rule in rules])
-        conditions: List[str] = []
-        results: List[str] = []
         table_rows: List[Tuple[str, str]] = []
         for rule in rules:
             rows = self._decision_logic_rows(rule)
             if rows:
+                action = str(rule.get("action") or "").strip()
                 for row in rows:
                     condition = str(row.get("condition") or "").strip()
                     outcome = self._assignment_text(row.get("outcome") or "")
-                    conditions.append(condition)
-                    results.extend(
-                        [self._assignment_text(item) for item in (row.get("assignments") or [])]
-                        + ([outcome] if outcome else [])
-                    )
-                    table_rows.append((condition, outcome))
+                    assignments = [
+                        self._assignment_text(item)
+                        for item in (row.get("assignments") or [])
+                    ]
+                    # A model may put a secondary branch result in the
+                    # rule-level action while using the row for the primary
+                    # result. Preserve that authored content only when it
+                    # carries a literal/result not already represented by
+                    # the row; paraphrases remain suppressed.
+                    if action and self._action_has_unrepresented_result(action, [outcome, *assignments]):
+                        result_values = [*assignments, action]
+                    elif outcome:
+                        result_values = [*assignments, outcome]
+                    else:
+                        result_values = assignments
+                    table_rows.append((condition, "; ".join(self._distinct_text(result_values))))
             else:
                 condition = str(rule.get("condition") or "").strip()
                 result = str(rule.get("action") or rule.get("business_meaning") or "").strip()
-                conditions.append(condition)
-                results.append(result)
                 table_rows.append((condition, result))
+
+        table_content = [value for row in table_rows for value in row]
+        explanations = self._decision_block_explanations(rules, table_content)
         lines = [f"### R{idx} — {title}", ""]
         lines.extend([
             f"**Affected Field:** `{', '.join(affected)}`" if affected and affected[0] != "Not specified" else "**Affected Field:** Not specified",
             "",
-            "**Condition:**",
+            "**Explanation:**",
             "",
         ])
-        lines.extend(f"- {value}" for value in self._distinct_text(conditions) if value)
-        lines.extend(["", "**Then:**", ""])
-        lines.extend(f"- {value}" for value in self._distinct_text(results) if value)
+        lines.extend(f"- {value}" for value in explanations)
         lines.extend(["", "### Decision Logic", ""])
         lines.extend(self._decision_logic_block([
             {"condition": condition, "outcome": outcome}
             for condition, outcome in table_rows
         ]))
         return lines
+
+    def _decision_block_explanations(
+        self, rules: List[Dict[str, Any]], table_content: List[str]
+    ) -> List[str]:
+        """Use only concise LLM-authored summaries above the branch table."""
+        table_keys = {
+            re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+            for value in table_content
+        }
+        explanations: List[str] = []
+        for rule in rules:
+            meaning = str(rule.get("business_meaning") or "").strip()
+            if not meaning:
+                continue
+            key = re.sub(r"\s+", " ", meaning).strip().casefold()
+            if key not in table_keys:
+                explanations.append(meaning)
+        explanations = self._distinct_text(explanations)
+        return explanations[:3] or [_NOT_DETERMINED]
 
     @staticmethod
     def _decision_block_title(names: List[str]) -> str:
@@ -790,7 +829,10 @@ class ReportFormatterAgent:
             if assignments and not isinstance(assignments, list):
                 assignments = [assignments]
             branch_results = [self._assignment_text(item) for item in assignments if str(item).strip()]
-            if outcome:
+            action = str(rule.get("action") or "").strip()
+            if action and self._action_has_unrepresented_result(action, [outcome, *branch_results]):
+                branch_results.append(action)
+            elif outcome:
                 branch_results.append(outcome)
             for result in branch_results:
                 then_values.append(
@@ -817,6 +859,29 @@ class ReportFormatterAgent:
             lines.append("")
 
         return lines
+
+    @staticmethod
+    def _action_has_unrepresented_result(action: str, represented: List[str]) -> bool:
+        """Keep authored secondary result data, not repeated prose.
+
+        This is intentionally presentation-only. It does not interpret SQL
+        or construct a result; it compares literal/assignment markers already
+        present in the model text with the canonical row data.
+        """
+        normalized_action = str(action or "").strip()
+        if not normalized_action:
+            return False
+        normalized_rows = " ".join(str(value or "") for value in represented)
+        literal = re.compile(r"'(?:''|[^'])*'|\b\d+(?:\.\d+)?\b")
+        action_literals = {item.casefold() for item in literal.findall(normalized_action)}
+        row_literals = {item.casefold() for item in literal.findall(normalized_rows)}
+        if action_literals - row_literals:
+            return True
+        if re.search(r"(?:\:=|(?<![<>!])=(?!=))", normalized_action) and not re.search(
+            r"(?:\:=|(?<![<>!])=(?!=))", normalized_rows
+        ):
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # 6. Decision Logic / Rule Priority

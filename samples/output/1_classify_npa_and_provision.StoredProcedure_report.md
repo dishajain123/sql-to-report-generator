@@ -6,7 +6,7 @@
 
 | | |
 |---|---|
-| Purpose | This procedure classifies a loan account as Standard, Substandard, Doubtful, or Loss based on the number of overdue days and the duration since the account became doubtful. It also calculates the provisioning amount and updates the account's asset classification and last classification date. Additionally, it logs the classification changes and handles exceptions. |
+| Purpose | This procedure classifies a loan account based on its overdue days and updates the asset classification and provisioning percentage accordingly. It also logs the classification changes and handles exceptions. |
 | Business rules | 9 |
 | Tables read | 1 |
 | Tables written | 3 |
@@ -14,17 +14,16 @@
 
 ## What This Does
 
-This procedure classifies a loan account as Standard, Substandard, Doubtful, or Loss based on the number of overdue days and the duration since the account became doubtful. It also calculates the provisioning amount and updates the account's asset classification and last classification date. Additionally, it logs the classification changes and handles exceptions.
+This procedure classifies a loan account based on its overdue days and updates the asset classification and provisioning percentage accordingly. It also logs the classification changes and handles exceptions.
 
 ## Process Flow
 
-1. Reads overdue days, outstanding amount, unsecured amount, and doubtful since days from the LOAN_ACCOUNT table for the specified account.
-2. Classifies the account based on the number of overdue days and the duration since the account became doubtful.
-3. Calculates the provisioning amount based on the outstanding amount, unsecured amount, and provision percentage.
-4. Updates the asset classification and last classification date in the LOAN_ACCOUNT table.
-5. Inserts the classification and provisioning amount into the NPA_PROVISION table.
-6. Inserts the classification change into the NPA_AUDIT_LOG table.
-7. Handles exceptions by logging the error in the NPA_AUDIT_LOG table.
+1. Reads the overdue days, outstanding amount, unsecured amount, and doubtful since days from the LOAN_ACCOUNT table for the specified account.
+2. Classifies the account based on the overdue days and updates the asset classification and last classified date in the LOAN_ACCOUNT table.
+3. Calculates the provisioning amount based on the outstanding amount, unsecured amount, and provisioning percentage.
+4. Inserts the account classification and provisioning amount into the NPA_PROVISION table.
+5. Inserts the account classification change into the NPA_AUDIT_LOG table.
+6. Handles exceptions by logging the error in the NPA_AUDIT_LOG table.
 
 ## Business Rules
 
@@ -32,36 +31,38 @@ This procedure classifies a loan account as Standard, Substandard, Doubtful, or 
 
 **Affected Field:** `asset_classification, provisioning_percentage`
 
-**Condition:**
+**Explanation:**
 
-- v_overdue_days <= 90
-- v_overdue_days BETWEEN 91 AND 365
-- v_overdue_days BETWEEN 366 AND 1095 AND v_doubtful_since <= 365
-- v_overdue_days BETWEEN 366 AND 1095 AND NOT (v_doubtful_since <= 365)
-- v_overdue_days BETWEEN 366 AND 1095 AND v_doubtful_since > 1095
-- v_overdue_days BETWEEN 366 AND 1095 AND NOT (v_doubtful_since > 1095)
-
-**Then:**
-
-- STANDARD
-- SUBSTANDARD
-- DOUBTFUL1
-- DOUBTFUL2
-- LOSS
-- DOUBTFUL3
+- Classifies the account as Standard if the overdue days are 90 or less.
+- Classifies the account as Substandard if the overdue days are between 91 and 365.
+- Classifies the account as Doubtful1 if the overdue days are between 366 and 1095 and the account has been doubtful for 365 days or less.
 
 ### Decision Logic
 
 | Condition | Result |
 |---|---|
-| v_overdue_days <= 90 | STANDARD |
-| v_overdue_days BETWEEN 91 AND 365 | SUBSTANDARD |
-| v_overdue_days BETWEEN 366 AND 1095 AND v_doubtful_since <= 365 | DOUBTFUL1 |
-| v_overdue_days BETWEEN 366 AND 1095 AND NOT (v_doubtful_since <= 365) | DOUBTFUL2 |
-| v_overdue_days BETWEEN 366 AND 1095 AND v_doubtful_since > 1095 | LOSS |
-| v_overdue_days BETWEEN 366 AND 1095 AND NOT (v_doubtful_since > 1095) | DOUBTFUL3 |
+| v_overdue_days <= 90 | Sets the account's asset classification to Standard and provisioning percentage to 0.40. |
+| v_overdue_days BETWEEN 91 AND 365 | Sets the account's asset classification to Substandard and provisioning percentage to 15. |
+| v_overdue_days BETWEEN 366 AND 1095 AND v_doubtful_since <= 365 | Sets the account's asset classification to Doubtful1 and provisioning percentage to 25. |
+| v_overdue_days BETWEEN 366 AND 1095 AND NOT (v_doubtful_since <= 365) | Sets the account's asset classification to Doubtful2 and provisioning percentage to 40. |
 
-### R2 — Calculate provisioning amount
+### R2 — Classify account as
+
+**Affected Field:** `asset_classification, provisioning_percentage`
+
+**Explanation:**
+
+- Classifies the account as Loss if the account has been doubtful for more than 1095 days.
+- Classifies the account as Doubtful3 if the account has been doubtful for 1095 days or less.
+
+### Decision Logic
+
+| Condition | Result |
+|---|---|
+| v_doubtful_since > 1095 | Sets the account's asset classification to Loss and provisioning percentage to 100. |
+| NOT (v_doubtful_since > 1095) | Sets the account's asset classification to Doubtful3 and provisioning percentage to 100. |
+
+### R3 — Calculate provisioning amount
 
 **Affected Field:** `provisioning_amount`
 
@@ -71,12 +72,12 @@ This procedure classifies a loan account as Standard, Substandard, Doubtful, or 
 
 **Then:**
 
-- Calculates the provisioning amount using the formula: (outstanding amount - unsecured amount) * (provisioning percentage / 100) + (unsecured amount * ((provisioning percentage + 10) / 100)).
+- Calculates the provisioning amount.
 
 
-### R3 — Handle no data found exception
+### R4 — Handle NO_DATA_FOUND exception
 
-**Affected Field:** `NPA_AUDIT_LOG`
+**Affected Field:** Not specified
 
 **Condition:**
 
@@ -84,12 +85,12 @@ This procedure classifies a loan account as Standard, Substandard, Doubtful, or 
 
 **Then:**
 
-- Inserts a record into the NPA_AUDIT_LOG table with the account ID, null for old classification, 'ACCOUNT_NOT_FOUND' for new classification, and the current date and time.
+- Logs the error in the NPA_AUDIT_LOG table.
 
 
-### R4 — Handle other exceptions
+### R5 — Handle OTHERS exception
 
-**Affected Field:** `NPA_AUDIT_LOG`
+**Affected Field:** Not specified
 
 **Condition:**
 
@@ -97,7 +98,7 @@ This procedure classifies a loan account as Standard, Substandard, Doubtful, or 
 
 **Then:**
 
-- Inserts a record into the NPA_AUDIT_LOG table with the account ID, null for old classification, 'ERROR: ' || SQLERRM for new classification, and the current date and time.
+- Logs the error in the NPA_AUDIT_LOG table and raises the exception.
 
 ## Calculations
 
@@ -123,7 +124,7 @@ INSERT INTO NPA_PROVISION
 
 ## Exception Handling
 
-If the account does not exist, logs 'ACCOUNT_NOT_FOUND' in the NPA_AUDIT_LOG table. For any other exception, logs the error message in the NPA_AUDIT_LOG table and raises the exception.
+If the account is not found, logs 'ACCOUNT_NOT_FOUND' in the NPA_AUDIT_LOG table. For any other exception, logs the error message in the NPA_AUDIT_LOG table and raises the exception.
 
 ## Findings / Needs Review
 

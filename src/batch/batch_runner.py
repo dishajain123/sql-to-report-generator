@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import io
@@ -39,6 +40,8 @@ class BatchItemResult:
     report_filename: str = ""
     verification_path: str = ""
     verification_filename: str = ""
+    log_path: str = ""
+    log_filename: str = ""
     error: str = ""
     output_stem: str = ""
     run_result: object | None = None
@@ -116,6 +119,25 @@ def _build_output_stem(run_result, display_name: str, used: set[str]) -> str:
     return _unique_stem(_sanitize_stem(base), used)
 
 
+@contextmanager
+def _capture_item_log(log_path: Path):
+    """Capture one batch item's pipeline diagnostics in its own artifact."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    root_logger = logging.getLogger()
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+    root_logger.addHandler(handler)
+    previous_level = root_logger.level
+    if previous_level > logging.INFO or previous_level == logging.NOTSET:
+        root_logger.setLevel(logging.INFO)
+    try:
+        yield
+    finally:
+        root_logger.removeHandler(handler)
+        handler.close()
+        root_logger.setLevel(previous_level)
+
+
 def run_batch(
     pipeline: LogicRulesExtractorPipeline,
     inputs: Sequence[BatchInput],
@@ -130,6 +152,7 @@ def run_batch(
     output_dir = Path(output_dir)
     batch_dir = output_dir / resolved_batch_id
     batch_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir = batch_dir / "logs"
     batch_start_time = datetime.now(timezone.utc).isoformat()
     used_stems: set[str] = set()
     results: list[BatchItemResult] = []
@@ -137,17 +160,20 @@ def run_batch(
     for index, item in enumerate(inputs, start=1):
         display_name = str(item.display_name or Path(item.source_path).name or f"input_{index}")
         selected_dialect_mode = _normalize_dialect_mode(getattr(item, "dialect_mode", "auto"))
+        provisional_log_path = logs_dir / f"_{index}_{_display_stem(display_name)}_pipeline.log"
 
         def _on_progress(message: str) -> None:
             if progress_callback:
                 progress_callback(f"[{index}/{len(inputs)}] [{display_name}] {message}")
 
         try:
-            run_result = pipeline.run(
-                item.source_path,
-                dialect=selected_dialect_mode,
-                progress_callback=_on_progress,
-            )
+            with _capture_item_log(provisional_log_path):
+                logging.getLogger(__name__).info("Batch item started: %s", display_name)
+                run_result = pipeline.run(
+                    item.source_path,
+                    dialect=selected_dialect_mode,
+                    progress_callback=_on_progress,
+                )
             output_stem = _build_output_stem(run_result, display_name, used_stems)
             report_filename = f"{output_stem}_report.md"
             report_path = batch_dir / report_filename
@@ -157,6 +183,9 @@ def run_batch(
             verification_filename = f"{output_stem}_verification.md"
             verification_path = verification_dir / verification_filename
             verification_path.write_text(run_result.verification_report, encoding="utf-8")
+            log_filename = f"{output_stem}_pipeline.log"
+            log_path = logs_dir / log_filename
+            provisional_log_path.replace(log_path)
             detected_dialect = str(getattr(getattr(run_result, "ingestion", None), "dialect", "") or "")
             object_identity = ""
             if getattr(run_result, "ingestion", None) is not None:
@@ -173,6 +202,8 @@ def run_batch(
                     report_filename=report_filename,
                     verification_path=str(verification_path),
                     verification_filename=verification_filename,
+                    log_path=str(log_path),
+                    log_filename=log_filename,
                     output_stem=output_stem,
                     run_result=run_result,
                 )
@@ -180,12 +211,19 @@ def run_batch(
             if progress_callback:
                 progress_callback(f"[{index}/{len(inputs)}] [{display_name}] Completed successfully")
         except (PipelineInputError, Exception) as exc:  # noqa: BLE001
+            if provisional_log_path.exists():
+                log_path = logs_dir / f"{_display_stem(display_name)}_pipeline.log"
+                provisional_log_path.replace(log_path)
+            else:
+                log_path = None
             results.append(
                 BatchItemResult(
                     input_file=item.source_path,
                     display_name=display_name,
                     status="failed",
                     selected_dialect_mode=selected_dialect_mode,
+                    log_path=str(log_path) if log_path else "",
+                    log_filename=log_path.name if log_path else "",
                     error=str(exc),
                 )
             )
@@ -242,6 +280,7 @@ def _build_manifest(
                 "effective_dialect": item.detected_dialect,
                 "report_filename": item.report_filename,
                 "verification_filename": item.verification_filename,
+                "log_filename": item.log_filename,
                 "error_message": item.error,
             }
         )
@@ -275,4 +314,8 @@ def build_batch_archive_bytes(batch_result: BatchRunResult) -> bytes:
             verification_path = Path(getattr(item, "verification_path", ""))
             if verification_path.exists():
                 archive.write(verification_path, arcname=f"verification/{verification_path.name}")
+            log_value = str(getattr(item, "log_path", "") or "").strip()
+            log_path = Path(log_value) if log_value else None
+            if log_path and log_path.exists():
+                archive.write(log_path, arcname=f"logs/{log_path.name}")
     return buffer.getvalue()

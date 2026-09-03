@@ -152,6 +152,18 @@ def test_business_rule_labels_have_markdown_boundaries_and_no_redundant_prose():
     assert "Then / Result" not in report
 
 
+def test_decision_block_keeps_authored_secondary_result_in_action():
+    report = ReportFormatterAgent()._business_rules_section([{
+        "rule_name": "Apply state and score",
+        "output_field": "state_code, score_value",
+        "condition": "input_code = 1",
+        "action": "Sets state_code to READY and score_value to 0.40.",
+        "decision_logic_rows": [{"condition": "input_code = 1", "outcome": "READY"}],
+    }])
+    assert "Sets state_code to READY and score_value to 0.40." in report
+    assert report.count("READY") == 2  # authored action plus the table result
+
+
 def test_calculations_render_expression_output_and_evidence_separately():
     synthesis = SynthesisResult(data={
         "calculations": [{
@@ -291,6 +303,30 @@ def test_if_elsif_else_rules_group_into_one_structural_decision_block():
     assert rules[0].extra["decision_block_id"] == rules[1].extra["decision_block_id"]
 
 
+def test_decision_block_keeps_all_source_branches_and_avoids_first_branch_title():
+    rules = [
+        BusinessRuleIR(
+            rule_id="r1", condition="input_code = 1", action="state := 'OPEN'",
+            extra={"rule_name": "Route item as OPEN"},
+        ),
+        BusinessRuleIR(
+            rule_id="r2", condition="input_code = 2", action="state := 'HELD'",
+            extra={"rule_name": "Route item as HELD"},
+        ),
+    ]
+    blocks = _build_decision_blocks(rules, [{
+        "chain_type": "IF_ELSIF_ELSE",
+        "branches": [
+            {"branch_condition": "input_code = 1", "assignments": [{"value": "'OPEN'"}]},
+            {"branch_condition": "input_code = 2", "assignments": [{"value": "'HELD'"}]},
+            {"branch_condition": "ELSE", "assignments": [{"value": "'UNKNOWN'"}]},
+        ],
+    }])
+    assert len(blocks) == 1
+    assert len(blocks[0]["branches"]) == 3
+    assert blocks[0]["name"] == "Route item as"
+
+
 def test_nested_if_chain_remains_one_parent_structural_block():
     rules = [
         BusinessRuleIR(rule_id="r1", condition="outer_flag = 1 AND inner_flag = 1", action="result := 'A'"),
@@ -337,11 +373,28 @@ def test_grouped_renderer_keeps_all_branch_results_in_one_block():
         {"rule_name": "Second branch", "decision_block_id": "block_1", "condition": "code = 2", "action": "state := 'B'"},
     ])
     assert report.count("### R1 —") == 1
-    assert "- state := 'A'" in report
-    assert "- state := 'B'" in report
+    assert "**Condition:**" not in report
+    assert "**Then:**" not in report
+    assert "**Explanation:**" in report
     assert report.count("### Decision Logic") == 1
     assert "| code = 1 | state := 'A' |" in report
     assert "| code = 2 | state := 'B' |" in report
+
+
+def test_grouped_renderer_keeps_all_assignments_in_each_branch_result():
+    report = ReportFormatterAgent()._business_rules_section([{
+        "rule_name": "Apply coordinated outputs",
+        "decision_block_id": "block_1",
+        "condition": "input_code = 1",
+        "decision_logic_rows": [{
+            "condition": "input_code = 1",
+            "outcome": "READY",
+            "assignments": ["state_code := 'READY'", "score_value := 0.40"],
+        }],
+    }])
+    assert "| input_code = 1 | state_code := 'READY'; score_value := 0.40; READY |" in report
+    assert "**Condition:**" not in report
+    assert "**Then:**" not in report
 
 
 def test_reconciliation_review_banner_is_internal_only():
