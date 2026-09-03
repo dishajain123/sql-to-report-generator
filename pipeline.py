@@ -29,6 +29,7 @@ import logging
 import time
 import copy
 import hashlib
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -47,6 +48,11 @@ from src.core.llm_client import LLMConfig, create_llm_client, load_llm_config
 from src.core.llm_response_cache import PersistentLLMResponseCache
 from src.validation.confidence import derive_chunk_support_confidence
 from src.validation.reconciliation import reconcile_deterministic_evidence
+from src.validation.semantic_validation import (
+    extract_procedural_decision_chains,
+    extract_nested_decision_chains,
+    find_semantic_anomalies,
+)
 from src.ir.canonical_ir import CanonicalBusinessIR
 from src.core.pipeline_utils import (
     PIPELINE_VERSION,
@@ -311,6 +317,17 @@ class LogicRulesExtractorPipeline:
         _report_progress("Stage 5/6: Reasoning over the technical extraction into business rules")
         stage_start = time.perf_counter()
         merged_extraction = self._merge_extractions(chunk_extractions, ingestion=ingestion)
+        deterministic_chains = extract_nested_decision_chains(ingestion.raw_code)
+        if not deterministic_chains:
+            deterministic_chains = extract_procedural_decision_chains(ingestion.raw_code)
+        if deterministic_chains:
+            merged_extraction["decision_chains"] = deterministic_chains
+        semantic_findings = find_semantic_anomalies(
+            ingestion.raw_code,
+            merged_extraction.get("calculations", []),
+        )
+        merged_extraction["semantic_findings"] = semantic_findings
+        merged_extraction["ambiguities"].extend(semantic_findings)
         merged_extraction["run_metadata"] = run_metadata_to_dict(run_metadata)
         merged_extraction["llm_tables_read"] = list(merged_extraction.get("tables_read", []))
         merged_extraction["llm_tables_written"] = list(merged_extraction.get("tables_written", []))
@@ -326,12 +343,13 @@ class LogicRulesExtractorPipeline:
             merged_extraction["tables_read"], merged_extraction["tables_written"] = (
                 split_table_operations(table_operations)
             )
+        synthesis_input = self._build_synthesis_input(merged_extraction)
         parameter_summary = self._summarize_parameters(ingestion)
         synthesis = self.synthesizer_agent.synthesize(
             object_name=ingestion.object_name,
             object_type=ingestion.object_type,
             parameter_summary=parameter_summary,
-            merged_extraction=merged_extraction,
+            merged_extraction=synthesis_input,
             dialect=analysis_dialect or ingestion.dialect,
             raw_source=ingestion.raw_code,
             telemetry_tracker=telemetry_tracker,
@@ -346,12 +364,18 @@ class LogicRulesExtractorPipeline:
             merged_extraction=merged_extraction,
             synthesis=synthesis,
         )
+        if reconciliation is None or not hasattr(reconciliation, "to_dict"):
+            raise RuntimeError("Report generation requires completed reconciliation evidence.")
         merged_extraction["reconciliation"] = reconciliation.to_dict()
         merged_extraction["coverage"] = reconciliation.coverage
         merged_extraction["quality"] = reconciliation.quality
         synthesis.data["reconciliation"] = reconciliation.to_dict()
         synthesis.data["coverage"] = reconciliation.coverage
         synthesis.data["quality"] = reconciliation.quality
+        reconciliation_findings = self._reconciliation_review_findings(reconciliation)
+        merged_extraction["ambiguities"].extend(reconciliation_findings)
+        synthesis.data["ambiguities"] = list(synthesis.data.get("ambiguities", []) or [])
+        synthesis.data["ambiguities"].extend(reconciliation_findings)
         telemetry_run_id = stable_id(
             "telemetry",
             run_metadata.source_hash if run_metadata else "",
@@ -660,6 +684,7 @@ class LogicRulesExtractorPipeline:
             "chunk_provenance": [],
         }
         chunk_lookup = {chunk.chunk_id: chunk for chunk in getattr(ingestion, "chunks", []) or []}
+        decision_chain_keys: set[str] = set()
         for extraction in chunk_extractions:
             chunk_meta = chunk_lookup.get(extraction.chunk_id)
             support_confidence = derive_chunk_support_confidence(
@@ -694,6 +719,18 @@ class LogicRulesExtractorPipeline:
                 if key == "chunk_provenance":
                     continue
                 for item in extraction.data.get(key, []) or []:
+                    if key == "decision_chains" and isinstance(item, dict):
+                        structural_item = {
+                            "chain_type": item.get("chain_type", ""),
+                            "subject": item.get("subject", ""),
+                            "branches": item.get("branches", []),
+                        }
+                        chain_key = json.dumps(
+                            structural_item, sort_keys=True, separators=(",", ":"), default=str
+                        )
+                        if chain_key in decision_chain_keys:
+                            continue
+                        decision_chain_keys.add(chain_key)
                     if isinstance(item, dict):
                         annotated_item = dict(item)
                         annotated_item.setdefault("source_chunk_id", extraction.chunk_id)
@@ -725,6 +762,76 @@ class LogicRulesExtractorPipeline:
                     "extraction returned malformed JSON and needs manual review."
                 )
         return merged
+
+    @staticmethod
+    def _build_synthesis_input(merged_extraction: Dict[str, Any]) -> Dict[str, Any]:
+        """Create the isolated, complete handoff sent to synthesis.
+
+        Extraction and deterministic SQL parsing produce different views of
+        the same object. They must be merged before synthesis, but the
+        synthesis agent must not receive a live reference to the pipeline's
+        reconciliation/formatting state. A deep copy also prevents provider
+        clients or post-processing from mutating the evidence later used for
+        verification. Only recognized extraction sections are forwarded;
+        run artifacts are attached after synthesis and therefore cannot leak
+        into the model input.
+        """
+        if not isinstance(merged_extraction, dict):
+            return {}
+        allowed_sections = {
+            "conditions",
+            "decision_chains",
+            "loops",
+            "tables_read",
+            "tables_written",
+            "table_operations",
+            "calculations",
+            "exception_handling",
+            "ambiguities",
+            "chunk_provenance",
+            "statement_provenance",
+            "llm_tables_read",
+            "llm_tables_written",
+            "semantic_findings",
+        }
+        return copy.deepcopy(
+            {
+                key: value
+                for key, value in merged_extraction.items()
+                if key in allowed_sections
+            }
+        )
+
+    @staticmethod
+    def _reconciliation_review_findings(reconciliation: Any) -> list[str]:
+        """Turn every unresolved reconciliation result into a report finding."""
+        findings: list[str] = []
+        for record in getattr(reconciliation, "records", []) or []:
+            status = str(
+                record.get("status", "") if isinstance(record, dict)
+                else getattr(record, "status", "")
+                or ""
+            ).upper()
+            if status not in {"CONFLICT", "UNRESOLVED", "LLM_ONLY", "DETERMINISTIC_ONLY"}:
+                continue
+            kind = str(
+                record.get("kind", "evidence") if isinstance(record, dict)
+                else getattr(record, "kind", "evidence")
+                or "evidence"
+            )
+            findings.append(
+                f"Reconciliation review required: {kind} evidence is {status.lower()} "
+                "and must not be treated as a confirmed business rule."
+            )
+        for contradiction in getattr(reconciliation, "contradictions", []) or []:
+            explanation = str(
+                contradiction.get("explanation", "") if isinstance(contradiction, dict)
+                else getattr(contradiction, "explanation", "")
+                or ""
+            ).strip()
+            if explanation:
+                findings.append(f"Reconciliation detected a source/report discrepancy: {explanation}")
+        return list(dict.fromkeys(findings))
 
     @staticmethod
     def _summarize_parameters(ingestion: IngestionResult) -> str:

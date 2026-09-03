@@ -10,6 +10,7 @@ from evaluation.metrics import normalize_text
 from src.extraction.logic_extractor import ChunkExtraction
 from src.extraction.logic_extractor import LogicExtractionAgent
 from src.ingestion.ingestion import CodeChunk, IngestionResult, Parameter
+from src.output.report_formatter import ReportFormatterAgent
 from src.synthesis.rule_synthesizer import RuleSynthesizerAgent
 
 
@@ -113,6 +114,148 @@ def test_oracle_overdue_ladder_canonicalizes_branch_values():
     assert normalized[0]["action"] == "Set SUBSTANDARD classification"
     assert normalized[0]["output_field"] == "v_classification"
     assert len(normalized) == 1
+
+
+def test_decision_chain_assignments_are_normalized_and_drive_exact_rules():
+    chain = {
+        "subject": "v_overdue_days",
+        "branches": [
+            {
+                "branch_condition": "v_overdue_days <= 90",
+                "assignments": [
+                    {"field": "v_classification", "value": "STANDARD"},
+                    {"field": "v_provision_pct", "value": "0.40"},
+                ],
+            },
+            {
+                "branch_condition": "v_overdue_days BETWEEN 91 AND 365",
+                "assignments": [
+                    {"field": "v_classification", "value": "SUBSTANDARD"},
+                    {"field": "v_provision_pct", "value": "15"},
+                ],
+            },
+            {
+                "branch_condition": "v_overdue_days BETWEEN 366 AND 1095",
+                "assignments": [
+                    {"field": "v_classification", "value": "DOUBTFUL1"},
+                    {"field": "v_provision_pct", "value": "25"},
+                ],
+            },
+            {
+                "branch_condition": "ELSE",
+                "assignments": [
+                    {"field": "v_classification", "value": "LOSS"},
+                    {"field": "v_provision_pct", "value": "100"},
+                ],
+            },
+        ],
+    }
+    normalized = RuleSynthesizerAgent._normalize_business_rules(
+        [
+            {
+                "rule_name": "Wrong duplicate",
+                "fields_affected": ["v_classification"],
+                "eligibility": ["v_overdue_days <= 90", "v_overdue_days > 1095"],
+            },
+            {
+                "rule_name": "Another wrong duplicate",
+                "fields_affected": ["v_classification"],
+            },
+        ]
+    )
+    rules = RuleSynthesizerAgent._apply_authoritative_decision_chains(
+        normalized,
+        {"decision_chains": [chain]},
+    )
+
+    classification_rules = [rule for rule in rules if rule["output_field"] == "v_classification"]
+    assert len(classification_rules) == 4
+    assert [rule["action"] for rule in classification_rules] == [
+        "Assigns v_classification the value STANDARD.",
+        "Assigns v_classification the value SUBSTANDARD.",
+        "Assigns v_classification the value DOUBTFUL1.",
+        "Assigns v_classification the value LOSS.",
+    ]
+    assert not any(rule["output_field"] == "v_provision_pct" for rule in rules)
+
+
+def test_authoritative_chain_removes_rules_identified_only_by_output_field():
+    chain = {
+        "subject": "input_days",
+        "branches": [
+            {"branch_condition": "input_days <= 10", "assignments": [{"field": "status", "value": "A"}]},
+            {"branch_condition": "ELSE", "assignments": [{"field": "status", "value": "B"}]},
+        ],
+    }
+    rules = RuleSynthesizerAgent._apply_authoritative_decision_chains(
+        [{"output_field": "status", "action": "Wrong stale rule", "fields_affected": []}],
+        {"decision_chains": [chain]},
+    )
+    assert len(rules) == 2
+    assert [rule["output_field"] for rule in rules] == ["status", "status"]
+    assert [rule["action"] for rule in rules] == [
+        "Assigns status the value A.",
+        "Assigns status the value B.",
+    ]
+
+    generic_rules = RuleSynthesizerAgent._apply_authoritative_decision_chains(
+        [],
+        {
+            "decision_chains": [
+                {
+                    "subject": "input_code",
+                    "branches": [
+                        {"branch_condition": "input_code = 1", "assignments": [{"field": "status_code", "value": "OPEN"}]},
+                        {"branch_condition": "ELSE", "assignments": [{"field": "status_code", "value": "CLOSED"}]},
+                    ],
+                }
+            ]
+        },
+    )
+    assert [rule["action"] for rule in generic_rules] == [
+        "Assigns status_code the value OPEN.",
+        "Assigns status_code the value CLOSED.",
+    ]
+
+
+def test_decision_table_does_not_render_alternative_branches_as_all_eligibility():
+    report = ReportFormatterAgent()._business_rules_section(
+        [
+            {
+                "rule_name": "Determine classification",
+                "output_field": "v_classification",
+                "business_meaning": "Determines the classification from decision bands.",
+                "eligibility": [
+                    "Overdue days are between 366 and 1095",
+                    "Overdue days are more than 1095",
+                ],
+                "decision_logic_rows": [
+                    {"condition": "v_overdue_days BETWEEN 366 AND 1095", "outcome": "DOUBTFUL1"},
+                    {"condition": "ELSE", "outcome": "LOSS"},
+                ],
+            }
+        ]
+    )
+    assert "**Eligibility" not in report
+    assert "DOUBTFUL1" in report
+    assert "LOSS" in report
+
+
+def test_single_condition_rule_renders_condition_outcome_table():
+    report = ReportFormatterAgent()._business_rules_section(
+        [
+            {
+                "rule_name": "Assign status",
+                "output_field": "status",
+                "condition": "input_code = 1",
+                "action": "Assigns status the value OPEN.",
+                "business_meaning": "Assigns the status for the matching input code.",
+                "eligibility": [],
+            }
+        ]
+    )
+    assert "### Decision Logic" in report
+    assert "| input_code equals 1 | Assigns status the value OPEN. |" in report
 
 
 def test_oracle_nested_doubtful_branch_collapses_with_context():

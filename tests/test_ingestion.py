@@ -518,6 +518,31 @@ WHERE RUNNINGPROCESSNAME='SMA_MARKING'
     assert all("Always, on each execution" not in (op.get("where_predicate") or "") for op in operations)
 
 
+def test_tsql_update_fallback_preserves_case_assignments_and_filters_comments():
+    raw_sql = """
+UPDATE B
+SET B.AssetKey = CASE WHEN B.Days > @Limit THEN 7 ELSE 3 END,
+    B.DbtDt = NULL,
+    B.DegDate = @ProcessDate
+FROM ##Customer B
+WHERE B.Active = 1
+-- UPDATE B SET B.AssetKey = 999
+"""
+    chunk = CodeChunk(chunk_id="case_update_chunk", kind="main_body", text=raw_sql, context_path=["main_body"])
+    operations, _ = extract_table_operations_from_chunks([chunk], "tsql")
+    updates = [op for op in operations if op["operation"] == "UPDATE"]
+    assert updates
+    assignments = updates[0]["assigned_values"]
+    assert {item["column"] for item in assignments} == {"B.AssetKey", "B.DbtDt", "B.DegDate"}
+    assert any("CASE WHEN" in item["expression"] for item in assignments)
+    assert any(item["expression"].upper() == "NULL" for item in assignments)
+    assert any(item["expression"] == "@ProcessDate" for item in assignments)
+    case_assignment = next(item for item in assignments if item["column"] == "B.AssetKey")
+    assert case_assignment["case_branches"]
+    assert case_assignment["case_branches"][0]["condition"] == "B.Days > @Limit"
+    assert case_assignment["case_branches"][-1]["condition"] == "ELSE"
+
+
 def test_update_insert_select_does_not_emit_spurious_read_rows():
     chunk = CodeChunk(
         chunk_id="dml_chunk",

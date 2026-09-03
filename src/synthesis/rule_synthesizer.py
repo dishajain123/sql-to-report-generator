@@ -191,10 +191,18 @@ class RuleSynthesizerAgent:
                     data["business_rules"] = self._canonicalize_synthesis_families(
                         data["business_rules"], merged_extraction
                     )
+                    data["business_rules"] = self._apply_authoritative_decision_chains(
+                        data["business_rules"], merged_extraction
+                    )
+                    data["business_rules"] = self._remove_operation_only_rules(data["business_rules"])
                     data["business_rules"] = self._split_multi_field_rules_using_decision_chains(
                         data["business_rules"], merged_extraction
                     )
                     self._complete_synthesis_from_deterministic_facts(data, merged_extraction, raw_source=raw_source)
+                    data["business_rules"] = self._remove_operation_only_rules(data["business_rules"])
+                    data["business_rules"] = self._apply_authoritative_decision_chains(
+                        data["business_rules"], merged_extraction
+                    )
                     self._append_completeness_warnings(data, merged_extraction)
                     guardrail_warnings.extend(
                         ground_business_rules_against_extraction(
@@ -283,10 +291,18 @@ class RuleSynthesizerAgent:
         data["business_rules"] = self._canonicalize_synthesis_families(
             data["business_rules"], merged_extraction
         )
+        data["business_rules"] = self._apply_authoritative_decision_chains(
+            data["business_rules"], merged_extraction
+        )
+        data["business_rules"] = self._remove_operation_only_rules(data["business_rules"])
         data["business_rules"] = self._split_multi_field_rules_using_decision_chains(
             data["business_rules"], merged_extraction
         )
         self._complete_synthesis_from_deterministic_facts(data, merged_extraction, raw_source=raw_source)
+        data["business_rules"] = self._remove_operation_only_rules(data["business_rules"])
+        data["business_rules"] = self._apply_authoritative_decision_chains(
+            data["business_rules"], merged_extraction
+        )
         self._append_completeness_warnings(data, merged_extraction)
         guardrail_warnings.extend(
             ground_business_rules_against_extraction(
@@ -557,6 +573,12 @@ class RuleSynthesizerAgent:
                     continue
                 condition = str(branch.get("branch_condition") or "").strip()
                 assignments = branch.get("assignments")
+                if isinstance(assignments, list):
+                    assignments = {
+                        str(item.get("field") or "").strip(): str(item.get("value") or "")
+                        for item in assignments
+                        if isinstance(item, dict) and str(item.get("field") or "").strip()
+                    }
                 if not condition or not isinstance(assignments, dict) or not assignments:
                     continue
                 for field, value in assignments.items():
@@ -617,6 +639,185 @@ class RuleSynthesizerAgent:
                 result.append(split_rule)
 
         return result
+
+    @staticmethod
+    def _apply_authoritative_decision_chains(
+        rules: List[Dict[str, Any]],
+        merged_extraction: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Make structured branch chains win over contradictory LLM prose.
+
+        Chain assignments are normalized as a list by the extraction
+        guardrail, while older callers may provide a mapping. Supporting both
+        forms keeps cached and newly generated extractions equivalent. A
+        chain is executable evidence, so its field/branch rows replace any
+        model rules targeting those fields; descriptive text and provenance
+        from the first matching model rule are retained where available.
+        """
+        chains = (merged_extraction or {}).get("decision_chains", [])
+        if not isinstance(chains, list) or not chains:
+            return rules
+
+        def display_value(value: Any) -> str:
+            text = str(value or "").strip()
+            if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+                return text[1:-1]
+            return text
+
+        rebuilt: List[Dict[str, Any]] = []
+        consumed_fields: set[str] = set()
+        authoritative_fields: set[str] = set()
+        for chain in chains:
+            if not isinstance(chain, dict) or not isinstance(chain.get("branches"), list):
+                continue
+            branch_data: List[Tuple[str, Dict[str, str]]] = []
+            field_names: "OrderedDict[str, None]" = OrderedDict()
+            for branch in chain["branches"]:
+                if not isinstance(branch, dict):
+                    continue
+                condition = str(branch.get("branch_condition") or "").strip()
+                assignments = branch.get("assignments")
+                if isinstance(assignments, list):
+                    assignments = {
+                        str(item.get("field") or "").strip(): str(item.get("value") or "")
+                        for item in assignments
+                        if isinstance(item, dict) and str(item.get("field") or "").strip()
+                    }
+                if not condition or not isinstance(assignments, dict):
+                    continue
+                for field_name, value in assignments.items():
+                    field_name = str(field_name).strip()
+                    if field_name:
+                        field_names.setdefault(field_name, None)
+                branch_data.append((condition, assignments))
+            if not field_names or not branch_data:
+                continue
+            authoritative_fields.update(field.lower() for field in field_names)
+
+            field_rows: "OrderedDict[str, List[Dict[str, str]]]" = OrderedDict(
+                (field_name, []) for field_name in field_names
+            )
+            for condition, assignments in branch_data:
+                for field_name in field_rows:
+                    field_rows[field_name].append(
+                        {
+                            "condition": condition,
+                            "outcome": str(assignments.get(field_name, "unchanged")),
+                        }
+                    )
+
+            candidates = [
+                rule for rule in rules
+                if isinstance(rule, dict)
+                and any(
+                    str(field).strip().lower() in {name.lower() for name in field_rows}
+                    for field in (rule.get("fields_affected") or [])
+                )
+            ]
+            for field_name, rows in field_rows.items():
+                if field_name.lower() in consumed_fields:
+                    continue
+                outcomes = [row["outcome"].strip().strip("'\"") for row in rows]
+                is_calculation_field = bool(outcomes) and all(
+                    re.fullmatch(r"[-+]?\d+(?:\.\d+)?", outcome) for outcome in outcomes
+                )
+                if is_calculation_field:
+                    consumed_fields.add(field_name.lower())
+                    continue
+                field_template = next(
+                    (
+                        rule for rule in candidates
+                        if field_name.lower() in {
+                            str(field).strip().lower()
+                            for field in (rule.get("fields_affected") or [])
+                        }
+                    ),
+                    None,
+                )
+                template = field_template or (candidates[0] if candidates else {})
+                rebuilt_rule = dict(template)
+                # Non-numeric branch outcomes represent categorical business
+                # decisions. Keep every mutually exclusive branch as a
+                # separate rule so source branches cannot be merged or lost.
+                outcomes = [row["outcome"].strip().strip("'\"") for row in rows]
+                if not all(re.fullmatch(r"[-+]?\d+(?:\.\d+)?", outcome) for outcome in outcomes):
+                    for row in rows:
+                        branch_rule = dict(rebuilt_rule)
+                        branch_rule["fields_affected"] = [field_name]
+                        branch_rule["output_field"] = field_name
+                        branch_rule["decision_logic_rows"] = []
+                        branch_rule["eligibility"] = []
+                        branch_rule["condition"] = row["condition"]
+                        outcome = display_value(row["outcome"])
+                        branch_rule["action"] = f"Assigns {field_name} the value {outcome}."
+                        branch_rule["business_meaning"] = (
+                            f"Assigns {field_name} the value {outcome} when the "
+                            f"source condition is {row['condition']}."
+                        )
+                        branch_rule["rule_name"] = f"Assign {field_name} as {outcome}"
+                        branch_rule["source_evidence"] = [row["condition"], row["outcome"]]
+                        rebuilt.append(branch_rule)
+                else:
+                    rebuilt_rule["fields_affected"] = [field_name]
+                    rebuilt_rule["output_field"] = field_name
+                    rebuilt_rule["decision_logic_rows"] = rows
+                    rebuilt_rule["eligibility"] = []
+                    rebuilt_rule["condition"] = str(chain.get("subject") or "").strip()
+                    rebuilt_rule["action"] = f"Assigns {field_name} according to the source-defined decision bands."
+                    rebuilt_rule["business_meaning"] = (
+                        f"Determines the value assigned to {field_name} based on the "
+                        f"source-defined decision bands."
+                    )
+                    rebuilt_rule["rule_name"] = f"Determine {field_name} from decision bands"
+                    rebuilt_rule["source_evidence"] = [
+                        evidence
+                        for row in rows
+                        for evidence in (row["condition"], row["outcome"])
+                        if evidence
+                    ]
+                    rebuilt.append(rebuilt_rule)
+                consumed_fields.add(field_name.lower())
+
+        if not rebuilt:
+            return rules
+
+        chain_fields = authoritative_fields
+        remaining = [
+            rule for rule in rules
+            if not (
+                isinstance(rule, dict)
+                    and any(
+                        str(field).strip().lower() in chain_fields
+                        for field in list(rule.get("fields_affected") or [])
+                        + ([rule.get("output_field")] if rule.get("output_field") else [])
+                    )
+            )
+        ]
+        return remaining + rebuilt
+
+    @staticmethod
+    def _remove_operation_only_rules(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Exclude CRUD mechanics that do not express a business decision."""
+        filtered: List[Dict[str, Any]] = []
+        for rule in rules or []:
+            if not isinstance(rule, dict):
+                continue
+            if rule.get("decision_logic_rows"):
+                filtered.append(rule)
+                continue
+            evidence = " ".join(str(item) for item in rule.get("source_evidence") or []).upper()
+            name = str(rule.get("rule_name") or "").lower()
+            action = str(rule.get("action") or "").lower()
+            is_crud = bool(re.search(r"\b(SELECT|UPDATE|INSERT|DELETE|MERGE)\b", evidence))
+            is_mechanical = (
+                "source-defined value" in action
+                or "source-defined value" in name
+                or (name.startswith(("update ", "insert ", "write ")) and not rule.get("eligibility"))
+            )
+            if is_crud and is_mechanical:
+                continue
+            filtered.append(rule)
+        return filtered
 
     @staticmethod
     def _canonicalize_synthesis_families(
@@ -1148,14 +1349,15 @@ class RuleSynthesizerAgent:
                 # turn variable/date/calculation branches into business rules.
                 if not field_name or not value or not re.search(r"(?:'[^']*'|\"[^\"]*\"|[-+]?\d+(?:\.\d+)?)", value):
                     continue
-                if field_name.upper().startswith(("DPD_", "V_")) and not re.search(
-                    r"class|bucket|provision|status|reason|flag|stage|category", field_name, re.I
-                ):
-                    continue
                 by_field.setdefault(field_name.upper(), []).append(item)
 
             for field_name, field_assignments in by_field.items():
                 values = {str(item["value"]).upper() for item in field_assignments}
+                normalized_values = {value.strip().strip("'\"").upper() for value in values}
+                if normalized_values and all(
+                    re.fullmatch(r"[-+]?\d+(?:\.\d+)?", value) for value in normalized_values
+                ):
+                    continue
                 # A nested branch may contain two outcomes while its parent
                 # contributes the outer ELSE/default outcome.  Keep every
                 # branch from an explicit IF ladder here; the frame itself

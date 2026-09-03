@@ -66,7 +66,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.ingestion.ingestion import IngestionResult
 from src.ir.canonical_ir import CanonicalBusinessIR
-from src.synthesis.rule_synthesizer import SynthesisResult
+from src.synthesis.rule_synthesizer import RuleSynthesizerAgent, SynthesisResult
 from src.dialect.detector import AMBIGUOUS, ORACLE, TSQL, UNKNOWN, UNSUPPORTED, normalize_dialect_name
 from src.core.pipeline_utils import RunMetadata, run_metadata_to_dict
 from src.parsing.dedup import find_write_only_temp_tables
@@ -137,9 +137,16 @@ class ReportFormatterAgent:
         merged_extraction = canonical_ir.to_legacy_merged_extraction(merged_extraction)
         synthesis = self._synthesis_view(synthesis, canonical_ir)
         rules: List[Dict[str, Any]] = [rule.to_dict() for rule in canonical_ir.business_rules]
-        business_rules_for_display = self._display_business_rules(
-            self._business_rules_for_display(raw_business_rules, rules)
+        display_rules = self._business_rules_for_display(raw_business_rules, rules)
+        # Last presentation-boundary safety pass: canonical IR may have been
+        # built from an older/cached synthesis result. Reapply deterministic
+        # chain and CRUD filters before anything reaches the user-facing
+        # report, while keeping verification backed by the full source data.
+        display_rules = RuleSynthesizerAgent._apply_authoritative_decision_chains(
+            display_rules, merged_extraction
         )
+        display_rules = RuleSynthesizerAgent._remove_operation_only_rules(display_rules)
+        business_rules_for_display = self._display_business_rules(display_rules)
         consolidated_reads = self._consolidate_rows(merged_extraction.get("tables_read", []) or [])
         consolidated_writes = self._consolidate_rows(merged_extraction.get("tables_written", []) or [])
         return {
@@ -192,6 +199,7 @@ class ReportFormatterAgent:
                 business_rules_for_display,
                 resolved_merged_extraction,
             ),
+            self._reconciliation_notice(resolved_merged_extraction),
             self._what_this_does(synthesis, business_rules_for_display, resolved_merged_extraction),
             self._end_to_end_flow(synthesis, business_rules_for_display, resolved_merged_extraction),
             self._business_rules_section(business_rules_for_display),
@@ -209,6 +217,19 @@ class ReportFormatterAgent:
         ]
         sections = [s for s in sections if s and s.strip()]
         return "\n\n".join(sections).strip() + "\n"
+
+    @staticmethod
+    def _reconciliation_notice(merged_extraction: Dict[str, Any]) -> str:
+        quality = merged_extraction.get("quality") if isinstance(merged_extraction, dict) else {}
+        status = str((quality or {}).get("status") or "").upper()
+        if status not in {"REVIEW_REQUIRED", "FAIL", "FAILED"}:
+            return ""
+        return (
+            "## Review Required\n\n"
+            "The reconciliation stage detected source/report inconsistencies. "
+            "Business Rules, Calculations, and Data Touched are provisional and "
+            "must not be treated as confirmed until the discrepancies are resolved."
+        )
 
     def format_verification(
         self,
@@ -525,6 +546,23 @@ class ReportFormatterAgent:
                 continue
 
             target = merged[match_idx]
+            # Distinct branch predicates are separate business outcomes,
+            # even when they target the same field and use similar prose.
+            # Never merge mutually exclusive or nested paths merely because
+            # their field signatures overlap.
+            target_condition = ReportFormatterAgent._clean_text(target.get("condition"))
+            incoming_condition = ReportFormatterAgent._clean_text(rule.get("condition"))
+            if target_condition and incoming_condition and target_condition.lower() != incoming_condition.lower():
+                merged.append(dict(rule))
+                signatures.append(sig)
+                continue
+            if target.get("decision_logic_rows") or rule.get("decision_logic_rows"):
+                target_rows = ReportFormatterAgent._decision_logic_rows(target)
+                incoming_rows = ReportFormatterAgent._decision_logic_rows(rule)
+                if target_rows and incoming_rows and target_rows != incoming_rows:
+                    merged.append(dict(rule))
+                    signatures.append(sig)
+                    continue
             # Union the wider field set so a subsequent, even-more-complete
             # duplicate can still match against it.
             signatures[match_idx] = signatures[match_idx] | sig
@@ -706,11 +744,11 @@ class ReportFormatterAgent:
         merged_extraction: Optional[Dict[str, Any]] = None,
     ) -> str:
         purpose = str(synthesis.data.get("purpose_summary") or "").strip() or _NOT_DETERMINED
-        history_present = any(
-            _HISTORY_TABLE_PATTERN.search(str(row.get("table") or ""))
+        history_tables = [
+            str(row.get("table") or "")
             for row in (consolidated_reads or []) + (consolidated_writes or [])
-            if isinstance(row, dict)
-        )
+            if isinstance(row, dict) and _HISTORY_TABLE_PATTERN.search(str(row.get("table") or ""))
+        ]
         visible_reads = self._visible_table_count(consolidated_reads)
         visible_writes = self._visible_table_count(consolidated_writes)
         rows = [
@@ -718,7 +756,7 @@ class ReportFormatterAgent:
             ("Business rules", str(len(rules))),
             ("Tables read", str(visible_reads)),
             ("Tables written", str(visible_writes)),
-            ("Produces audit trail", "Yes — account and customer movement history" if history_present else "No"),
+            ("Produces audit trail", "Yes — records audit events" if history_tables else "No"),
         ]
         lines = ["## At a Glance", "", "| | |", "|---|---|"]
         lines.extend(f"| {label} | {value} |" for label, value in rows)
@@ -825,6 +863,11 @@ class ReportFormatterAgent:
         # gates, rather than pooled into one flat cross-rule list at the
         # top of the report - a reader must never have to cross-reference
         # a separate section to know which conditions gate THIS rule.
+        # Ordered decision rows are mutually exclusive alternatives. Their
+        # branch predicates must never be rendered as simultaneous
+        # eligibility requirements, even if the model copied them there.
+        if decision_logic_rows:
+            eligibility = []
         if eligibility:
             if len(eligibility) == 1:
                 lines.append(f"**Eligibility:** {self._pretty_condition_for_display(eligibility[0])}")
@@ -1365,6 +1408,11 @@ class ReportFormatterAgent:
         merged_extraction: Optional[Dict[str, Any]] = None,
     ) -> str:
         summary = synthesis.data.get("exception_handling_summary") or "No explicit failure-path behavior identified."
+        summary = re.sub(
+            r"(?i)\b(?:continues?|proceeds?)\s+(?:execution|processing)\b",
+            "the source does not explicitly state whether processing continues",
+            str(summary),
+        )
         return f"## Exception Handling\n\n{summary}"
 
     def _data_touched_section(
@@ -1449,42 +1497,20 @@ class ReportFormatterAgent:
              last-resort fact when no rule could be matched.
           4. "Not specified" - never a fabricated purpose.
         """
-        rules = rules or []
-
-        def _meaning_for(bucket: Optional[Dict[str, Any]]) -> str:
-            if not bucket:
-                return ""
-            columns = {
-                str(c).strip().lower()
-                for c in (bucket.get("target_columns") or [])
-                if str(c).strip()
-            }
-            if not columns:
-                return ""
-            matched_meanings: List[str] = []
-            for rule in rules:
-                fields = {
-                    str(f).strip().lower()
-                    for f in (rule.get("fields_affected") or [])
-                    if str(f).strip()
-                }
-                if fields & columns:
-                    meaning = str(rule.get("business_meaning") or "").strip()
-                    if meaning and meaning not in matched_meanings:
-                        matched_meanings.append(meaning)
-            if matched_meanings:
-                return ReportFormatterAgent._shorten_text(" ".join(matched_meanings[:2]), 200)
-            return ""
-
-        meaning = _meaning_for(write_bucket) or _meaning_for(read_bucket)
-        if meaning:
-            return meaning
-
-        for bucket, verb in ((write_bucket, "Updates"), (read_bucket, "Provides")):
+        for bucket in (write_bucket, read_bucket):
             if bucket and bucket.get("target_columns"):
                 cols = ", ".join(bucket["target_columns"][:6])
-                return f"{verb}: {cols}"
-        return "Not specified"
+                operations = {str(operation).upper() for operation in bucket.get("operations") or []}
+                if "INSERT" in operations:
+                    return f"Inserts data into: {cols}"
+                if "UPDATE" in operations:
+                    return f"Updates: {cols}"
+                if "DELETE" in operations:
+                    return f"Deletes rows identified by: {cols}"
+                return f"Provides: {cols}"
+            if bucket and bucket.get("operations"):
+                operations = ", ".join(bucket["operations"])
+                return f"Participates in {operations.lower()} processing."
         return "Not specified"
 
     def _validation_summary(
@@ -1705,6 +1731,11 @@ class ReportFormatterAgent:
         source_merged_extraction = raw_merged_extraction or merged_extraction
         source_synthesis_data = raw_synthesis_data or synthesis.data
 
+        items.extend(
+            str(item).strip()
+            for item in source_merged_extraction.get("semantic_findings", []) or []
+            if str(item).strip()
+        )
         merged_ambiguities = source_merged_extraction.get("ambiguities", []) or []
         items.extend(str(item).strip() for item in merged_ambiguities if str(item).strip())
         for chunk in source_merged_extraction.get("chunk_provenance", []) or []:
@@ -2133,16 +2164,18 @@ class ReportFormatterAgent:
         return [ReportFormatterAgent._clean_sql_fragment_for_display(item) for item in items]
 
     def _decision_logic_rows(self, rule: Dict[str, Any]) -> List[Dict[str, str]]:
-        """Only returns rows for a genuine multi-band/lookup mapping
-        (2+ distinct condition -> outcome pairs for the same field, e.g.
-        a days-overdue ladder). A single condition -> single outcome
-        rule already has that outcome stated once in "Business meaning"
-        and its gating condition in "Eligibility" - re-stating both as a
-        one-row table underneath added nothing but repeated text, so
-        that synthetic single-row fallback has been removed entirely.
+        """Return exact condition/outcome rows for this business rule.
+
+        Explicit single-branch rules are rendered as one table row too. This
+        keeps the report shape consistent and makes the condition/outcome
+        binding visible instead of leaving it only in prose.
         """
         rows = rule.get("decision_logic_rows")
         if not isinstance(rows, list) or not rows:
+            condition = str(rule.get("condition") or "").strip()
+            action = str(rule.get("action") or "").strip()
+            if condition and action:
+                return [{"condition": condition, "outcome": action}]
             return []
         normalized = []
         for row in rows:

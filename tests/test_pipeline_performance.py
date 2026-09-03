@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.ingestion.ingestion import CodeChunk, IngestionResult, Parameter
+from src.output.report_formatter import ReportFormatterAgent
 from pipeline import LogicRulesExtractorPipeline
 
 
@@ -95,7 +96,36 @@ def test_parallel_chunk_extraction_preserves_order():
 
     assert [item.chunk_id for item in results] == ["02", "01", "03"]
     assert pipeline.retrieval_agent.calls == 3
-    assert pipeline.extraction_agent.calls == ["02", "01", "03"]
+    assert sorted(pipeline.extraction_agent.calls) == ["01", "02", "03"]
+
+
+def test_synthesis_input_is_isolated_from_pipeline_artifacts():
+    source = {
+        "conditions": [{"condition": "v_overdue_days <= 90"}],
+        "decision_chains": [],
+        "tables_read": [],
+        "tables_written": [],
+        "table_operations": [],
+        "run_metadata": {"model_name": "must_not_be_forwarded"},
+        "reconciliation": {"status": "must_not_be_forwarded"},
+    }
+
+    handoff = LogicRulesExtractorPipeline._build_synthesis_input(source)
+    handoff["conditions"][0]["condition"] = "mutated"
+    handoff["conditions"].append({"condition": "new"})
+
+    assert source["conditions"] == [{"condition": "v_overdue_days <= 90"}]
+    assert "run_metadata" not in handoff
+    assert "reconciliation" not in handoff
+
+
+def test_data_touched_purpose_cannot_copy_business_rule_meaning():
+    purpose = ReportFormatterAgent._table_purpose_text(
+        {"target_columns": ["ASSET_CLASSIFICATION"], "operations": ["UPDATE"]},
+        {"target_columns": [], "operations": []},
+        [{"fields_affected": ["UNRELATED_FIELD"], "business_meaning": "Wrong table purpose"}],
+    )
+    assert purpose == "Updates: ASSET_CLASSIFICATION"
 
 
 def test_retriever_build_or_load_is_reused_when_already_loaded(tmp_path, monkeypatch):

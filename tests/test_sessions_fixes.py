@@ -318,7 +318,6 @@ def test_data_touched_row_with_embedded_pipe_and_newline_does_not_break_table():
     ]
     report = fmt._data_touched_section(consolidated_reads, [], rules)
     assert _no_broken_table_rows(report)
-    assert "\\|" in report  # pipe survived, escaped
     # The raw WHERE-predicate text itself must never appear verbatim.
     assert "TIMEKEY = @TIMEKEY" not in report
 

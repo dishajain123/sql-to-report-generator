@@ -868,6 +868,7 @@ def _regex_fallback_table_operations(
             where_part = ""
 
         target_columns = _split_update_target_columns(set_part)
+        assigned_values = _split_update_assigned_values(set_part)
 
         # T-SQL allows `UPDATE <alias> SET ... FROM <real_table> <alias> JOIN ...`.
         # In that shape the token right after UPDATE is an alias, not a table
@@ -904,6 +905,7 @@ def _regex_fallback_table_operations(
                 "join_predicates": [],
                 "exists_predicates": [],
                 "constants": _extract_simple_constants(text),
+                "assigned_values": assigned_values,
                 "active_status": "ACTIVE",
                 "confidence": "medium",
                 "provenance": {
@@ -1042,6 +1044,45 @@ def _split_update_target_columns(set_text: str) -> List[str]:
     for match in re.finditer(r"(?is)(?:^|,)\s*([#\w.\[\]]+)\s*=", set_text):
         cols.append(match.group(1).strip())
     return _unique_preserve(cols)
+
+
+def _split_update_assigned_values(set_text: str) -> List[Dict[str, str]]:
+    """Extract UPDATE assignments while preserving nested RHS expressions."""
+    parts: List[str] = []
+    start = 0
+    depth = 0
+    quote = ""
+    for index, char in enumerate(str(set_text or "")):
+        if quote:
+            if char == quote:
+                quote = ""
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(depth - 1, 0)
+        elif char == "," and depth == 0:
+            parts.append(set_text[start:index])
+            start = index + 1
+    parts.append(set_text[start:])
+
+    assignments: List[Dict[str, str]] = []
+    for part in parts:
+        match = re.match(
+            r"\s*(?P<column>[#\w.\[\]]+)\s*=\s*(?P<expression>.+?)\s*$",
+            part,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if match:
+            assignments.append(
+                {
+                    "column": match.group("column").strip(),
+                    "expression": match.group("expression").strip().rstrip(";"),
+                }
+            )
+    return assignments
 
 
 def _extract_simple_columns(text: str, exclude: Sequence[str] | None = None) -> List[str]:
@@ -1270,9 +1311,35 @@ def _render_update_assigned_values(tree: exp.Update, dialect: str) -> List[Dict[
             {
                 "column": left.sql(dialect=dialect),
                 "expression": right.sql(dialect=dialect),
+                "case_branches": _render_case_branches(right, dialect),
             }
         )
     return pairs
+
+
+def _render_case_branches(expression: exp.Expression, dialect: str) -> List[Dict[str, str]]:
+    """Return ordered CASE branches embedded in an assignment expression."""
+    cases = list(expression.find_all(exp.Case))
+    if not cases:
+        return []
+    case = cases[0]
+    rows: List[Dict[str, str]] = []
+    for branch in case.args.get("ifs") or []:
+        if not isinstance(branch, exp.If):
+            continue
+        condition = branch.args.get("this")
+        outcome = branch.args.get("true")
+        if condition is not None and outcome is not None:
+            rows.append(
+                {
+                    "condition": condition.sql(dialect=dialect),
+                    "outcome": outcome.sql(dialect=dialect),
+                }
+            )
+    default = case.args.get("default")
+    if default is not None:
+        rows.append({"condition": "ELSE", "outcome": default.sql(dialect=dialect)})
+    return rows
 
 
 def _render_join_predicates(tree: exp.Expression, dialect: str) -> List[Dict[str, Any]]:
