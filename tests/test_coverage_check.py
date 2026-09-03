@@ -124,7 +124,7 @@ WHERE x = 1"""
     gaps = find_coverage_gaps(source, rules=[])
     assert len(gaps) == 1
     assert gaps[0].line_start == 1
-    assert gaps[0].line_end == 2
+    assert gaps[0].line_end == 3
 
 
 def test_partial_branch_evidence_does_not_cover_the_other_branch():

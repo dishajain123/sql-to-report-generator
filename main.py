@@ -66,8 +66,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Path to write the generated Markdown report. Defaults to "
         "samples/output/<Schema>.<ObjectName>.<Type>_report.md, named from "
         "the SQL object's own parsed identity (not the input filename). "
-        "Verification and traceability diagnostics are written to the run log, "
-        "not to a separate Markdown artifact.",
+        "Verification is written alongside it under samples/output/verification/.",
     )
     parser.add_argument(
         "--output-dir",
@@ -229,7 +228,13 @@ def main(argv: list[str] | None = None) -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(run_result.report, encoding="utf-8")
 
+    verification_dir = output_path.parent / "verification"
+    verification_dir.mkdir(parents=True, exist_ok=True)
+    verification_path = verification_dir / f"{report_stem}_verification.md"
+    verification_path.write_text(run_result.verification_report, encoding="utf-8")
+
     print(f"Report written to: {output_path}")
+    print(f"Verification written to: {verification_path}")
     print(f"Run log written to: {log_path}")
     return 0
 

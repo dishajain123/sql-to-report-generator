@@ -472,7 +472,9 @@ def _rule_candidate_rows(rule: Dict[str, Any], deterministic_rows: Sequence[Dict
         if candidate_rows:
             return candidate_rows
 
-    source_evidence = {_normalize_value(e) for e in rule.get("source_evidence") or [] if _clean_text(e)}
+    source_evidence = [
+        _normalize_value(e) for e in rule.get("source_evidence") or [] if _clean_text(e)
+    ]
     if source_evidence:
         for row in deterministic_rows:
             row_text_candidates = {
@@ -480,7 +482,16 @@ def _rule_candidate_rows(rule: Dict[str, Any], deterministic_rows: Sequence[Dict
                 _normalize_value(row.get("where_predicate") or ""),
                 _normalize_value(row.get("statement_text") or ""),
             }
-            if source_evidence & row_text_candidates:
+            # Evidence is often a verbatim branch/calculation fragment inside
+            # a larger statement. Containment is still source-grounded and
+            # avoids classifying a genuinely linked rule as LLM_ONLY merely
+            # because the model cited a sub-span rather than the full row.
+            if any(
+                fragment in candidate or candidate in fragment
+                for fragment in source_evidence
+                for candidate in row_text_candidates
+                if fragment and candidate
+            ):
                 candidate_rows.append(row)
         if candidate_rows:
             return candidate_rows

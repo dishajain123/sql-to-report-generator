@@ -49,6 +49,13 @@ system:
     - When you do have a true multi-band threshold ladder, keep each output field in its
       own business rule and preserve the ordered branch rows in "decision_logic_rows"
       instead of flattening the ladder into one prose summary.
+    - PRESERVE EVERY BRANCH ASSIGNMENT: when a branch assigns multiple variables or
+      columns, retain every assignment in the rule. Put the primary decision value in
+      that field's "outcome" and put all additional source-grounded assignments in the
+      row's "assignments" list (or in the rule action when they are not branch-row data).
+      Never omit an assignment merely because another assignment is the main output.
+      The decision table may summarize one primary result, but the complete rule must
+      retain all secondary assignments under its result/action data.
 
     FIELD-LEVEL PRECISION - NAME WHAT IS ACTUALLY CHANGED:
     - Whenever a business rule's "action" results in data being written or updated, name the

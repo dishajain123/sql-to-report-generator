@@ -144,11 +144,11 @@ class PipelineRunResult:
     pipeline run.
 
     `report` is the clean, business-facing Markdown document.
-    `verification_report` is the in-memory traceability diagnostic (source
-    provenance, rule IDs, reconciliation, run metadata) that is emitted to
-    the run log and deliberately does not appear in `report`. It is retained
-    on the result for programmatic callers, but is never written as a second
-    Markdown artifact. `ingestion` carries the parsed object
+    `verification_report` is the traceability diagnostic (source provenance,
+    rule IDs, reconciliation, run metadata) that does not appear in
+    `report`. CLI and batch entry points persist it as a matching artifact
+    under an output/verification directory and also emit it to the run log.
+    `ingestion` carries the parsed object
     identity (`object_name`, `canonical_object_name`, `schema`,
     `object_type`) so callers can derive output filenames from what the
     SQL actually declares rather than from the input filename - see
@@ -425,8 +425,8 @@ class LogicRulesExtractorPipeline:
             ingestion.raw_code,
             merged_extraction.get("calculations", []),
         )
-        merged_extraction["semantic_findings"] = semantic_findings
-        merged_extraction["ambiguities"].extend(semantic_findings)
+        merged_extraction["semantic_findings"] = []
+        merged_extraction["informational_uncertainties"] = semantic_findings
         merged_extraction["run_metadata"] = run_metadata_to_dict(run_metadata)
         merged_extraction["llm_tables_read"] = list(merged_extraction.get("tables_read", []))
         merged_extraction["llm_tables_written"] = list(merged_extraction.get("tables_written", []))
@@ -586,11 +586,8 @@ class LogicRulesExtractorPipeline:
             report_filename=report_filename,
             extraction_guardrail_warnings=extraction_guardrail_warnings,
         )
-        # Verification is intentionally log-only: the CLI and Streamlit
-        # entry points capture this diagnostic text in their pipeline log,
-        # while the user-facing output directory contains only the business
-        # report. Keeping it out of a second Markdown artifact prevents
-        # provenance from drifting away from the run that produced it.
+        # Keep verification separate from the business report. Entry points
+        # persist this text under output/verification and include it in logs.
         logger.info(
             "Verification/traceability diagnostics for %s:\n%s",
             report_filename,

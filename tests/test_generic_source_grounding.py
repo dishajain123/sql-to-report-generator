@@ -1,0 +1,353 @@
+"""Regression tests for domain-neutral source grounding and rendering."""
+
+from src.output.report_formatter import ReportFormatterAgent
+from src.validation.reconciliation import _rule_candidate_rows
+from src.validation.semantic_validation import find_semantic_anomalies
+from src.validation.coverage_check import find_coverage_gaps
+from src.synthesis.rule_synthesizer import SynthesisResult
+from src.ir.canonical_ir import (
+    TableOperationIR,
+    _attach_calculation_destinations,
+    _build_decision_blocks,
+    BusinessRuleIR,
+)
+from src.ingestion.ingestion import CodeChunk
+from src.parsing.technical_sql_ops import extract_table_operations_from_chunks
+
+
+def test_evidence_fragment_links_to_containing_dml_statement():
+    rule = {"source_evidence": ["amount * factor"]}
+    rows = [{
+        "statement_text": "INSERT INTO target (total) VALUES (base_amount * factor)",
+        "filter_condition": "",
+        "where_predicate": "",
+    }]
+    assert _rule_candidate_rows(rule, rows) == rows
+
+
+def test_fractional_calculation_is_reported_as_uncertain_not_incorrect():
+    findings = find_semantic_anomalies(
+        "v_rate := 0.25; v_total := v_rate / divisor;",
+        calculations=[],
+    )
+    assert len(findings) == 1
+    assert "uncertainty" in findings[0].lower()
+    assert "incorrect" not in findings[0].lower()
+
+
+def test_decision_rows_preserve_llm_supplied_assignments_separately():
+    rows = ReportFormatterAgent._decision_logic_rows({
+        "decision_logic_rows": [{
+            "condition": "input meets threshold",
+            "outcome": "selected",
+            "assignments": ["result := selected", "score := score + adjustment"],
+        }]
+    })
+    assert rows[0]["condition"] == "input meets threshold"
+    assert rows[0]["outcome"] == "selected"
+    assert rows[0]["assignments"] == ["result := selected", "score := score + adjustment"]
+
+
+def test_cited_dml_statement_is_not_reported_as_unreviewed_keyword():
+    source = "INSERT INTO target_table (total_value) VALUES (base_value * factor_value);"
+    rules = [{"source_evidence": ["base_value * factor_value"]}]
+    assert find_coverage_gaps(source, rules) == []
+
+
+def test_cited_exception_handler_covers_when_and_handler_dml():
+    source = """BEGIN
+  NULL;
+EXCEPTION
+  WHEN OTHERS THEN
+    INSERT INTO audit_table (message) VALUES (error_message);
+END;"""
+    rules = [{"source_evidence": ["INSERT INTO audit_table (message) VALUES (error_message)"]}]
+    assert find_coverage_gaps(source, rules) == []
+
+
+def test_unrelated_dml_statement_remains_a_gap():
+    source = """UPDATE target_table SET result_value = first_value WHERE key_value = 1;
+UPDATE target_table SET result_value = second_value WHERE key_value = 2 AND region_code = 9;"""
+    rules = [{"source_evidence": ["result_value = first_value WHERE key_value = 1 AND region_code = 8"]}]
+    gaps = find_coverage_gaps(source, rules)
+    assert gaps
+    assert any("second_value" in gap.snippet for gap in gaps)
+
+
+def test_parent_branch_evidence_covers_nested_assignments():
+    source = """IF input_flag = 1 THEN
+  first_value := source_value;
+  second_value := first_value + adjustment_value;
+END IF;"""
+    rules = [{
+        "condition": "input_flag = 1",
+        "action": "Apply both assignments",
+        "fields_affected": ["first_value", "second_value"],
+        "source_evidence": ["IF input_flag = 1 THEN"],
+    }]
+    assert find_coverage_gaps(source, rules) == []
+
+
+def test_calculation_evidence_covers_dml_with_same_output_expression():
+    source = "INSERT INTO output_table (total_value) VALUES (base_value * rate_value);"
+    rules = [{
+        "action": "Calculate the output total",
+        "fields_affected": ["total_value"],
+        "source_evidence": ["base_value * rate_value"],
+    }]
+    assert find_coverage_gaps(source, rules) == []
+
+
+def test_uncovered_nested_assignment_still_produces_a_gap():
+    source = """IF input_flag = 1 THEN
+  first_value := source_value;
+END IF;
+UPDATE output_table SET other_value = unrelated_value;"""
+    rules = [{
+        "condition": "input_flag = 1",
+        "action": "Apply the branch assignment",
+        "fields_affected": ["first_value"],
+        "source_evidence": ["IF input_flag = 1 THEN"],
+    }]
+    gaps = find_coverage_gaps(source, rules)
+    assert gaps
+    assert any("other_value" in gap.snippet for gap in gaps)
+
+
+def test_business_rule_rendering_keeps_conditional_assignments_and_evidence():
+    rule = {
+        "rule_name": "Apply generic state transition",
+        "condition": "input_flag = 1",
+        "eligibility": ["input_flag = 1"],
+        "action": "state_value := 'READY'",
+        "business_meaning": "Moves the item to the ready state.",
+        "output_field": "state_value",
+        "source_evidence": ["IF input_flag = 1 THEN", "state_value := 'READY';"],
+        "validation_status": "verified",
+    }
+    report = ReportFormatterAgent()._business_rules_section([rule])
+    assert "**Condition:**" in report
+    assert "**Then:**" in report
+    assert report.count("input_flag = 1") == 1
+    assert "state_value := 'READY'" in report
+    assert "**Source Evidence:**" not in report
+    assert "validation_status" not in report
+
+
+def test_business_rule_labels_have_markdown_boundaries_and_no_redundant_prose():
+    report = ReportFormatterAgent()._business_rules_section([{
+        "rule_name": "Apply state",
+        "output_field": "state_code",
+        "condition": "input_code = 1",
+        "action": "Sets state_code to READY.",
+        "business_meaning": "Sets the state to READY when input_code is 1.",
+        "decision_logic_rows": [{"condition": "input_code = 1", "outcome": "READY"}],
+    }])
+    assert "**Affected Field:** `state_code`\n\n**Condition:**" in report
+    assert "**Condition:**\n\n- input_code = 1\n\n**Then:**" in report
+    assert "- READY" in report
+    assert "Sets state_code to READY." not in report
+    assert "Sets the state to READY when input_code is 1." not in report
+    assert "When / Condition" not in report
+    assert "Then / Result" not in report
+
+
+def test_calculations_render_expression_output_and_evidence_separately():
+    synthesis = SynthesisResult(data={
+        "calculations": [{
+            "result": "net_value",
+            "formula": "gross_value - adjustment_value",
+            "output_field": "net_value",
+            "source_evidence": ["net_value := gross_value - adjustment_value;"],
+        }]
+    })
+    report = ReportFormatterAgent()._calculations(synthesis)
+    assert "### Calculation — net_value" in report
+    assert "**Expression:**\ngross_value - adjustment_value" in report
+    assert "**Output:**\nnet_value" in report
+    assert "**Used By:**\nNot specified" in report
+    assert "**Source Evidence:**" not in report
+
+
+def test_calculation_report_resolves_generic_dml_output_and_used_by():
+    synthesis = SynthesisResult(data={
+        "calculations": [{"result": "total_value", "formula": "base_value * rate_value"}]
+    })
+    report = ReportFormatterAgent()._calculations(synthesis, {
+        "tables_written": [{
+            "table": "output_table",
+            "operation": "INSERT",
+            "assigned_values": [{"column": "total_value", "expression": "base_value * rate_value"}],
+        }]
+    })
+    assert "**Output:**\noutput_table.total_value" in report
+    assert "**Used By:**\nINSERT INTO output_table" in report
+
+
+def test_unknown_calculation_destination_is_not_invented():
+    report = ReportFormatterAgent()._calculations(SynthesisResult(data={
+        "calculations": [{"result": "derived_value", "formula": "opaque_function(input_value)"}]
+    }))
+    assert "**Output:**\nNot specified" in report
+
+
+def test_canonical_calculation_retains_generic_dml_destination_provenance():
+    calculations = [{"result": "total_value", "formula": "base_value * rate_value"}]
+    operations = [TableOperationIR(
+        table="output_table",
+        operation="INSERT",
+        assigned_values=[{"column": "total_value", "expression": "base_value * rate_value"}],
+    )]
+    canonical = _attach_calculation_destinations(calculations, operations)
+    assert canonical[0]["destination"] == "output_table.total_value"
+    assert canonical[0]["used_by"] == "INSERT INTO output_table"
+    assert calculations[0].get("destination") is None
+
+
+def test_canonical_calculation_links_procedural_assignment_to_dml():
+    calculations = [{"result": "derived_total", "formula": "base_value * rate_value"}]
+    operations = [TableOperationIR(
+        table="output_table",
+        operation="INSERT",
+        assigned_values=[{"column": "total_value", "expression": "derived_total"}],
+    )]
+    canonical = _attach_calculation_destinations(
+        calculations,
+        operations,
+        "derived_total := base_value * rate_value;",
+    )
+    assert canonical[0]["destination"] == "output_table.total_value"
+
+
+def test_parser_preserves_insert_expression_to_target_column_relationship():
+    operations, _ = extract_table_operations_from_chunks([
+        CodeChunk(chunk_id="chunk_1", kind="main_body", text=(
+            "INSERT INTO output_table (total_value, item_id) "
+            "VALUES (base_value * rate_value, source_id)"
+        ))
+    ], "oracle")
+    insert = next(row for row in operations if row["operation"] == "INSERT")
+    assert insert["assigned_values"] == [
+        {"column": "total_value", "expression": "base_value * rate_value"},
+        {"column": "item_id", "expression": "source_id"},
+    ]
+
+
+def test_assignments_are_not_rendered_as_fake_outcomes():
+    report = ReportFormatterAgent()._business_rules_section([{
+        "rule_name": "Apply assignment",
+        "decision_logic_rows": [{
+            "condition": "input_value > threshold",
+            "outcome": "",
+            "assignments": ["result_value := input_value"],
+        }],
+        "source_evidence": ["result_value := input_value;"],
+    }])
+    assert "| Condition | Result |" in report
+    assert "| Condition | Assignments |" not in report
+    assert "- input_value > threshold: result_value := input_value" in report
+
+
+def test_exception_summary_is_separate_from_business_rule_content():
+    synthesis = SynthesisResult(data={
+        "business_rules": [],
+        "exception_handling_summary": "On failure, the handler records the error and re-raises it.",
+    })
+    report = ReportFormatterAgent()._exception_handling(synthesis)
+    assert report.startswith("## Exception Handling")
+    assert "records the error and re-raises it" in report
+    assert "validation_status" not in report
+
+
+def test_unrelated_sql_domain_has_no_formatter_semantic_fallback():
+    report = ReportFormatterAgent()._business_rules_section([{
+        "rule_name": "Route package",
+        "condition": "temperature_celsius < threshold_celsius",
+        "action": "route_code := 'COLD_CHAIN'",
+        "business_meaning": "Routes the package using the supplied temperature rule.",
+        "source_evidence": ["route_code := 'COLD_CHAIN';"],
+    }])
+    assert "temperature_celsius < threshold_celsius" in report
+    assert "route_code := 'COLD_CHAIN'" in report
+    assert "classification" not in report.lower()
+    assert "provision" not in report.lower()
+
+
+def test_if_elsif_else_rules_group_into_one_structural_decision_block():
+    rules = [
+        BusinessRuleIR(rule_id="r1", condition="status_code = 1", action="state := 'OPEN'"),
+        BusinessRuleIR(rule_id="r2", condition="status_code = 2", action="state := 'CLOSED'"),
+    ]
+    blocks = _build_decision_blocks(rules, [{
+        "chain_type": "IF_ELSIF_ELSE",
+        "branches": [
+            {"branch_condition": "status_code = 1"},
+            {"branch_condition": "status_code = 2"},
+            {"branch_condition": "ELSE"},
+        ],
+    }])
+    assert len(blocks) == 1
+    assert blocks[0]["rule_ids"] == ["r1", "r2"]
+    assert rules[0].extra["decision_block_id"] == rules[1].extra["decision_block_id"]
+
+
+def test_nested_if_chain_remains_one_parent_structural_block():
+    rules = [
+        BusinessRuleIR(rule_id="r1", condition="outer_flag = 1 AND inner_flag = 1", action="result := 'A'"),
+        BusinessRuleIR(rule_id="r2", condition="outer_flag = 1 AND inner_flag = 0", action="result := 'B'"),
+    ]
+    blocks = _build_decision_blocks(rules, [{
+        "chain_type": "NESTED_IF",
+        "branches": [
+            {"branch_condition": "outer_flag = 1 AND inner_flag = 1"},
+            {"branch_condition": "outer_flag = 1 AND inner_flag = 0"},
+        ],
+    }])
+    assert len(blocks) == 1
+    assert len(blocks[0]["branches"]) == 2
+
+
+def test_case_when_else_chain_groups_without_domain_knowledge():
+    rules = [
+        BusinessRuleIR(rule_id="r1", condition="kind_code = 10", action="bucket := 'FIRST'"),
+        BusinessRuleIR(rule_id="r2", condition="kind_code = 20", action="bucket := 'SECOND'"),
+    ]
+    blocks = _build_decision_blocks(rules, [{
+        "chain_type": "CASE_EXPRESSION",
+        "branches": [
+            {"branch_condition": "kind_code = 10"},
+            {"branch_condition": "kind_code = 20"},
+            {"branch_condition": "ELSE"},
+        ],
+    }])
+    assert len(blocks) == 1
+
+
+def test_independent_if_rules_are_not_grouped_without_shared_chain():
+    rules = [
+        BusinessRuleIR(rule_id="r1", condition="temperature > upper_limit", action="alert := 1"),
+        BusinessRuleIR(rule_id="r2", condition="pressure < lower_limit", action="shutdown := 1"),
+    ]
+    assert _build_decision_blocks(rules, []) == []
+
+
+def test_grouped_renderer_keeps_all_branch_results_in_one_block():
+    report = ReportFormatterAgent()._business_rules_section([
+        {"rule_name": "First branch", "decision_block_id": "block_1", "condition": "code = 1", "action": "state := 'A'"},
+        {"rule_name": "Second branch", "decision_block_id": "block_1", "condition": "code = 2", "action": "state := 'B'"},
+    ])
+    assert report.count("### R1 —") == 1
+    assert "- state := 'A'" in report
+    assert "- state := 'B'" in report
+    assert report.count("### Decision Logic") == 1
+    assert "| code = 1 | state := 'A' |" in report
+    assert "| code = 2 | state := 'B' |" in report
+
+
+def test_reconciliation_review_banner_is_internal_only():
+    assert ReportFormatterAgent._reconciliation_notice({
+        "quality": {"status": "REVIEW_REQUIRED"}
+    }).startswith("## Review Required")
+    # The notice remains available to verification callers, but format() no
+    # longer includes it in the business-facing document.
+    assert "_reconciliation_notice" not in ReportFormatterAgent.format.__code__.co_names

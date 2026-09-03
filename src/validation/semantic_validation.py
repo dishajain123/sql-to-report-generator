@@ -465,7 +465,12 @@ def find_semantic_anomalies(
     source: str,
     calculations: List[Dict[str, Any]] | None = None,
 ) -> List[str]:
-    """Return review findings for suspicious, source-visible calculations."""
+    """Return uncertainty notices for calculations needing human context.
+
+    Static SQL text does not establish units, scale conventions, or intended
+    business outcomes. This check therefore must not label a calculation as
+    incorrect from numeric literals alone.
+    """
     text = " ".join(str(item) for item in (calculations or []))
     text = f"{source or ''} {text}"
     findings: List[str] = []
@@ -477,10 +482,15 @@ def find_semantic_anomalies(
     for field, value in assignments:
         if float(value) >= 1:
             continue
-        if not re.search(rf"\b{re.escape(field)}\b\s*/\s*100\b", text, re.IGNORECASE):
+        if not re.search(
+            rf"\b{re.escape(field)}\b\s*/\s*(?:[0-9]+(?:\.[0-9]+)?|[A-Za-z_][A-Za-z0-9_$#]*)\b",
+            text,
+            re.IGNORECASE,
+        ):
             continue
         findings.append(
-            f"Calculation needs review: {field} is assigned a value below 1 and then divided by 100, "
-            "which may reduce the intended rate by an additional factor of 100."
+            f"Calculation uncertainty: `{field}` uses a fractional numeric value "
+            "in an expression that divides by a constant; the intended unit or "
+            "scale cannot be established from SQL text alone."
         )
     return findings

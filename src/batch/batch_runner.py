@@ -37,6 +37,8 @@ class BatchItemResult:
     object_identity: str = ""
     report_path: str = ""
     report_filename: str = ""
+    verification_path: str = ""
+    verification_filename: str = ""
     error: str = ""
     output_stem: str = ""
     run_result: object | None = None
@@ -150,6 +152,11 @@ def run_batch(
             report_filename = f"{output_stem}_report.md"
             report_path = batch_dir / report_filename
             report_path.write_text(run_result.report, encoding="utf-8")
+            verification_dir = batch_dir / "verification"
+            verification_dir.mkdir(parents=True, exist_ok=True)
+            verification_filename = f"{output_stem}_verification.md"
+            verification_path = verification_dir / verification_filename
+            verification_path.write_text(run_result.verification_report, encoding="utf-8")
             detected_dialect = str(getattr(getattr(run_result, "ingestion", None), "dialect", "") or "")
             object_identity = ""
             if getattr(run_result, "ingestion", None) is not None:
@@ -164,6 +171,8 @@ def run_batch(
                     object_identity=object_identity,
                     report_path=str(report_path),
                     report_filename=report_filename,
+                    verification_path=str(verification_path),
+                    verification_filename=verification_filename,
                     output_stem=output_stem,
                     run_result=run_result,
                 )
@@ -232,6 +241,7 @@ def _build_manifest(
                 "object_identity": item.object_identity,
                 "effective_dialect": item.detected_dialect,
                 "report_filename": item.report_filename,
+                "verification_filename": item.verification_filename,
                 "error_message": item.error,
             }
         )
@@ -262,4 +272,7 @@ def build_batch_archive_bytes(batch_result: BatchRunResult) -> bytes:
             report_path = Path(item.report_path)
             if report_path.exists():
                 archive.write(report_path, arcname=report_path.name)
+            verification_path = Path(getattr(item, "verification_path", ""))
+            if verification_path.exists():
+                archive.write(verification_path, arcname=f"verification/{verification_path.name}")
     return buffer.getvalue()

@@ -400,7 +400,8 @@ def test_when_not_eligible_rendered_when_source_has_meaningful_negative_path():
         synthesis=_synthesis_stub(rules),
         extraction_guardrail_warnings=[],
     )
-    assert "### When Not Eligible" in report
+    assert "### When Not Eligible" not in report
+    assert "Account remains in its current asset class" in report
     assert "Account remains in its current asset class" in report
 
 

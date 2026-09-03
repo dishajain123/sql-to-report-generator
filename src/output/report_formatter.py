@@ -150,6 +150,7 @@ class ReportFormatterAgent:
             "raw_synthesis_data": raw_synthesis_data,
             "synthesis": synthesis,
             "rules": rules,
+            "decision_blocks": list(getattr(canonical_ir, "decision_blocks", []) or []),
             "business_rules_for_display": business_rules_for_display,
             "consolidated_reads": consolidated_reads,
             "consolidated_writes": consolidated_writes,
@@ -191,10 +192,12 @@ class ReportFormatterAgent:
                 business_rules_for_display,
                 resolved_merged_extraction,
             ),
-            self._reconciliation_notice(resolved_merged_extraction),
             self._what_this_does(synthesis, business_rules_for_display, resolved_merged_extraction),
             self._end_to_end_flow(synthesis, business_rules_for_display, resolved_merged_extraction),
-            self._business_rules_section(business_rules_for_display),
+            self._business_rules_section(
+                business_rules_for_display,
+                decision_blocks=ctx["decision_blocks"],
+            ),
             self._calculations(synthesis, resolved_merged_extraction),
             self._data_touched_section(consolidated_reads, consolidated_writes, business_rules_for_display),
             self._exception_handling(synthesis, getattr(ingestion, "raw_code", ""), resolved_merged_extraction),
@@ -256,7 +259,12 @@ class ReportFormatterAgent:
             self._validation_summary(rules, merged_extraction, synthesis),
             self._reconciliation_summary(merged_extraction, synthesis),
             self._quality_summary(merged_extraction, synthesis),
-            self._pipeline_diagnostics_section(ingestion, synthesis, extraction_guardrail_warnings or []),
+            self._pipeline_diagnostics_section(
+                ingestion,
+                synthesis,
+                extraction_guardrail_warnings or [],
+                ctx["raw_merged_extraction"].get("informational_uncertainties", []) or [],
+            ),
         ]
         sections = [s for s in sections if s and s.strip()]
         return "\n\n".join(sections).strip() + "\n"
@@ -266,6 +274,7 @@ class ReportFormatterAgent:
         ingestion: IngestionResult,
         synthesis: SynthesisResult,
         extraction_guardrail_warnings: List[str],
+        informational_uncertainties: Optional[List[str]] = None,
     ) -> str:
         """Low-level parser/guardrail/jargon-scanner noise that is pipeline
         plumbing, not a business finding - kept here (verification-only)
@@ -276,6 +285,11 @@ class ReportFormatterAgent:
         items: List[str] = []
         items.extend(getattr(ingestion, "parse_warnings", []) or [])
         items.extend(extraction_guardrail_warnings)
+        items.extend(
+            f"Informational uncertainty: {item}"
+            for item in (informational_uncertainties or [])
+            if str(item).strip()
+        )
         items.extend(synthesis.guardrail_warnings)
         if synthesis.jargon_flags:
             items.append(
@@ -663,77 +677,143 @@ class ReportFormatterAgent:
     # 5. Business Rules
     # ------------------------------------------------------------------
 
-    def _business_rules_section(self, rules: List[Dict[str, Any]]) -> str:
+    def _business_rules_section(
+        self,
+        rules: List[Dict[str, Any]],
+        decision_blocks: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
         lines = ["## Business Rules", ""]
         if not rules:
             lines.append("_No business rules were identified from the extracted source._")
             return "\n".join(lines)
-        for idx, rule in enumerate(rules, start=1):
-            lines.extend(self._render_business_rule_block(idx, rule))
+        groups: List[List[Dict[str, Any]]] = []
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for rule in rules:
+            block_id = str(rule.get("decision_block_id") or "").strip()
+            if block_id:
+                if block_id not in grouped:
+                    grouped[block_id] = []
+                    groups.append(grouped[block_id])
+                grouped[block_id].append(rule)
+            else:
+                groups.append([rule])
+        for idx, group in enumerate(groups, start=1):
+            if len(group) > 1:
+                lines.extend(self._render_decision_block(idx, group))
+            else:
+                lines.extend(self._render_business_rule_block(idx, group[0]))
             lines.append("")
         return "\n".join(lines).strip()
+
+    def _render_decision_block(self, idx: int, rules: List[Dict[str, Any]]) -> List[str]:
+        names = self._distinct_text([self._business_rule_name(rule, idx) for rule in rules])
+        title = self._decision_block_title(names)
+        affected = self._distinct_text([self._business_rule_output(rule) for rule in rules])
+        conditions: List[str] = []
+        results: List[str] = []
+        table_rows: List[Tuple[str, str]] = []
+        for rule in rules:
+            rows = self._decision_logic_rows(rule)
+            if rows:
+                for row in rows:
+                    condition = str(row.get("condition") or "").strip()
+                    outcome = self._assignment_text(row.get("outcome") or "")
+                    conditions.append(condition)
+                    results.extend(
+                        [self._assignment_text(item) for item in (row.get("assignments") or [])]
+                        + ([outcome] if outcome else [])
+                    )
+                    table_rows.append((condition, outcome))
+            else:
+                condition = str(rule.get("condition") or "").strip()
+                result = str(rule.get("action") or rule.get("business_meaning") or "").strip()
+                conditions.append(condition)
+                results.append(result)
+                table_rows.append((condition, result))
+        lines = [f"### R{idx} — {title}", ""]
+        lines.extend([
+            f"**Affected Field:** `{', '.join(affected)}`" if affected and affected[0] != "Not specified" else "**Affected Field:** Not specified",
+            "",
+            "**Condition:**",
+            "",
+        ])
+        lines.extend(f"- {value}" for value in self._distinct_text(conditions) if value)
+        lines.extend(["", "**Then:**", ""])
+        lines.extend(f"- {value}" for value in self._distinct_text(results) if value)
+        lines.extend(["", "### Decision Logic", ""])
+        lines.extend(self._decision_logic_block([
+            {"condition": condition, "outcome": outcome}
+            for condition, outcome in table_rows
+        ]))
+        return lines
+
+    @staticmethod
+    def _decision_block_title(names: List[str]) -> str:
+        """Use shared LLM wording, never the first branch as the title."""
+        usable = [name for name in names if name and name.casefold() != "not specified"]
+        if not usable:
+            return "Decision block"
+        words = [name.split() for name in usable]
+        prefix: List[str] = []
+        for group in zip(*words):
+            if len({word.casefold() for word in group}) != 1:
+                break
+            prefix.append(group[0])
+        if prefix:
+            return " ".join(prefix)
+        return "Decision block"
 
     def _render_business_rule_block(self, idx: int, rule: Dict[str, Any]) -> List[str]:
         rule_name = self._business_rule_name(rule, idx)
         output_field = self._business_rule_output(rule)
-        business_meaning = self._business_rule_business_meaning(rule)
-        action = rule.get("action") if isinstance(rule.get("action"), str) else ""
+        condition = rule.get("condition") if isinstance(rule.get("condition"), str) else ""
         eligibility = self._rule_text_lines(rule.get("eligibility"))
+        # Condition is the structured source of truth. Eligibility is only a
+        # fallback for older/partial model responses, not a second paraphrase.
+        when_values = self._distinct_text([condition] if condition.strip() else eligibility)
         decision_logic_rows = self._decision_logic_rows(rule)
-        tie_handling = self._rule_text_lines(rule.get("tie_priority_handling"))
-        default_value = self._rule_text_lines(rule.get("default"))
-        when_not_eligible = self._rule_text_lines(rule.get("when_not_eligible"))
+        if decision_logic_rows:
+            then_values: List[str] = []
+        else:
+            action = rule.get("action") if isinstance(rule.get("action"), str) else ""
+            meaning = rule.get("business_meaning") if isinstance(rule.get("business_meaning"), str) else ""
+            then_values = self._distinct_text([
+                action or meaning,
+                *self._rule_text_lines(rule.get("tie_priority_handling")),
+                *self._rule_text_lines(rule.get("default")),
+                *self._rule_text_lines(rule.get("when_not_eligible")),
+            ])
+        for row in decision_logic_rows:
+            branch_condition = str(row.get("condition") or "").strip()
+            outcome = str(row.get("outcome") or "").strip()
+            assignments = row.get("assignments") or []
+            if assignments and not isinstance(assignments, list):
+                assignments = [assignments]
+            branch_results = [self._assignment_text(item) for item in assignments if str(item).strip()]
+            if outcome:
+                branch_results.append(outcome)
+            for result in branch_results:
+                then_values.append(
+                    f"{branch_condition}: {result}" if branch_condition and branch_condition != condition else result
+                )
+        then_values = self._distinct_text(then_values)
 
         lines = [f"### R{idx} — {rule_name}", ""]
-        missing_fields = self._missing_llm_rule_fields(rule)
-        if missing_fields:
-            lines.append(
-                "**Validation:** Incomplete LLM-authored rule; missing or empty field(s): "
-                + ", ".join(missing_fields)
-            )
-            lines.append("")
-        if output_field != "Not specified":
-            lines.append(f"**Applies to:** `{output_field}`")
-        # Eligibility rendered per-rule, directly under the fields it
-        # gates, rather than pooled into one flat cross-rule list at the
-        # top of the report - a reader must never have to cross-reference
-        # a separate section to know which conditions gate THIS rule.
-        if eligibility:
-            if len(eligibility) == 1:
-                lines.append(f"**Eligibility:** {self._pretty_condition_for_display(eligibility[0])}")
-            else:
-                lines.append("**Eligibility (all must hold):**")
-                lines.extend(f"- {self._pretty_condition_for_display(e)}" for e in eligibility)
-        if action:
-            lines.append(f"**Action:** {action}")
-        lines.append(f"**Meaning:** {business_meaning}")
+        lines.append(f"**Affected Field:** `{output_field}`" if output_field != "Not specified" else "**Affected Field:** Not specified")
+        lines.append("")
+        lines.append("**Condition:**")
+        lines.append("")
+        lines.extend(f"- {self._pretty_condition_for_display(value)}" for value in (when_values or ["Not specified"]))
+        lines.append("")
+        lines.append("**Then:**")
+        lines.append("")
+        lines.extend(f"- {value}" for value in (then_values or ["Not specified"]))
         lines.append("")
 
-        # Only shown for a genuine multi-band/lookup mapping (see
-        # _decision_logic_rows) - an ordinary single condition -> single
-        # outcome rule is already fully covered by Eligibility plus
-        # Business meaning above, so repeating both in a one-row table
-        # underneath would only restate the same sentence twice.
         if decision_logic_rows:
             lines.append("### Decision Logic")
+            lines.append("")
             lines.extend(self._decision_logic_block(decision_logic_rows))
-            lines.append("")
-
-        # Priority is only ever shown when the source itself established
-        # it - never inferred merely from the order rules were extracted.
-        if tie_handling:
-            lines.append("### Tie / Priority Handling")
-            lines.extend(f"- {t}" for t in tie_handling)
-            lines.append("")
-
-        if default_value:
-            lines.append("### Default")
-            lines.extend(f"- {d}" for d in default_value)
-            lines.append("")
-
-        if when_not_eligible:
-            lines.append("### When Not Eligible")
-            lines.extend(f"- {w}" for w in when_not_eligible)
             lines.append("")
 
         return lines
@@ -1226,12 +1306,86 @@ class ReportFormatterAgent:
         for calculation in calcs:
             if not isinstance(calculation, dict):
                 continue
-            field = calculation.get("field") or calculation.get("metric") or "Metric"
-            formula = calculation.get("formula") or calculation.get("explanation") or "N/A"
-            lines.append(f"- **{field}:** {formula}")
+            name = (
+                calculation.get("name") or calculation.get("result")
+                or calculation.get("field") or calculation.get("metric")
+                or "Not specified"
+            )
+            expression = calculation.get("expression") or calculation.get("formula") or "Not specified"
+            feeds = self._calculation_output(calculation, merged_extraction)
+            used_by = self._calculation_used_by(calculation, merged_extraction, feeds)
+            lines.extend([
+                f"### Calculation — {name}",
+                "",
+                "**Expression:**",
+                str(expression),
+                "",
+                "**Output:**",
+                str(feeds),
+                "",
+                "**Used By:**",
+                str(used_by),
+                "",
+            ])
         if not lines:
             return "## Calculations\n\n_None identified._"
         return "## Calculations\n\n" + "\n".join(lines)
+
+    @classmethod
+    def _calculation_output(
+        cls, calculation: Dict[str, Any], merged_extraction: Optional[Dict[str, Any]]
+    ) -> str:
+        """Resolve only destinations already present in model/provenance data."""
+        for key in ("output", "output_field", "destination", "target", "target_column", "feeds"):
+            value = calculation.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        formula = str(calculation.get("expression") or calculation.get("formula") or "")
+        evidence = " ".join(cls._rule_text_lines(calculation.get("source_evidence") or calculation.get("evidence")))
+        needle = re.sub(r"\s+", " ", f"{formula} {evidence}").strip().casefold()
+        rows = (merged_extraction or {}).get("tables_written", []) if isinstance(merged_extraction, dict) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            assigned = row.get("assigned_values") or row.get("assignments") or []
+            assigned_items = assigned if isinstance(assigned, list) else [assigned]
+            for item in assigned_items:
+                if not isinstance(item, dict):
+                    continue
+                expression = str(item.get("expression") or item.get("value") or "")
+                if not expression:
+                    continue
+                normalized_expression = re.sub(r"\s+", " ", expression).strip().casefold()
+                if normalized_expression in needle or needle in normalized_expression:
+                    table = str(row.get("table") or "").strip()
+                    column = str(item.get("column") or item.get("target_column") or "").strip()
+                    if table and column:
+                        return f"{table}.{column}"
+        return "Not specified"
+
+    @classmethod
+    def _calculation_used_by(
+        cls,
+        calculation: Dict[str, Any],
+        merged_extraction: Optional[Dict[str, Any]],
+        output: str,
+    ) -> str:
+        for key in ("used_by", "used_by_operation", "relationship"):
+            value = calculation.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        rows = (merged_extraction or {}).get("tables_written", []) if isinstance(merged_extraction, dict) else []
+        output_text = str(output or "").casefold()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            table = str(row.get("table") or "").strip()
+            operation = str(row.get("operation") or "").strip().upper()
+            if not table or not operation:
+                continue
+            if output_text.startswith(f"{table.casefold()}."):
+                return f"{operation} INTO {table}" if operation == "INSERT" else f"{operation} {table}"
+        return "Not specified"
 
     def _exception_handling(
         self,
@@ -1563,11 +1717,9 @@ class ReportFormatterAgent:
         source_merged_extraction = raw_merged_extraction or merged_extraction
         source_synthesis_data = raw_synthesis_data or synthesis.data
 
-        items.extend(
-            str(item).strip()
-            for item in source_merged_extraction.get("semantic_findings", []) or []
-            if str(item).strip()
-        )
+        # Informational uncertainty is retained in verification metadata, not
+        # promoted to a human-review finding unless another validator proves
+        # a contradiction or an uncovered executable region.
         merged_ambiguities = source_merged_extraction.get("ambiguities", []) or []
         items.extend(
             str(item).strip()
@@ -1630,72 +1782,6 @@ class ReportFormatterAgent:
                 "reconciliation detected a source/report discrepancy:",
             )
         )
-
-    # ------------------------------------------------------------------
-    # Legacy curated glossary (kept for backward compatibility - small,
-    # capped, only genuinely domain-specific banking/regulatory terms;
-    # not part of the main assembled report but still available for
-    # callers/tests that want a short glossary blurb rather than the
-    # full Important Fields table).
-    # ------------------------------------------------------------------
-
-    def _glossary_section(self, ingestion: IngestionResult) -> str:
-        raw_code = str(getattr(ingestion, "raw_code", "") or "")
-        entries = self._legacy_glossary_entries(raw_code)
-        lines = ["## Glossary", ""]
-        if not entries:
-            lines.append("No domain-specific terms were identified.")
-            return "\n".join(lines)
-
-        lines.extend(["| Term | What it means |", "|---|---|"])
-        for term, meaning in entries[:5]:
-            lines.append(f"| **{term}** | {meaning} |")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _legacy_glossary_entries(raw_code: str) -> List[Tuple[str, str]]:
-        text = str(raw_code or "")
-        if not text.strip():
-            return []
-
-        patterns: List[Tuple[str, str, str]] = [
-            (
-                "DPD",
-                r"(?<![A-Z0-9_])DPD(?![A-Z0-9_])",
-                "Days Past Due - the count of overdue days used to measure delinquency.",
-            ),
-            (
-                "NPA",
-                r"(?<![A-Z0-9_])NPA(?![A-Z0-9_])",
-                "Non-Performing Asset - a loan or account that has moved into delinquency.",
-            ),
-            (
-                "SMA",
-                r"(?<![A-Z0-9_])SMA(?![A-Z0-9_])",
-                "Special Mention Account - an account that needs closer monitoring.",
-            ),
-            (
-                "UCIF",
-                r"(?<![A-Z0-9_])UCIF(?![A-Z0-9_])",
-                "Unique Customer Identification File - the customer identifier used to group linked accounts.",
-            ),
-            (
-                "IRAC",
-                r"(?<![A-Z0-9_])IRAC(?![A-Z0-9_])",
-                "Asset classification and provisioning norms used for overdue loan accounts.",
-            ),
-            (
-                "Asset Classification Codes",
-                r"(?<![A-Z0-9_])(?:FINALASSETCLASSALT_KEY|SYSASSETCLASSALT_KEY|SMA_CLASS|STD|SUB|DB1|DB2|DB3|LOS)(?![A-Z0-9_])",
-                "Asset status labels used to classify accounts into standard, sub-standard, doubtful, or loss buckets.",
-            ),
-        ]
-
-        entries: List[Tuple[str, str]] = []
-        for term, pattern, meaning in patterns:
-            if re.search(pattern, text, flags=re.IGNORECASE):
-                entries.append((term, meaning))
-        return entries
 
     # ------------------------------------------------------------------
     # Generic, low-risk heuristics (presentational grouping only - never
@@ -1865,11 +1951,17 @@ class ReportFormatterAgent:
     @staticmethod
     def _business_rule_output(rule: Dict[str, Any]) -> str:
         output_field = rule.get("output_field")
-        if isinstance(output_field, str) and output_field.strip():
-            return output_field
         fields = rule.get("fields_affected") or []
-        if isinstance(fields, list) and fields:
-            return ", ".join(str(field) for field in fields)
+        if isinstance(fields, str):
+            fields = [fields]
+        values = []
+        if isinstance(output_field, str) and output_field.strip():
+            values.append(output_field.strip())
+        if isinstance(fields, list):
+            values.extend(str(field).strip() for field in fields if str(field).strip())
+        values = list(dict.fromkeys(values))
+        if values:
+            return ", ".join(values)
         return "Not specified"
 
     @staticmethod
@@ -1913,19 +2005,47 @@ class ReportFormatterAgent:
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            rendered.append({
+            rendered_row = {
                 "condition": row.get("condition", ""),
                 "outcome": row.get("outcome", ""),
-            })
+            }
+            if row.get("assignments"):
+                rendered_row["assignments"] = row["assignments"]
+            rendered.append(rendered_row)
         return rendered
 
     def _decision_logic_block(self, rows: List[Dict[str, str]]) -> List[str]:
-        lines = ["| Condition | Outcome |", "|---|---|"]
+        lines = ["| Condition | Result |", "|---|---|"]
         for row in rows:
-            lines.append(
-                f"| {self._escape_table_cell(self._pretty_condition_for_display(row['condition']))} | {self._escape_table_cell(row['outcome'])} |"
-            )
+            condition = self._escape_table_cell(self._pretty_condition_for_display(row["condition"]))
+            outcome = self._escape_table_cell(row.get("outcome") or "")
+            lines.append(f"| {condition} | {outcome} |")
         return lines
+
+    @staticmethod
+    def _distinct_text(values: List[Any]) -> List[str]:
+        """Remove only exact repeated display values; never merge meanings."""
+        result: List[str] = []
+        seen = set()
+        for value in values:
+            text = str(value or "").strip()
+            if not text:
+                continue
+            key = re.sub(r"\s+", " ", text).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(text)
+        return result
+
+    @staticmethod
+    def _assignment_text(value: Any) -> str:
+        if isinstance(value, dict):
+            field = value.get("field") or value.get("column") or value.get("target")
+            result = value.get("value") or value.get("expression") or value.get("result")
+            if field and result:
+                return f"{field} := {result}"
+        return str(value).strip()
 
     @staticmethod
     def _pretty_condition_for_display(condition: str) -> str:

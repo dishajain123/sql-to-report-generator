@@ -54,7 +54,7 @@ def test_decision_table_does_not_render_alternative_branches_as_all_eligibility(
             }
         ]
     )
-    assert "**Eligibility (all must hold):**" in report
+    assert "**Condition:**" in report
     assert "DOUBTFUL1" in report
     assert "LOSS" in report
 
@@ -73,7 +73,8 @@ def test_single_condition_rule_renders_condition_outcome_table():
         ]
     )
     assert "### Decision Logic" not in report
-    assert "**Action:** Assigns status the value OPEN." in report
+    assert "**Then:**" in report
+    assert report.count("Assigns status the value OPEN.") == 1
 
 
 def test_update_status_try_catch_stays_wrapper_based():

@@ -47,7 +47,9 @@ from typing import Any, Dict, List, Sequence, Set
 # purely technical is expected to simply not be cited by any rule,
 # which is fine (see `_TECHNICAL_ONLY_KEYWORDS_NOTE` below).
 _DECISION_KEYWORD_RE = re.compile(
-    r"\bCASE\b|\bWHEN\b|\bIF\b|\bELSIF\b|\bELSEIF\b", re.IGNORECASE
+    r"\bCASE\b|\bWHEN\b|\bIF\b|\bELSIF\b|\bELSEIF\b|"
+    r"\bWHILE\b|\bLOOP\b|\bEXCEPTION\b|\bRAISE\b|\bRETURN\b",
+    re.IGNORECASE,
 )
 _STATEMENT_START_RE = re.compile(
     r"(?:^|;)\s*(?P<keyword>UPDATE|INSERT|DELETE|MERGE)\b", re.IGNORECASE
@@ -84,6 +86,7 @@ _STOPWORDS: Set[str] = {
     "datetime", "float", "decimal",
 }
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+_PREDICATE_LITERAL_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
 
 # How close two decision-point line numbers must be to be treated as part
 # of the same ladder/block for reporting purposes, so one 10-branch CASE
@@ -284,6 +287,11 @@ def _tokens(text: str) -> Set[str]:
     }
 
 
+def _predicate_tokens(text: str) -> Set[str]:
+    """Return lexical predicate identifiers plus literal constants."""
+    return _tokens(text) | {match.group(0).lower() for match in _PREDICATE_LITERAL_RE.finditer(text)}
+
+
 def _dml_predicate_tokens_by_line(source: str) -> Dict[int, Set[str]]:
     """Map each line in a DML statement to that statement's predicate tokens.
 
@@ -303,7 +311,7 @@ def _dml_predicate_tokens_by_line(source: str) -> Dict[int, Set[str]]:
             where_match = re.search(r"\bWHERE\b", statement[dml_match.start():], re.IGNORECASE)
             if where_match:
                 predicate_start = dml_match.start() + where_match.end()
-                predicate_tokens = _tokens(statement[predicate_start:])
+                predicate_tokens = _predicate_tokens(statement[predicate_start:])
                 if predicate_tokens:
                     line_start = text.count("\n", 0, statement_start) + 1
                     line_end = text.count("\n", 0, statement_end) + 1
@@ -349,6 +357,141 @@ def _rule_evidence_fragments(rule: Any) -> List[str]:
     return []
 
 
+def _executable_regions(source: str) -> List[tuple[set[int], str]]:
+    """Return line-bounded DML and exception regions.
+
+    This is deliberately a lexical boundary scan. It does not interpret SQL
+    or decide whether a region is business-relevant; it only lets evidence
+    that cites a containing statement/handler cover that statement as a unit.
+    Branch anchors inside procedural ladders remain line-granular.
+    """
+    text = _strip_comments_and_strings_for_scan(source)
+    lines = text.splitlines()
+    regions: List[tuple[set[int], str]] = []
+    start = 0
+    for match in re.finditer(r";|$", text):
+        end = match.start()
+        statement = text[start:end]
+        dml_match = re.search(r"\b(?:UPDATE|INSERT|DELETE|MERGE)\b", statement, re.IGNORECASE)
+        if dml_match:
+            line_start = text.count("\n", 0, start + dml_match.start()) + 1
+            line_end = text.count("\n", 0, end) + 1
+            regions.append((set(range(line_start, line_end + 1)), statement))
+        start = match.end()
+        if match.start() == len(text):
+            break
+
+    exception_match = re.search(r"\bEXCEPTION\b", text, re.IGNORECASE)
+    if exception_match:
+        line_start = text.count("\n", 0, exception_match.start()) + 1
+        line_end = len(lines)
+        # A final END is the common structural boundary; retaining the rest
+        # is safer than splitting a handler and losing its associated DML.
+        for line_number in range(line_start, len(lines) + 1):
+            if re.search(r"\bEND\b", lines[line_number - 1], re.IGNORECASE):
+                line_end = line_number
+                break
+        regions.append((set(range(line_start, line_end + 1)), text.splitlines()[line_start - 1:line_end]))
+    return regions
+
+
+def _parent_branch_lines(source: str) -> List[tuple[set[int], int]]:
+    """Return lexical procedural parent regions and their header lines.
+
+    The header is the only part used for matching.  Once a synthesized rule
+    cites a parent branch header and supplies a result/action, its nested
+    assignments are part of that same behavior; they are not independent
+    business rules.  This is deliberately structural and does not interpret
+    identifiers, values, or domain vocabulary.
+    """
+    lines = _strip_comments_and_strings_for_scan(source).splitlines()
+    regions: List[tuple[set[int], int]] = []
+    stack: List[tuple[int, str]] = []
+    for number, line in enumerate(lines, start=1):
+        is_end = bool(re.search(r"\bEND\s+(?:IF|CASE|LOOP)\b|\bEND\b", line, re.IGNORECASE))
+        starts = [] if is_end else re.findall(r"\b(IF|CASE|WHILE|LOOP)\b", line, re.IGNORECASE)
+        for keyword in starts:
+            stack.append((number, keyword.upper()))
+        if re.search(r"\bEND\s+(?:IF|CASE|LOOP)\b|\bEND\b", line, re.IGNORECASE):
+            if stack:
+                start, _ = stack.pop()
+                regions.append((set(range(start, number + 1)), start))
+    return regions
+
+
+def _rule_has_result(rule: Any) -> bool:
+    if not isinstance(rule, dict):
+        return False
+    return any(
+        str(rule.get(key) or "").strip()
+        for key in ("action", "business_meaning", "output_field")
+    ) or bool(rule.get("fields_affected") or rule.get("decision_logic_rows"))
+
+
+def _parent_branch_coverage(source: str, rules: Sequence[Any]) -> Set[int]:
+    covered: Set[int] = set()
+    regions = _parent_branch_lines(source)
+    if not regions:
+        return covered
+    for rule in rules or []:
+        if not _rule_has_result(rule):
+            continue
+        fragments = _rule_evidence_fragments(rule)
+        for region_lines, header_line in regions:
+            header = str(source or "").splitlines()[header_line - 1] if header_line <= len(str(source or "").splitlines()) else ""
+            condition = str(rule.get("condition") or "") if isinstance(rule, dict) else ""
+            candidates = [*fragments, condition]
+            if any(
+                _compact_text(candidate) in _compact_text(header)
+                for candidate in candidates
+                if _compact_text(candidate)
+            ):
+                covered.update(region_lines)
+    return covered
+
+
+def _rule_covers_dml_behavior(rule: Any, statement: str) -> bool:
+    """Match a calculation/data rule to a containing DML operation.
+
+    A rule can cite the calculation expression and affected output while
+    omitting the surrounding INSERT/UPDATE text.  If the same target and
+    expression occur in the DML, the operation is the represented result,
+    not a second uncovered behavior.
+    """
+    if not isinstance(rule, dict):
+        return False
+    rule_fields = {token.casefold() for token in _tokens(" ".join(
+        [str(rule.get("output_field") or ""), *[str(v) for v in (rule.get("fields_affected") or [])]]
+    ))}
+    if not rule_fields:
+        return False
+    evidence = " ".join(_rule_evidence_fragments(rule))
+    if not evidence:
+        return False
+    evidence_tokens = _tokens(evidence)
+    for assignment in re.finditer(
+        r"(?P<column>[A-Za-z_][A-Za-z0-9_.\[\]]*)\s*=\s*(?P<expr>[^,;]+)",
+        statement,
+        re.IGNORECASE,
+    ):
+        column = assignment.group("column").split(".")[-1].strip("[]").casefold()
+        expression_tokens = _tokens(assignment.group("expr"))
+        if column in rule_fields and len(expression_tokens & evidence_tokens) >= 2:
+            return True
+    insert_match = re.search(
+        r"\bINSERT\s+INTO\s+[^ (]+\s*\((?P<columns>[^)]*)\)\s*VALUES\s*\((?P<values>[^)]*)\)",
+        statement,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if insert_match:
+        columns = [item.strip().split(".")[-1].strip("[]").casefold() for item in insert_match.group("columns").split(",")]
+        values = [item.strip() for item in insert_match.group("values").split(",")]
+        for column, value in zip(columns, values):
+            if column in rule_fields and len(_tokens(value) & evidence_tokens) >= 2:
+                return True
+    return False
+
+
 def find_coverage_gaps(
     source: str,
     rules: Sequence[Any],
@@ -375,11 +518,25 @@ def find_coverage_gaps(
 
     groups = _group_lines(list(anchors_by_line))
     predicate_tokens_by_line = _dml_predicate_tokens_by_line(source)
+    evidence_predicate_tokens = _predicate_tokens(" ".join(evidence_fragments))
+    covered_region_lines: Set[int] = set()
+    covered_region_lines.update(_parent_branch_coverage(source, rules))
+    for region_lines, region_text in _executable_regions(source):
+        if any(
+            _compact_text(fragment) in _compact_text("\n".join(region_text) if isinstance(region_text, list) else region_text)
+            for fragment in evidence_fragments
+            if _compact_text(fragment)
+        ):
+            covered_region_lines.update(region_lines)
+        elif any(_rule_covers_dml_behavior(rule, region_text if isinstance(region_text, str) else "\n".join(region_text)) for rule in rules or []):
+            covered_region_lines.update(region_lines)
 
     gaps: List[CoverageGap] = []
     for group in groups:
         uncovered_lines: List[int] = []
         for line_number in group:
+            if line_number in covered_region_lines:
+                continue
             line_tokens = _tokens(lines[line_number - 1] if line_number <= len(lines) else "")
             if not line_tokens:
                 continue
@@ -409,6 +566,16 @@ def find_coverage_gaps(
                 predicate_covered = bool(predicate_overlap) and (
                     len(predicate_tokens) < 2 or len(predicate_overlap) >= 2
                 )
+                predicate_literals = predicate_tokens & {
+                    match.group(0).lower()
+                    for match in _PREDICATE_LITERAL_RE.finditer(
+                        " ".join(lines[line_number - 1 : line_number])
+                    )
+                }
+                if predicate_literals:
+                    predicate_covered = predicate_covered and bool(
+                        predicate_literals & evidence_predicate_tokens
+                    )
                 if not fragment_match and not predicate_covered:
                     uncovered_lines.append(line_number)
             elif not fragment_match and (coverage_ratio < _COVERAGE_TOKEN_THRESHOLD or (

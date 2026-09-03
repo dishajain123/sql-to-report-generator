@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict, fields
+import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from src.ingestion.ingestion import IngestionResult, Parameter
@@ -40,6 +41,55 @@ def _dict_list(values: Any) -> List[Dict[str, Any]]:
 def _merge_extra(source: Dict[str, Any], consumed_keys: Sequence[str]) -> Dict[str, Any]:
     consumed = set(consumed_keys)
     return {key: value for key, value in source.items() if key not in consumed}
+
+
+def _calculation_tokens(value: Any) -> set[str]:
+    return {
+        token.casefold()
+        for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", str(value or ""))
+        if token.casefold() not in {"select", "from", "where", "set", "values", "into"}
+    }
+
+
+def _attach_calculation_destinations(
+    calculations: List[Dict[str, Any]], operations: List["TableOperationIR"], source_text: str = ""
+) -> List[Dict[str, Any]]:
+    """Link existing calculation expressions through local variables to writes."""
+    result = [dict(item) for item in calculations]
+    for calculation in result:
+        if any(str(calculation.get(key) or "").strip() for key in ("destination", "output", "output_field")):
+            continue
+        expression_tokens = _calculation_tokens(calculation.get("expression") or calculation.get("formula"))
+        if not expression_tokens:
+            continue
+        local_targets = set()
+        for match in re.finditer(
+            r"\b([A-Za-z_][A-Za-z0-9_$#]*)\s*:=\s*(.*?);", str(source_text or ""), re.IGNORECASE | re.DOTALL
+        ):
+            rhs_tokens = _calculation_tokens(match.group(2))
+            if expression_tokens <= rhs_tokens or (
+                len(expression_tokens) >= 2 and len(expression_tokens & rhs_tokens) >= max(2, len(expression_tokens) // 2)
+            ):
+                local_targets.add(match.group(1).casefold())
+        for operation in operations:
+            table = str(operation.table or "").strip()
+            for assignment in operation.assigned_values:
+                if not isinstance(assignment, dict):
+                    continue
+                assigned_expression = assignment.get("expression") or assignment.get("value")
+                assigned_tokens = _calculation_tokens(assigned_expression)
+                if not (expression_tokens <= assigned_tokens or len(expression_tokens & assigned_tokens) >= 2 or local_targets & assigned_tokens):
+                    continue
+                column = str(assignment.get("column") or assignment.get("target_column") or "").strip()
+                if not table or not column:
+                    continue
+                operation_name = str(operation.operation or "").upper()
+                calculation["destination"] = f"{table}.{column}"
+                calculation["used_by"] = f"INSERT INTO {table}" if operation_name == "INSERT" else f"{operation_name} {table}"
+                break
+            if calculation.get("destination"):
+                break
+    return result
 
 
 def _order_business_rules_by_execution_order(
@@ -555,6 +605,61 @@ class BusinessRuleIR:
         return _filter_none(payload)
 
 
+def _decision_chain_tokens(value: Any) -> set[str]:
+    return {
+        token.casefold()
+        for token in re.findall(r"[A-Za-z_][A-Za-z0-9_$#]*|\d+(?:\.\d+)?", str(value or ""))
+        if token.casefold() not in {"and", "or", "not", "between", "is", "null", "else"}
+    }
+
+
+def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[Dict[str, Any]]:
+    """Attach rules to source-derived chains for presentation grouping only."""
+    blocks: List[Dict[str, Any]] = []
+    if not isinstance(chains, list):
+        return blocks
+    for chain_index, chain in enumerate(chains, start=1):
+        branches = chain.get("branches") if isinstance(chain, dict) else None
+        if not isinstance(branches, list):
+            continue
+        conditions = [str(item.get("branch_condition") or "") for item in branches if isinstance(item, dict)]
+        if len(conditions) < 2:
+            continue
+        matched = []
+        for rule in rules:
+            candidates = [rule.condition, *rule.evidence]
+            if any(
+                _decision_chain_tokens(condition)
+                and (_decision_chain_tokens(condition) <= _decision_chain_tokens(candidate)
+                     or _decision_chain_tokens(candidate) <= _decision_chain_tokens(condition))
+                for condition in conditions for candidate in candidates if str(candidate or "").strip()
+            ):
+                matched.append(rule)
+        if not matched:
+            continue
+        block_id = f"decision_block_{chain_index:03d}"
+        block_branches = []
+        for rule in matched:
+            rule.extra["decision_block_id"] = block_id
+            results: List[Any] = []
+            if rule.decision_logic_rows:
+                for row in rule.decision_logic_rows:
+                    if not isinstance(row, dict):
+                        continue
+                    results.extend(row.get("assignments") or [])
+                    if row.get("outcome") not in (None, ""):
+                        results.append(row.get("outcome"))
+            elif rule.action or rule.business_meaning:
+                results.append(rule.action or rule.business_meaning)
+            block_branches.append({
+                "rule_id": rule.rule_id,
+                "condition": rule.condition,
+                "results": results,
+            })
+        blocks.append({"block_id": block_id, "rule_ids": [rule.rule_id for rule in matched], "branches": block_branches})
+    return blocks
+
+
 @dataclass
 class CanonicalBusinessIR:
     object_metadata: ObjectMetadataIR
@@ -562,6 +667,7 @@ class CanonicalBusinessIR:
     statements: List[StatementIR] = field(default_factory=list)
     table_operations: List[TableOperationIR] = field(default_factory=list)
     business_rules: List[BusinessRuleIR] = field(default_factory=list)
+    decision_blocks: List[Dict[str, Any]] = field(default_factory=list)
     calculations: List[Dict[str, Any]] = field(default_factory=list)
     exceptions: List[str] = field(default_factory=list)
     ambiguities: List[str] = field(default_factory=list)
@@ -600,7 +706,12 @@ class CanonicalBusinessIR:
 
         business_rules = [BusinessRuleIR.from_dict(item) for item in _dict_list(synthesis.data.get("business_rules"))]
         business_rules = _order_business_rules_by_execution_order(business_rules, statements)
-        calculations = [dict(item) for item in _dict_list(synthesis.data.get("calculations"))]
+        decision_blocks = _build_decision_blocks(business_rules, merged_extraction.get("decision_chains"))
+        calculations = _attach_calculation_destinations(
+            [dict(item) for item in _dict_list(synthesis.data.get("calculations"))],
+            table_operations,
+            source_text=getattr(ingestion, "raw_code", ""),
+        )
         exceptions = _string_list(synthesis.data.get("exception_handling_summary"))
         ambiguities = _string_list(merged_extraction.get("ambiguities")) + _string_list(synthesis.data.get("ambiguities"))
         contradictions = _dict_list(reconciliation_payload.get("contradictions"))
@@ -612,6 +723,7 @@ class CanonicalBusinessIR:
             statements=statements,
             table_operations=table_operations,
             business_rules=business_rules,
+            decision_blocks=decision_blocks,
             calculations=calculations,
             exceptions=exceptions,
             ambiguities=list(dict.fromkeys(ambiguities)),
@@ -668,8 +780,9 @@ class CanonicalBusinessIR:
         payload = dict(synthesis_data or {})
         payload.update(
             {
-                "business_rules": [rule.to_dict() for rule in self.business_rules],
-                "calculations": [dict(item) for item in self.calculations],
+            "business_rules": [rule.to_dict() for rule in self.business_rules],
+            "decision_blocks": [dict(item) for item in self.decision_blocks],
+            "calculations": [dict(item) for item in self.calculations],
                 "exception_handling_summary": "; ".join(self.exceptions),
                 "ambiguities": list(self.ambiguities),
                 "reconciliation": _to_dict(self.reconciliation),

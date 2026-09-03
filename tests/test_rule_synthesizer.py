@@ -856,11 +856,12 @@ def test_report_formatter_surfaces_provenance_fields():
     assert "# obj — Business Logic Report" in report
     assert "### R1 — Not specified" in report
     assert "### R2 — Not specified" in report
-    assert "**Validation:** Incomplete LLM-authored rule" in report
-    assert "**Applies to:**" in report
+    assert "**Validation:** Incomplete LLM-authored rule" not in report
+    assert "**Affected Field:**" in report
     assert "### Decision Logic" in report
-    assert "## Eligibility" not in report
-    assert "### Eligibility" not in report
+    assert "**Eligibility:**" not in report
+    assert "**Meaning:**" not in report
+    assert "**Action:**" not in report
     assert "## Rule Priority" not in report
     assert "SMA-0" in report and "SMA-1" in report and "SMA-2" in report
     assert "## Data Touched" in report
@@ -975,19 +976,19 @@ def test_formatter_preserves_llm_rule_fields_in_report():
     }
     report = ReportFormatterAgent()._business_rules_section([rule])
     for value in (
-        "LLM supplied label", "LLM supplied meaning.", "A.CUSTOM_CONDITION >= 7",
-        "LLM supplied eligibility", "LLM supplied action for CUSTOM_FIELD", "CUSTOM_FIELD",
-        "LLM_VALUE",
+        "LLM supplied label", "A.CUSTOM_CONDITION >= 7", "CUSTOM_FIELD", "LLM_VALUE",
     ):
         assert value in report
+    assert "LLM supplied meaning." not in report
+    assert "LLM supplied eligibility" not in report
+    assert "LLM supplied action for CUSTOM_FIELD" not in report
 
 
 def test_formatter_flags_empty_required_fields_without_inventing_meaning():
     report = ReportFormatterAgent()._business_rules_section([
         {"condition": "SELECT derived_value FROM source_table", "action": "", "business_meaning": ""}
     ])
-    assert "Incomplete LLM-authored rule" in report
-    assert "business_meaning" in report
+    assert "Incomplete LLM-authored rule" not in report
     assert "Not specified" in report
     assert "derived_value is" not in report
 

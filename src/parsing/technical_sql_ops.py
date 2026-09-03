@@ -456,6 +456,7 @@ def _extract_table_ops_from_tree(
         source_columns = _unique_preserve(
             _render_all_columns(source_expr, dialect) if source_expr is not None else []
         )
+        assigned_values = _render_insert_assigned_values(tree, dialect)
         if target_table is not None:
             operations.append(
                 _build_operation_record(
@@ -468,6 +469,7 @@ def _extract_table_ops_from_tree(
                     join_predicates=join_predicates,
                     exists_predicates=exists_predicates,
                     constants=constants,
+                    assigned_values=assigned_values,
                     statement_kind=statement_kind,
                     statement_text=statement_text,
                     statement_id=statement_id,
@@ -1314,6 +1316,29 @@ def _render_update_assigned_values(tree: exp.Update, dialect: str) -> List[Dict[
                 "case_branches": _render_case_branches(right, dialect),
             }
         )
+    return pairs
+
+
+def _render_insert_assigned_values(tree: exp.Insert, dialect: str) -> List[Dict[str, str]]:
+    """Pair INSERT target columns with literal VALUES/SELECT expressions."""
+    target = tree.args.get("this")
+    if not isinstance(target, exp.Schema):
+        return []
+    columns = list(target.args.get("expressions") or [])
+    source = tree.args.get("expression")
+    if isinstance(source, exp.Values):
+        rows = list(source.args.get("expressions") or [])
+        values = list(rows[0].args.get("expressions") or []) if rows and isinstance(rows[0], exp.Tuple) else []
+    elif isinstance(source, exp.Select):
+        values = list(source.args.get("expressions") or [])
+    else:
+        values = []
+    pairs: List[Dict[str, str]] = []
+    for column, value in zip(columns, values):
+        pairs.append({
+            "column": column.sql(dialect=dialect),
+            "expression": value.sql(dialect=dialect),
+        })
     return pairs
 
 

@@ -88,8 +88,8 @@ def test_run_batch_processes_multiple_files_independently_and_writes_separate_ou
     assert batch_result.output_dir == tmp_path / "outputs" / "batch_001"
     assert (batch_result.output_dir / "dbo.oracle_proc.StoredProcedure_report.md").exists()
     assert (batch_result.output_dir / "dbo.tsql_proc.StoredProcedure_report.md").exists()
-    assert not (batch_result.output_dir / "dbo.oracle_proc.StoredProcedure_verification.md").exists()
-    assert not (batch_result.output_dir / "dbo.tsql_proc.StoredProcedure_verification.md").exists()
+    assert (batch_result.output_dir / "verification" / "dbo.oracle_proc.StoredProcedure_verification.md").exists()
+    assert (batch_result.output_dir / "verification" / "dbo.tsql_proc.StoredProcedure_verification.md").exists()
 
     archive_bytes = build_batch_archive_bytes(batch_result)
     assert archive_bytes.startswith(b"PK")
@@ -99,6 +99,8 @@ def test_run_batch_processes_multiple_files_independently_and_writes_separate_ou
                 "batch_manifest.json",
                 "dbo.oracle_proc.StoredProcedure_report.md",
                 "dbo.tsql_proc.StoredProcedure_report.md",
+                "verification/dbo.oracle_proc.StoredProcedure_verification.md",
+                "verification/dbo.tsql_proc.StoredProcedure_verification.md",
             ]
         )
 
@@ -158,6 +160,8 @@ def test_run_batch_keeps_running_after_a_file_fails(tmp_path):
                 "batch_manifest.json",
                 "dbo.first_proc.StoredProcedure_report.md",
                 "dbo.third_proc.StoredProcedure_report.md",
+                "verification/dbo.first_proc.StoredProcedure_verification.md",
+                "verification/dbo.third_proc.StoredProcedure_verification.md",
             ]
         )
 
@@ -221,7 +225,7 @@ def test_run_batch_manifest_write_failure_does_not_break_reports(tmp_path, monke
     assert batch_result.success_count == 1
     assert batch_result.failure_count == 0
     assert (batch_result.output_dir / "dbo.single_proc.StoredProcedure_report.md").exists()
-    assert not (batch_result.output_dir / "dbo.single_proc.StoredProcedure_verification.md").exists()
+    assert (batch_result.output_dir / "verification" / "dbo.single_proc.StoredProcedure_verification.md").exists()
     assert batch_result.manifest_path.endswith("batch_manifest.json")
     assert not Path(batch_result.manifest_path).exists()
 
@@ -347,4 +351,6 @@ def test_main_single_file_workflow_still_writes_report_and_verification(tmp_path
 
     report_path = tmp_path / "samples" / "output" / "dbo.demo_proc.StoredProcedure_report.md"
     assert report_path.exists()
-    assert not (tmp_path / "samples" / "output" / "dbo.demo_proc.StoredProcedure_verification.md").exists()
+    assert (
+        tmp_path / "samples" / "output" / "verification" / "dbo.demo_proc.StoredProcedure_verification.md"
+    ).exists()

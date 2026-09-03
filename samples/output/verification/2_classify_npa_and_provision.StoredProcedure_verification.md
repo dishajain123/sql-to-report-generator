@@ -1,23 +1,3 @@
-2026-09-04 04:21:48,002 | INFO | __main__ | Run started for npa_classification.sql
-2026-09-04 04:21:48,002 | INFO | logic_rules_extractor.pipeline | Stage 1/6: Running input guardrails
-2026-09-04 04:21:48,004 | INFO | logic_rules_extractor.pipeline | Stage 1/6 completed in 0.00s (input guardrails)
-2026-09-04 04:21:48,004 | INFO | logic_rules_extractor.pipeline | Stage 2/6: Detecting dialect
-2026-09-04 04:21:48,007 | INFO | logic_rules_extractor.pipeline | Detected ORACLE dialect (confidence: high)
-2026-09-04 04:21:48,007 | INFO | logic_rules_extractor.pipeline | Stage 2/6 completed in 0.00s (dialect detection)
-2026-09-04 04:21:48,007 | INFO | logic_rules_extractor.pipeline | Stage 3/6: Preprocessing, parsing, and chunking /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpi5lnwh0j.sql
-2026-09-04 04:21:48,029 | INFO | logic_rules_extractor.pipeline | Detected ORACLE PROCEDURE 'classify_npa_and_provision' with 3 chunk(s)
-2026-09-04 04:21:48,030 | INFO | logic_rules_extractor.pipeline | Stage 3/6 completed in 0.02s (preprocessing/parsing/chunking)
-2026-09-04 04:21:48,030 | INFO | logic_rules_extractor.pipeline | Stage 4/6: Retrieving dependencies / pattern context and extracting logic per chunk (model: amazon.nova-lite-v1:0)
-2026-09-04 04:21:48,030 | INFO | logic_rules_extractor.pipeline | Persistent knowledge base ready in 0.00s
-2026-09-04 04:21:48,030 | INFO | logic_rules_extractor.pipeline | Stage 4 extraction selection: estimated_tokens=4779 budget=23768 path=single-pass extraction_calls=1 merge_ran=False
-2026-09-04 04:21:53,475 | INFO | logic_rules_extractor.pipeline | Stage 4/6 completed in 5.44s total (kb_ready=0.00s, retrieval/KB sum=0.00s, LLM extraction sum=5.44s, workers=8, chunks=1)
-2026-09-04 04:21:53,475 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
-2026-09-04 04:22:03,167 | INFO | logic_rules_extractor.pipeline | Coverage check found 5 unreviewed decision point(s); asking the model to review (attempt 1)
-2026-09-04 04:22:23,019 | INFO | logic_rules_extractor.pipeline | Stage 5/6 completed in 29.54s (business reasoning)
-2026-09-04 04:22:23,020 | INFO | logic_rules_extractor.pipeline | Stage 6/6: Reconciling deterministic evidence against synthesized output
-2026-09-04 04:22:23,026 | INFO | logic_rules_extractor.pipeline | Stage 6/6 completed in 0.00s (deterministic reconciliation)
-2026-09-04 04:22:23,026 | INFO | logic_rules_extractor.pipeline | Stage 7/7: Applying output guardrails and formatting final report
-2026-09-04 04:22:23,037 | INFO | logic_rules_extractor.pipeline | Verification/traceability diagnostics for classify_npa_and_provision.StoredProcedure_report.md:
 # Classify Npa And Provision — Verification & Traceability
 
 > Companion artifact to `classify_npa_and_provision.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
@@ -138,4 +118,3 @@ _Quality is derived deterministically from parse success, grounding, conflicts, 
 
 - Informational uncertainty: Calculation uncertainty: `v_provision_pct` uses a fractional numeric value in an expression that divides by a constant; the intended unit or scale cannot be established from SQL text alone.
 - Could not trace the stated source evidence back to a successfully parsed technical extraction record: v_overdue_days > 1095
-2026-09-04 04:22:23,037 | INFO | logic_rules_extractor.pipeline | Stage 7/7 completed in 0.01s (final report generation)
