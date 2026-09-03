@@ -49,6 +49,9 @@ class LLMConfig:
     aws_secret_access_key: str = ""
     aws_session_token: str = ""
     aws_region: str = ""
+    # Input context limit used by orchestration decisions. Providers/models
+    # can override this through LLM_CONTEXT_WINDOW without changing code.
+    context_window: int = 32768
 
 
 def load_llm_config() -> LLMConfig:
@@ -61,6 +64,7 @@ def load_llm_config() -> LLMConfig:
     aws_secret_access_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
     aws_session_token = os.environ.get("AWS_SESSION_TOKEN", "").strip()
     aws_region = os.environ.get("AWS_DEFAULT_REGION", "").strip() or os.environ.get("AWS_REGION", "").strip()
+    context_window = _configured_context_window()
 
     if not model_name and legacy_model_name:
         model_name = legacy_model_name
@@ -95,6 +99,7 @@ def load_llm_config() -> LLMConfig:
             api_key=api_key,
             model_name=model_name,
             base_url=base_url,
+            context_window=context_window,
         )
 
     if provider == "bedrock":
@@ -121,12 +126,23 @@ def load_llm_config() -> LLMConfig:
             aws_secret_access_key=aws_secret_access_key,
             aws_session_token=aws_session_token,
             aws_region=aws_region,
+            context_window=context_window,
         )
 
     raise EnvironmentError(
         f"Unsupported LLM_PROVIDER '{provider}'. "
         "This codebase currently supports LLM_PROVIDER=openai or LLM_PROVIDER=bedrock."
     )
+
+
+def _configured_context_window() -> int:
+    """Return the configured model context window, with a conservative default."""
+    raw = os.environ.get("LLM_CONTEXT_WINDOW", "32768").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 32768
+    return max(value, 4096)
 
 
 def create_llm_client(config: LLMConfig):

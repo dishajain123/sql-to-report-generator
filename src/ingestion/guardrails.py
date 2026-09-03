@@ -685,12 +685,13 @@ def ground_business_rules_against_extraction(
     merged_extraction: Dict[str, Any],
     raw_source: str = "",
 ) -> List[str]:
-    """Anti-hallucination + provenance check for synthesized business
-    rules. Mutates each rule dict in place to guarantee it always
-    carries "rule_type", "confidence", "validation_status", and
-    "fields_affected" with values drawn from a fixed, safe vocabulary -
-    never presenting an inferred or unverifiable claim as a confirmed
-    fact. Returns human-readable warnings for anything downgraded.
+    """Check synthesized rules without changing model-authored data.
+
+    This function is deliberately read-only: it computes provenance,
+    validation, and confidence findings on local values and returns warnings.
+    It must never add, remove, normalize, or rewrite fields on the supplied
+    rule dictionaries. The LLM response remains the sole source of rule
+    content and provenance.
     """
     warnings: List[str] = []
     technical_records = _collect_technical_records(merged_extraction)
@@ -715,6 +716,10 @@ def ground_business_rules_against_extraction(
     for index, rule in enumerate(business_rules, start=1):
         if not isinstance(rule, dict):
             continue
+        # All assignments below are diagnostic calculations only. Keeping a
+        # shallow local copy makes accidental writes to the caller's rule
+        # dictionary impossible while preserving the existing checks.
+        rule = dict(rule)
 
         # --- rule_type: clamp to the fixed vocabulary; never invent one ---
         rule_type = str(rule.get("rule_type", "")).strip().lower()

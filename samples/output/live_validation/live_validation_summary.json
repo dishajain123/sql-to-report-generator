@@ -1,0 +1,58 @@
+[
+  {
+    "source": "/Users/dishajain/Downloads/proc project/TEST PROC/PRO.SMA_MARKING_12122023.StoredProcedure.sql",
+    "report_path": "/Users/dishajain/Desktop/logic_rules_extractor/samples/output/live_validation/PRO.SMA_MARKING_12122023.StoredProcedure_report.md",
+    "log_path": "/Users/dishajain/Desktop/logic_rules_extractor/samples/output/live_validation/PRO.SMA_MARKING_12122023.StoredProcedure_pipeline.log",
+    "elapsed_seconds": 0.0,
+    "error": "OSError('Missing required LLM environment variable(s): LLM_API_KEY, LLM_MODEL_NAME. Set them in your .env file before running the app.')"
+  },
+  {
+    "source": "samples/temp.sql",
+    "report_path": "/Users/dishajain/Desktop/logic_rules_extractor/samples/output/live_validation/temp_report.md",
+    "log_path": "/Users/dishajain/Desktop/logic_rules_extractor/samples/output/live_validation/temp_pipeline.log",
+    "elapsed_seconds": 0.0,
+    "error": "OSError('Missing required LLM environment variable(s): LLM_API_KEY, LLM_MODEL_NAME. Set them in your .env file before running the app.')"
+  },
+  {
+    "source": "samples/npa_classification.sql",
+    "report_path": "/Users/dishajain/Desktop/logic_rules_extractor/samples/output/live_validation/npa_classification_report.md",
+    "log_path": "/Users/dishajain/Desktop/logic_rules_extractor/samples/output/live_validation/npa_classification_pipeline.log",
+    "elapsed_seconds": 0.0,
+    "error": "OSError('Missing required LLM environment variable(s): LLM_API_KEY, LLM_MODEL_NAME. Set them in your .env file before running the app.')"
+  },
+  {
+    "source": "samples/batch_overdue_ageing_block.sql",
+    "report_path": "/Users/dishajain/Desktop/logic_rules_extractor/samples/output/live_validation/batch_overdue_ageing_block_report.md",
+    "log_path": "/Users/dishajain/Desktop/logic_rules_extractor/samples/output/live_validation/batch_overdue_ageing_block_pipeline.log",
+    "elapsed_seconds": 0.0,
+    "error": "OSError('Missing required LLM environment variable(s): LLM_API_KEY, LLM_MODEL_NAME. Set them in your .env file before running the app.')"
+  },
+  {
+    "source": "samples/cursor_overdue_batch.sql",
+    "report_path": "/Users/dishajain/Desktop/logic_rules_extractor/samples/output/live_validation/cursor_overdue_batch_report.md",
+    "log_path": "/Users/dishajain/Desktop/logic_rules_extractor/samples/output/live_validation/cursor_overdue_batch_pipeline.log",
+    "elapsed_seconds": 0.0,
+    "error": "OSError('Missing required LLM environment variable(s): LLM_API_KEY, LLM_MODEL_NAME. Set them in your .env file before running the app.')"
+  },
+  {
+    "source": "evaluation/golden_dataset/tsql/merge_provisioning.sql",
+    "report_path": "/Users/dishajain/Desktop/logic_rules_extractor/samples/output/live_validation/merge_provisioning_report.md",
+    "log_path": "/Users/dishajain/Desktop/logic_rules_extractor/samples/output/live_validation/merge_provisioning_pipeline.log",
+    "elapsed_seconds": 0.0,
+    "error": "OSError('Missing required LLM environment variable(s): LLM_API_KEY, LLM_MODEL_NAME. Set them in your .env file before running the app.')"
+  },
+  {
+    "source": "evaluation/golden_dataset/tsql/update_account_status.sql",
+    "report_path": "/Users/dishajain/Desktop/logic_rules_extractor/samples/output/live_validation/update_account_status_report.md",
+    "log_path": "/Users/dishajain/Desktop/logic_rules_extractor/samples/output/live_validation/update_account_status_pipeline.log",
+    "elapsed_seconds": 0.0,
+    "error": "OSError('Missing required LLM environment variable(s): LLM_API_KEY, LLM_MODEL_NAME. Set them in your .env file before running the app.')"
+  },
+  {
+    "source": "/private/tmp/live_dense_coverage.sql",
+    "report_path": "/Users/dishajain/Desktop/logic_rules_extractor/samples/output/live_validation/live_dense_coverage_report.md",
+    "log_path": "/Users/dishajain/Desktop/logic_rules_extractor/samples/output/live_validation/live_dense_coverage_pipeline.log",
+    "elapsed_seconds": 0.0,
+    "error": "OSError('Missing required LLM environment variable(s): LLM_API_KEY, LLM_MODEL_NAME. Set them in your .env file before running the app.')"
+  }
+]

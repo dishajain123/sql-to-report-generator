@@ -66,8 +66,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Path to write the generated Markdown report. Defaults to "
         "samples/output/<Schema>.<ObjectName>.<Type>_report.md, named from "
         "the SQL object's own parsed identity (not the input filename). "
-        "A companion `..._verification.md` traceability artifact is "
-        "always written alongside it.",
+        "Verification and traceability diagnostics are written to the run log, "
+        "not to a separate Markdown artifact.",
     )
     parser.add_argument(
         "--output-dir",
@@ -193,7 +193,6 @@ def main(argv: list[str] | None = None) -> int:
         for item in batch_result.items:
             if item.status == "success":
                 print(f"[OK] {item.display_name} -> {item.report_path}")
-                print(f"     Verification -> {item.verification_path}")
             else:
                 print(f"[FAIL] {item.display_name} -> {item.error}")
         print(f"Batch archive written to: {archive_path}")
@@ -222,20 +221,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.output:
         output_path = Path(args.output)
-        verification_path = output_path.with_name(f"{output_path.stem}_verification{output_path.suffix}")
     else:
         output_dir = Path("samples/output")
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{report_stem}_report.md"
-        verification_path = output_dir / f"{report_stem}_verification.md"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(run_result.report, encoding="utf-8")
-    verification_path.parent.mkdir(parents=True, exist_ok=True)
-    verification_path.write_text(run_result.verification_report, encoding="utf-8")
 
     print(f"Report written to: {output_path}")
-    print(f"Verification/traceability artifact written to: {verification_path}")
     print(f"Run log written to: {log_path}")
     return 0
 

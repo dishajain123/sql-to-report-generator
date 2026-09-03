@@ -176,7 +176,6 @@ def _execute_benchmark_run(config: BenchmarkRunConfig) -> BenchmarkRunRecord:
             canonical_ir=canonical_ir,
             extraction_guardrail_warnings=pipeline._collect_extraction_guardrail_warnings(chunk_extractions),
             run_metadata=run_metadata,
-            verification_filename="benchmark_verification.md",
         )
         verification = pipeline.formatter_agent.format_verification(
             ingestion=ingestion,

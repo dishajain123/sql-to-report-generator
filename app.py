@@ -268,9 +268,9 @@ def _next_run_number(stem: str) -> int:
     return (max(existing_numbers) + 1) if existing_numbers else 1
 
 
-def _run_paths(stem: str) -> tuple[int, Path, Path, Path]:
-    """Builds the run-numbered output paths for a report/verification/log
-    triple, all sharing one run number and one filename stem. `stem` is
+def _run_paths(stem: str) -> tuple[int, Path, Path]:
+    """Builds the run-numbered output paths for a report/log pair.
+    `stem` is
     expected to be the object's *parsed identity* stem (see
     `build_object_identity_stem`), not the raw upload filename - that is
     what keeps the numbering and naming stable across differently-named
@@ -278,9 +278,8 @@ def _run_paths(stem: str) -> tuple[int, Path, Path, Path]:
     """
     run_number = _next_run_number(stem)
     report_path = OUTPUT_DIR / f"{run_number}_{stem}_report.md"
-    verification_path = OUTPUT_DIR / f"{run_number}_{stem}_verification.md"
     log_path = LOGS_DIR / f"{run_number}_{stem}_pipeline.log"
-    return run_number, report_path, verification_path, log_path
+    return run_number, report_path, log_path
 
 
 @contextmanager
@@ -447,11 +446,9 @@ run_clicked = st.button(
 if run_clicked and batch_mode:
     for key in (
         "last_report",
-        "last_verification_report",
         "last_stem",
         "last_model",
         "last_saved_path",
-        "last_verification_path",
         "last_log_path",
         "last_run_number",
         "last_run_messages",
@@ -657,22 +654,18 @@ elif run_clicked:
         # (schema + canonical business name + object type), never from
         # the uploaded file's name - see build_object_identity_stem.
         report_stem = build_object_identity_stem(run_result.ingestion, fallback_stem=Path(sql_filename).stem)
-        run_number, report_path, verification_path, log_path = _run_paths(report_stem)
+        run_number, report_path, log_path = _run_paths(report_stem)
 
         report_path.write_text(run_result.report, encoding="utf-8")
-        verification_path.write_text(run_result.verification_report, encoding="utf-8")
         tmp_log_path.replace(log_path)
         tmp_log_path = None
         logging.getLogger(__name__).info("Saved report to %s", report_path)
-        logging.getLogger(__name__).info("Saved verification artifact to %s", verification_path)
         logging.getLogger(__name__).info("Saved run log to %s", log_path)
 
         st.session_state["last_report"] = run_result.report
-        st.session_state["last_verification_report"] = run_result.verification_report
         st.session_state["last_stem"] = report_stem
         st.session_state["last_model"] = pipeline.model_name
         st.session_state["last_saved_path"] = str(report_path)
-        st.session_state["last_verification_path"] = str(verification_path)
         st.session_state["last_log_path"] = str(log_path)
         st.session_state["last_run_number"] = run_number
         st.session_state["last_run_messages"] = run_state["messages"]
@@ -750,20 +743,12 @@ if "last_batch_result" in st.session_state:
                     f"Dialect mode: {item.selected_dialect_mode} | Effective dialect: {item.detected_dialect or '—'}"
                 )
                 st.caption(f"Report: `{item.report_path}`")
-                st.caption(f"Verification: `{item.verification_path}`")
                 st.download_button(
                     f"⬇️ Download report ({idx})",
                     data=item.run_result.report,
                     file_name=Path(item.report_path).name,
                     mime="text/markdown",
                     key=f"batch-report-{idx}",
-                )
-                st.download_button(
-                    f"⬇️ Download verification ({idx})",
-                    data=item.run_result.verification_report,
-                    file_name=Path(item.verification_path).name,
-                    mime="text/markdown",
-                    key=f"batch-verification-{idx}",
                 )
                 tab_rendered, tab_raw = st.tabs([f"📖 {item.display_name}", "🔤 Raw Markdown"])
                 with tab_rendered:
@@ -806,26 +791,11 @@ if "last_report" in st.session_state:
             use_container_width=True,
         )
 
-    if "last_verification_report" in st.session_state:
-        st.download_button(
-            "⬇️ Download verification / traceability artifact",
-            data=st.session_state["last_verification_report"],
-            file_name=f"{st.session_state.get('last_stem', 'report')}_verification.md",
-            mime="text/markdown",
-            help=(
-                "Source traceability, rule IDs, reconciliation status, and run "
-                "metadata for this report - kept separate from the business "
-                "document above."
-            ),
-        )
-
     st.caption(
         f"Saved to: `{st.session_state.get('last_saved_path', OUTPUT_DIR / (st.session_state.get('last_stem', 'report') + '_report.md'))}`"
     )
-    if "last_verification_path" in st.session_state:
-        st.caption(f"Verification artifact saved to: `{st.session_state['last_verification_path']}`")
     if "last_log_path" in st.session_state:
-        st.caption(f"Run log saved to: `{st.session_state['last_log_path']}`")
+        st.caption(f"Run log (including verification diagnostics) saved to: `{st.session_state['last_log_path']}`")
 
     if ambiguity_count:
         st.warning(

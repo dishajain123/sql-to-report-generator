@@ -44,16 +44,15 @@ pipeline-internal detail (rule IDs, chunk/statement IDs, source file
 paths or line numbers, reconciliation status, quality/confidence
 scoring, run/model metadata).
 
-`format_verification()` produces the companion artifact that carries
+`format_verification()` produces the verification text emitted to the run log. It carries
 exactly that internal detail, so nothing is silently dropped - a
 reviewer can still trace any business rule back to the precise SQL
 lines, chunk, and statement that produced it, see its reconciliation
 status against the deterministic extraction, and see the run metadata
 the report was generated under. The two are meant to be written side by
-side (e.g. `<name>_report.md` and `<name>_verification.md`); `format()`
-ends with a short pointer to the companion file so a reader always knows
-where to look for provenance without that provenance cluttering the
-business document itself.
+alongside the business report in the run log; `format()` ends with a short
+pointer to that log so a reader knows where to look for provenance without
+that provenance cluttering the business document itself.
 """
 
 from __future__ import annotations
@@ -66,7 +65,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.ingestion.ingestion import IngestionResult
 from src.ir.canonical_ir import CanonicalBusinessIR
-from src.synthesis.rule_synthesizer import RuleSynthesizerAgent, SynthesisResult
+from src.synthesis.rule_synthesizer import SynthesisResult
 from src.dialect.detector import AMBIGUOUS, ORACLE, TSQL, UNKNOWN, UNSUPPORTED, normalize_dialect_name
 from src.core.pipeline_utils import RunMetadata, run_metadata_to_dict
 from src.parsing.dedup import find_write_only_temp_tables
@@ -138,14 +137,8 @@ class ReportFormatterAgent:
         synthesis = self._synthesis_view(synthesis, canonical_ir)
         rules: List[Dict[str, Any]] = [rule.to_dict() for rule in canonical_ir.business_rules]
         display_rules = self._business_rules_for_display(raw_business_rules, rules)
-        # Last presentation-boundary safety pass: canonical IR may have been
-        # built from an older/cached synthesis result. Reapply deterministic
-        # chain and CRUD filters before anything reaches the user-facing
-        # report, while keeping verification backed by the full source data.
-        display_rules = RuleSynthesizerAgent._apply_authoritative_decision_chains(
-            display_rules, merged_extraction
-        )
-        display_rules = RuleSynthesizerAgent._remove_operation_only_rules(display_rules)
+        # Presentation must preserve the LLM-authored rule text. Only the
+        # deletion-only operational filter is applied at this boundary.
         business_rules_for_display = self._display_business_rules(display_rules)
         consolidated_reads = self._consolidate_rows(merged_extraction.get("tables_read", []) or [])
         consolidated_writes = self._consolidate_rows(merged_extraction.get("tables_written", []) or [])
@@ -170,7 +163,6 @@ class ReportFormatterAgent:
         canonical_ir: Optional[CanonicalBusinessIR] = None,
         extraction_guardrail_warnings: Optional[List[str]] = None,
         run_metadata: Optional[RunMetadata] = None,
-        verification_filename: Optional[str] = None,
     ) -> str:
         """Assembles the business-facing report only. Contains business
         objective, rules, decision logic, inputs, calculations,
@@ -213,7 +205,7 @@ class ReportFormatterAgent:
                 raw_merged_extraction=raw_merged_extraction,
                 raw_synthesis_data=raw_synthesis_data,
             ),
-            self._verification_pointer(verification_filename),
+            self._verification_pointer(),
         ]
         sections = [s for s in sections if s and s.strip()]
         return "\n\n".join(sections).strip() + "\n"
@@ -241,7 +233,7 @@ class ReportFormatterAgent:
         report_filename: Optional[str] = None,
         extraction_guardrail_warnings: Optional[List[str]] = None,
     ) -> str:
-        """Assembles the companion verification / traceability artifact:
+        """Assembles verification / traceability diagnostics for the run log:
         run metadata, rule-to-source mapping (rule IDs, chunk IDs,
         statement IDs, source file/line spans), reconciliation summary,
         quality/confidence scoring, and low-level pipeline/guardrail
@@ -327,20 +319,12 @@ class ReportFormatterAgent:
         )
 
     @staticmethod
-    def _verification_pointer(verification_filename: Optional[str]) -> str:
-        """A short, business-safe pointer from the main report to its
-        companion traceability artifact - no IDs, statuses, or paths, just
-        a filename so a reviewer knows where to look."""
-        name = str(verification_filename or "").strip()
-        if not name:
-            return (
-                "---\n\n_Source traceability, rule IDs, reconciliation, and run "
-                "metadata are maintained separately in this object's verification "
-                "artifact rather than in this report._"
-            )
+    def _verification_pointer() -> str:
+        """Point reviewers to the run log for technical diagnostics."""
         return (
             "---\n\n_Source traceability, rule IDs, reconciliation, and run "
-            f"metadata for this report are maintained separately in `{name}`._"
+            "metadata are emitted in the pipeline run log rather than in "
+            "this report._"
         )
 
     @staticmethod
@@ -438,168 +422,11 @@ class ReportFormatterAgent:
         """
         raw_rules = [rule for rule in raw_rules if isinstance(rule, dict)]
         canonical_rules = [rule for rule in canonical_rules if isinstance(rule, dict)]
-        if canonical_rules:
-            return canonical_rules
-        return raw_rules
+        return canonical_rules
 
     def _display_business_rules(self, rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        rules = [dict(rule) for rule in rules if isinstance(rule, dict)]
-        return self._deduplicate_business_rules(rules)
-
-    @staticmethod
-    def _rule_field_signature(rule: Dict[str, Any]) -> frozenset:
-        fields = {str(f).strip().lower() for f in (rule.get("fields_affected") or []) if str(f).strip()}
-        if fields:
-            return frozenset(fields)
-        output_field = str(rule.get("output_field") or "").strip().lower()
-        return frozenset({output_field}) if output_field else frozenset()
-
-    @staticmethod
-    def _meaning_word_set(rule: Dict[str, Any]) -> frozenset:
-        text = f"{rule.get('rule_name') or ''} {rule.get('business_meaning') or ''}".lower()
-        words = {w for w in re.findall(r"[a-z]{3,}", text) if w not in _STOPWORDS_FOR_RULE_SIMILARITY}
-        return frozenset(words)
-
-    @staticmethod
-    def _rules_look_like_the_same_concept(rule_a: Dict[str, Any], rule_b: Dict[str, Any]) -> bool:
-        """Second gate for merging, alongside field-signature overlap.
-
-        Field overlap alone is NOT a safe merge signal on its own: two
-        genuinely different statements in the source can happen to touch
-        the same handful of fields (a real production example: a dead
-        threshold-cap fragment and the live "reset negative values to
-        zero" logic both touch DPD_IntService/DPD_NoCredit/etc, but they
-        are not the same rule and must never be merged just because their
-        field lists overlap - see report design notes). Require the two
-        rules' own business_meaning/rule_name text to also share enough
-        vocabulary to plausibly be the same underlying concept, using a
-        cheap Jaccard word-overlap check - no external NLP dependency,
-        but enough to block the false-merge case above (whose wording
-        shares almost no words with the reset-to-zero rule) while still
-        allowing genuine near-duplicates (whose wording is close
-        paraphrase of each other) to merge.
-        """
-        words_a = ReportFormatterAgent._meaning_word_set(rule_a)
-        words_b = ReportFormatterAgent._meaning_word_set(rule_b)
-        if not words_a or not words_b:
-            # No usable text to compare on either side - do not merge on
-            # field overlap alone; require an explicit signal.
-            return False
-        overlap = len(words_a & words_b) / len(words_a | words_b)
-        return overlap >= 0.25
-
-    @staticmethod
-    def _deduplicate_business_rules(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Merge rules that write to the same field(s) into one.
-
-        This is a defensive, deterministic safety net enforcing the
-        synthesis prompt's own "group related conditions that drive the
-        same output field into one rule" instruction - upstream steps
-        (LLM synthesis, or the deterministic completeness backfill in
-        `_augment_rules_from_executable_operations` /
-        `_complete_synthesis_from_deterministic_facts` in
-        src/synthesis/rule_synthesizer.py) can each independently emit a
-        rule for the same field, producing near-duplicate rules with
-        slightly different literal SQL text (e.g. an `ISNULL(...)`
-        variant and a `COALESCE(...)` variant of the same reset logic,
-        or two separate branches of what should be one decision table -
-        see report design notes for concrete examples). Rather than try
-        to prevent every possible source of duplication upstream, this
-        guarantees the *displayed* report never shows two rules for the
-        same field(s) regardless of where the duplicate came from.
-
-        Two rules are merged ONLY when BOTH hold:
-          1. Their `fields_affected` (or, absent that, `output_field`)
-             sets are identical or one is a subset of the other, AND
-          2. Their business_meaning/rule_name text shares enough
-             vocabulary to plausibly describe the same underlying
-             concept (see `_rules_look_like_the_same_concept`).
-        Field overlap alone is not sufficient - two structurally
-        different statements that happen to touch the same fields (e.g.
-        a dead code fragment and a live one covering an overlapping
-        field set) must never be silently combined into one rule; that
-        would misrepresent what the source actually does, which is worse
-        than leaving two separate rules in the report. Merging unions
-        eligibility, decision table rows (deduplicated by
-        condition+outcome), source evidence, and source chunks; keeps
-        the longer/more complete business meaning and rule name; and
-        keeps the position of the FIRST occurrence so execution ordering
-        from canonical_ir is preserved.
-        """
-        merged: List[Dict[str, Any]] = []
-        signatures: List[frozenset] = []
-
-        for rule in rules:
-            sig = ReportFormatterAgent._rule_field_signature(rule)
-            match_idx = None
-            if sig:
-                for i, existing_sig in enumerate(signatures):
-                    if not existing_sig:
-                        continue
-                    fields_overlap = sig == existing_sig or sig <= existing_sig or existing_sig <= sig
-                    if fields_overlap and ReportFormatterAgent._rules_look_like_the_same_concept(rule, merged[i]):
-                        match_idx = i
-                        break
-            if match_idx is None:
-                merged.append(dict(rule))
-                signatures.append(sig)
-                continue
-
-            target = merged[match_idx]
-            # Distinct branch predicates are separate business outcomes,
-            # even when they target the same field and use similar prose.
-            # Never merge mutually exclusive or nested paths merely because
-            # their field signatures overlap.
-            target_condition = ReportFormatterAgent._clean_text(target.get("condition"))
-            incoming_condition = ReportFormatterAgent._clean_text(rule.get("condition"))
-            if target_condition and incoming_condition and target_condition.lower() != incoming_condition.lower():
-                merged.append(dict(rule))
-                signatures.append(sig)
-                continue
-            if target.get("decision_logic_rows") or rule.get("decision_logic_rows"):
-                target_rows = ReportFormatterAgent._decision_logic_rows(target)
-                incoming_rows = ReportFormatterAgent._decision_logic_rows(rule)
-                if target_rows and incoming_rows and target_rows != incoming_rows:
-                    merged.append(dict(rule))
-                    signatures.append(sig)
-                    continue
-            # Union the wider field set so a subsequent, even-more-complete
-            # duplicate can still match against it.
-            signatures[match_idx] = signatures[match_idx] | sig
-            target["fields_affected"] = sorted(
-                {str(f) for f in (target.get("fields_affected") or [])}
-                | {str(f) for f in (rule.get("fields_affected") or [])}
-            )
-            if len(str(rule.get("business_meaning") or "")) > len(str(target.get("business_meaning") or "")):
-                target["business_meaning"] = rule.get("business_meaning")
-            if len(str(rule.get("rule_name") or "")) > len(str(target.get("rule_name") or "")):
-                target["rule_name"] = rule.get("rule_name")
-            target["eligibility"] = ReportFormatterAgent._unique_ordered(
-                list(target.get("eligibility") or []) + list(rule.get("eligibility") or [])
-            )
-            existing_rows = target.get("decision_logic_rows") or []
-            incoming_rows = rule.get("decision_logic_rows") or []
-            seen_rows = {
-                (str(r.get("condition") or ""), str(r.get("outcome") or ""))
-                for r in existing_rows
-                if isinstance(r, dict)
-            }
-            for row in incoming_rows:
-                if not isinstance(row, dict):
-                    continue
-                key = (str(row.get("condition") or ""), str(row.get("outcome") or ""))
-                if key not in seen_rows:
-                    existing_rows.append(row)
-                    seen_rows.add(key)
-            target["decision_logic_rows"] = existing_rows
-            target["source_evidence"] = ReportFormatterAgent._unique_ordered(
-                list(target.get("source_evidence") or []) + list(rule.get("source_evidence") or [])
-            )
-            target["source_chunks"] = ReportFormatterAgent._unique_ordered(
-                list(target.get("source_chunks") or []) + list(rule.get("source_chunks") or [])
-            )
-
-        return merged
+        """Return a presentation copy without changing rule count or text."""
+        return [dict(rule) for rule in rules if isinstance(rule, dict)]
 
     def _run_metadata_section(self, ingestion: IngestionResult, run_metadata: Optional[RunMetadata]) -> str:
         data = run_metadata_to_dict(run_metadata)
@@ -850,6 +677,7 @@ class ReportFormatterAgent:
         rule_name = self._business_rule_name(rule, idx)
         output_field = self._business_rule_output(rule)
         business_meaning = self._business_rule_business_meaning(rule)
+        action = rule.get("action") if isinstance(rule.get("action"), str) else ""
         eligibility = self._rule_text_lines(rule.get("eligibility"))
         decision_logic_rows = self._decision_logic_rows(rule)
         tie_handling = self._rule_text_lines(rule.get("tie_priority_handling"))
@@ -857,23 +685,27 @@ class ReportFormatterAgent:
         when_not_eligible = self._rule_text_lines(rule.get("when_not_eligible"))
 
         lines = [f"### R{idx} — {rule_name}", ""]
+        missing_fields = self._missing_llm_rule_fields(rule)
+        if missing_fields:
+            lines.append(
+                "**Validation:** Incomplete LLM-authored rule; missing or empty field(s): "
+                + ", ".join(missing_fields)
+            )
+            lines.append("")
         if output_field != "Not specified":
             lines.append(f"**Applies to:** `{output_field}`")
         # Eligibility rendered per-rule, directly under the fields it
         # gates, rather than pooled into one flat cross-rule list at the
         # top of the report - a reader must never have to cross-reference
         # a separate section to know which conditions gate THIS rule.
-        # Ordered decision rows are mutually exclusive alternatives. Their
-        # branch predicates must never be rendered as simultaneous
-        # eligibility requirements, even if the model copied them there.
-        if decision_logic_rows:
-            eligibility = []
         if eligibility:
             if len(eligibility) == 1:
                 lines.append(f"**Eligibility:** {self._pretty_condition_for_display(eligibility[0])}")
             else:
                 lines.append("**Eligibility (all must hold):**")
                 lines.extend(f"- {self._pretty_condition_for_display(e)}" for e in eligibility)
+        if action:
+            lines.append(f"**Action:** {action}")
         lines.append(f"**Meaning:** {business_meaning}")
         lines.append("")
 
@@ -1469,7 +1301,7 @@ class ReportFormatterAgent:
         if skipped:
             note = (
                 f"\n\n_{skipped} working/temporary table(s) used only for intermediate calculation "
-                "steps are omitted here - see the verification report for the full technical lineage._"
+                "steps are omitted here - see the pipeline run log for the full technical lineage._"
             )
         return "## Data Touched\n\n" + self._render_split_table(header, rows) + note
 
@@ -1485,7 +1317,7 @@ class ReportFormatterAgent:
         plain-English `business_meaning` naming exactly what changes and
         why - reuse that instead of falling back to WHERE-clause/filter
         text, which is developer detail with no place in the business
-        report (compare the verification report, which does carry the
+        report (the pipeline run log carries the
         full literal predicates for technical review).
 
         Preference order:
@@ -1712,7 +1544,7 @@ class ReportFormatterAgent:
         concrete, verifiable facts about the object's actual behavior),
         followed by genuine LLM-flagged ambiguities from the source. Pure
         pipeline/parser/guardrail plumbing noise has moved to
-        `_pipeline_diagnostics_section` in the verification report - it
+        `_pipeline_diagnostics_section` in the pipeline run log - it
         was drowning out the findings that actually matter to a business
         reader (see report design notes).
         """
@@ -1737,7 +1569,11 @@ class ReportFormatterAgent:
             if str(item).strip()
         )
         merged_ambiguities = source_merged_extraction.get("ambiguities", []) or []
-        items.extend(str(item).strip() for item in merged_ambiguities if str(item).strip())
+        items.extend(
+            str(item).strip()
+            for item in merged_ambiguities
+            if str(item).strip() and not self._is_reconciliation_diagnostic(item)
+        )
         for chunk in source_merged_extraction.get("chunk_provenance", []) or []:
             if not isinstance(chunk, dict):
                 continue
@@ -1756,7 +1592,11 @@ class ReportFormatterAgent:
                 items.append(
                     f"Chunk '{chunk_id}'{suffix} technical extraction returned malformed JSON and needs manual review."
                 )
-        items.extend(str(item).strip() for item in (source_synthesis_data.get("ambiguities", []) or []) if str(item).strip())
+        items.extend(
+            str(item).strip()
+            for item in (source_synthesis_data.get("ambiguities", []) or [])
+            if str(item).strip() and not self._is_reconciliation_diagnostic(item)
+        )
 
         if not items:
             return "## Findings / Needs Review\n\nNone identified."
@@ -1774,6 +1614,22 @@ class ReportFormatterAgent:
         ordered_items = [item for _, item in deduped]
         lines = [f"- {item}" for item in ordered_items]
         return "## Findings / Needs Review\n\n" + "\n".join(lines)
+
+    @staticmethod
+    def _is_reconciliation_diagnostic(value: Any) -> bool:
+        """Keep raw reconciliation classifier output out of business findings.
+
+        The detailed status, record kind, and contradiction explanation remain
+        available in the verification diagnostics. The business report should
+        contain only source/business findings and plain-language ambiguities.
+        """
+        text = str(value or "").strip().lower()
+        return text.startswith(
+            (
+                "reconciliation review required:",
+                "reconciliation detected a source/report discrepancy:",
+            )
+        )
 
     # ------------------------------------------------------------------
     # Legacy curated glossary (kept for backward compatibility - small,
@@ -2003,219 +1859,65 @@ class ReportFormatterAgent:
 
     @staticmethod
     def _business_rule_name(rule: Dict[str, Any], idx: int) -> str:
-        explicit = str(rule.get("rule_name") or "").strip()
-        condition = str(rule.get("condition") or "").strip()
-        action = str(rule.get("action") or "").strip()
-        if explicit:
-            if condition and re.search(r"[<>=]|\bbetween\b|\belse\b", condition, re.IGNORECASE):
-                if re.search(r"\bladder\b|\bclassification\b|\bbucket\b|\brisk\b", explicit, re.IGNORECASE):
-                    return condition
-            return explicit
-        if condition:
-            if not action:
-                return condition
-            if re.search(r"[<>=]|\bbetween\b|\belse\b", condition, re.IGNORECASE):
-                return condition
-            if len(condition) <= len(action):
-                return condition
-        name = action or condition or f"Rule {idx}"
-        return name or f"Rule {idx}"
+        value = rule.get("rule_name")
+        return value if isinstance(value, str) and value.strip() else "Not specified"
 
     @staticmethod
     def _business_rule_output(rule: Dict[str, Any]) -> str:
         output_field = rule.get("output_field")
         if isinstance(output_field, str) and output_field.strip():
-            return output_field.strip()
+            return output_field
         fields = rule.get("fields_affected") or []
-        if fields:
-            return ", ".join(fields)
+        if isinstance(fields, list) and fields:
+            return ", ".join(str(field) for field in fields)
         return "Not specified"
 
     @staticmethod
     def _business_rule_business_meaning(rule: Dict[str, Any]) -> str:
-        meaning = rule.get("business_meaning") or rule.get("action") or rule.get("condition")
-        text = str(meaning or "").strip()
-        if text and ReportFormatterAgent._meaning_matches_rule_name(rule, text):
-            return text
-        derived = ReportFormatterAgent._meaning_from_rule_name(rule)
-        return derived or text or "Not specified"
+        meaning = rule.get("business_meaning")
+        return meaning if isinstance(meaning, str) and meaning.strip() else "Not specified"
 
     @staticmethod
-    def _meaning_matches_rule_name(rule: Dict[str, Any], meaning: str) -> bool:
-        name = str(rule.get("rule_name") or "").strip().lower()
-        if not name or not meaning:
-            return False
-
-        stopwords = {
-            "the", "a", "an", "to", "of", "and", "or", "for", "if", "when", "by", "from",
-            "all", "any", "each", "this", "that", "is", "are", "be", "as", "with", "on",
-            "into", "in", "out", "based", "rule", "account", "accounts", "field", "fields",
-        }
-
-        def _tokens(text: str) -> set[str]:
-            return {
-                token
-                for token in re.findall(r"[A-Za-z0-9_]+", text.lower())
-                if token not in stopwords and not token.isdigit()
-            }
-
-        name_tokens = _tokens(name)
-        meaning_tokens = _tokens(str(meaning))
-        if not name_tokens or not meaning_tokens:
-            return False
-        overlap = name_tokens & meaning_tokens
-        return len(overlap) >= max(1, min(2, len(name_tokens) // 2))
-
-    @staticmethod
-    def _meaning_from_rule_name(rule: Dict[str, Any]) -> str:
-        name = str(rule.get("rule_name") or rule.get("action") or rule.get("condition") or "").strip()
-        if not name:
-            return ""
-        patterns = [
-            (r"(?i)^reset\s+(?P<body>.+?)\s+to\s+(?P<value>.+)$", "{body} are reset to {value}."),
-            (r"(?i)^calculate\s+(?P<body>.+)$", "The {body} is calculated."),
-            (r"(?i)^clear\s+(?P<body>.+)$", "Previous {body} is cleared."),
-            (r"(?i)^assign\s+(?P<body>.+)$", "The {body} is assigned."),
-            (r"(?i)^set\s+(?P<body>.+)$", "The {body} is set."),
-            (r"(?i)^flag\s+(?P<body>.+)$", "The {body} is flagged."),
-            (r"(?i)^update\s+(?P<body>.+)$", "The {body} is updated."),
-            (r"(?i)^default\s+(?P<body>.+)$", "The {body} is defaulted."),
-            (r"(?i)^show\s+(?P<body>.+)$", "The result set shows {body}."),
-            (r"(?i)^keep\s+(?P<body>.+)$", "The result set keeps {body}."),
-            (r"(?i)^include\s+(?P<body>.+)$", "The result set includes only {body}."),
-            (r"(?i)^process\s+(?P<body>.+)$", "The process handles {body}."),
-        ]
-        for pattern, template in patterns:
-            match = re.match(pattern, name)
-            if match:
-                body = match.groupdict().get("body", "").strip()
-                value = match.groupdict().get("value", "").strip()
-                if pattern.lower().startswith("(?i)^calculate") and body.lower().endswith(" for account"):
-                    body = body[: -len(" for account")].strip()
-                    if body:
-                        return f"The {body} is calculated for the account."
-                if value and body:
-                    return template.format(body=body, value=value).strip()
-                if body:
-                    return template.format(body=body).strip()
-        cleaned = name[:1].upper() + name[1:]
-        return cleaned if cleaned.endswith(".") else cleaned + "."
-
-    @staticmethod
-    def _clean_sql_fragment_for_display(text: str) -> str:
-        """Deterministic readability cleanup applied to condition/outcome/
-        eligibility text at render time only - never touches the
-        underlying rule data used for grounding, verification, or the
-        audit trail, only what gets printed in the business report.
-
-        Handles the two most common sources of raw-SQL leakage seen in
-        real output:
-
-        1. Table-alias prefixes on column references (`A.DPD_IntService`,
-           `dpd.DPD_Max`, `DPD.DPD_INTSERVICE`) - the synthesis prompt
-           already explicitly forbids printing a raw alias as if it were
-           a table name, but the model doesn't always comply for column
-           references embedded inside a condition/outcome string. Every
-           value that reaches this function is already known to be
-           condition/outcome/eligibility text (never a table name - those
-           come from `fields_affected`/Data Touched, a different code
-           path), so any `<word>.<identifier>` pattern found here is
-           structurally a column reference and the prefix is safe to
-           drop, keeping just the column name.
-        2. `ISNULL(x, y)` / `COALESCE(x, y)` NULL-defaulting wrappers -
-           collapsed to just `x`, which preserves the practical meaning
-           for a business reader (a NULL value being treated as the
-           default) while removing function-call noise. Applied
-           iteratively since these can nest.
-
-        This is intentionally conservative: it never rewrites operators,
-        never reorders boolean logic, and never invents wording - only
-        removes syntax that carries no additional business meaning.
-        """
-        if not text:
-            return text
-        cleaned = text
-        # Unwrap ISNULL(x, y) / COALESCE(x, y) -> x. Iterate a few passes
-        # to handle nesting; bounded so a pathological input can't loop.
-        wrapper_pattern = re.compile(r"\b(?:ISNULL|COALESCE)\s*\(\s*([^,()]+?)\s*,\s*[^()]+?\)", re.IGNORECASE)
-        for _ in range(4):
-            new_cleaned = wrapper_pattern.sub(r"\1", cleaned)
-            if new_cleaned == cleaned:
-                break
-            cleaned = new_cleaned
-        # Strip alias prefixes on column references: <word>.<identifier> -> <identifier>.
-        # Deliberately does not fire on things that aren't alias.column
-        # shaped (e.g. leaves quoted string literals and numbers alone).
-        cleaned = re.sub(r"\b[A-Za-z_][A-Za-z0-9_]*\.([A-Za-z_][A-Za-z0-9_]*)\b", r"\1", cleaned)
-        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
-        return cleaned or text
+    def _missing_llm_rule_fields(rule: Dict[str, Any]) -> List[str]:
+        missing: List[str] = []
+        for key in (
+            "rule_name", "business_meaning", "condition", "action",
+            "rule_type", "confidence", "validation_status", "source_evidence",
+        ):
+            value = rule.get(key)
+            if value is None or value == "" or value == []:
+                missing.append(key)
+        if not rule.get("output_field") and not rule.get("fields_affected"):
+            missing.append("output_field/fields_affected")
+        return missing
 
     @staticmethod
     def _rule_text_lines(value: Any) -> List[str]:
         if value is None:
             return []
         if isinstance(value, list):
-            items = [str(item).strip() for item in value if str(item).strip()]
+            return [str(item) for item in value if str(item)]
         else:
-            text = str(value).strip()
+            text = str(value)
             if not text:
                 return []
-            items = [part.strip(" -") for part in re.split(r"(?:\n+|;\s+)", text) if part.strip(" -")] or [text]
-        return [ReportFormatterAgent._clean_sql_fragment_for_display(item) for item in items]
+            return [text]
 
-    def _decision_logic_rows(self, rule: Dict[str, Any]) -> List[Dict[str, str]]:
-        """Return exact condition/outcome rows for this business rule.
-
-        Explicit single-branch rules are rendered as one table row too. This
-        keeps the report shape consistent and makes the condition/outcome
-        binding visible instead of leaving it only in prose.
-        """
+    @staticmethod
+    def _decision_logic_rows(rule: Dict[str, Any]) -> List[Dict[str, str]]:
+        """Return only the decision rows supplied by the LLM."""
         rows = rule.get("decision_logic_rows")
         if not isinstance(rows, list) or not rows:
-            condition = str(rule.get("condition") or "").strip()
-            action = str(rule.get("action") or "").strip()
-            if condition and action:
-                return [{"condition": condition, "outcome": action}]
             return []
-        normalized = []
+        rendered = []
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            condition = str(row.get("condition") or row.get("when") or row.get("if") or "").strip()
-            outcome = str(row.get("outcome") or row.get("then") or row.get("result") or "").strip()
-            if condition or outcome:
-                # "ELSE" is a structural marker for the default branch,
-                # not a SQL fragment - leave it exactly as-is rather than
-                # running it through alias/wrapper cleanup.
-                clean_condition = (
-                    condition if condition.strip().upper() == "ELSE"
-                    else self._clean_sql_fragment_for_display(condition)
-                )
-                normalized.append(
-                    {
-                        "condition": clean_condition or "Not specified",
-                        "outcome": self._clean_sql_fragment_for_display(outcome) or "Not specified",
-                    }
-                )
-        # Repeated field-level cleanup assignments are one business pattern,
-        # not several different decisions. Collapse only the unambiguous
-        # shape "<metric> < 0 -> 0" when the rule itself is explicitly about
-        # reset/cleanup. The original rows remain intact in the verification
-        # artifact and in the rule payload.
-        rule_text = " ".join(
-            str(rule.get(key) or "").lower()
-            for key in ("rule_name", "action", "business_meaning")
-        )
-        reset_rows = [
-            row for row in normalized
-            if re.search(r"(?:<\s*0|negative)", row["condition"], re.IGNORECASE)
-            and re.fullmatch(r"['\"]?0['\"]?", row["outcome"].strip())
-        ]
-        if len(reset_rows) >= 2 and any(
-            token in rule_text for token in ("reset", "sanitize", "cleanup", "zero out", "set to zero")
-        ):
-            return [{"condition": "Metric value < 0", "outcome": "Metric set to 0"}]
-        return normalized
+            rendered.append({
+                "condition": row.get("condition", ""),
+                "outcome": row.get("outcome", ""),
+            })
+        return rendered
 
     def _decision_logic_block(self, rows: List[Dict[str, str]]) -> List[str]:
         lines = ["| Condition | Outcome |", "|---|---|"]
@@ -2227,29 +1929,8 @@ class ReportFormatterAgent:
 
     @staticmethod
     def _pretty_condition_for_display(condition: str) -> str:
-        """Make common SQL predicates readable without changing their meaning.
-
-        This is deliberately a presentation-only transformation. Raw
-        conditions remain in synthesis/reconciliation/verification data; the
-        business report simply avoids exposing null wrappers, aliases, and
-        operator-heavy syntax when a faithful plain-language equivalent is
-        unambiguous.
-        """
-        text = ReportFormatterAgent._clean_sql_fragment_for_display(str(condition or "").strip())
-        if not text or text.upper() == "ELSE":
-            return text
-        text = re.sub(r"\s+", " ", text).strip()
-        text = re.sub(r"\bBETWEEN\s+([^\s]+)\s+AND\s+([^\s]+)", r"is between \1 and \2", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s*>=\s*", " is at least ", text)
-        text = re.sub(r"\s*<=\s*", " is at most ", text)
-        text = re.sub(r"\s*<>\s*", " is not ", text)
-        text = re.sub(r"\s*!=\s*", " is not ", text)
-        text = re.sub(r"\s+>\s*", " is above ", text)
-        text = re.sub(r"\s+<\s*", " is below ", text)
-        text = re.sub(r"\s*=\s*", " equals ", text)
-        text = re.sub(r"\s+AND\s+", " and ", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s+OR\s+", " or ", text, flags=re.IGNORECASE)
-        return text.strip()
+        """Return the LLM-authored condition without semantic rewriting."""
+        return str(condition or "")
 
     # ------------------------------------------------------------------
     # Review-priority icon / escaping / truncation

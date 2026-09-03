@@ -30,6 +30,7 @@ import time
 import copy
 import hashlib
 import json
+import math
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -51,8 +52,11 @@ from src.validation.reconciliation import reconcile_deterministic_evidence
 from src.validation.semantic_validation import (
     extract_procedural_decision_chains,
     extract_nested_decision_chains,
+    extract_case_assignment_decision_chains,
+    merge_decision_chains,
     find_semantic_anomalies,
 )
+from src.validation.coverage_check import find_coverage_gaps, format_gap_for_ambiguity
 from src.ir.canonical_ir import CanonicalBusinessIR
 from src.core.pipeline_utils import (
     PIPELINE_VERSION,
@@ -82,6 +86,26 @@ DEFAULT_SEED = 0
 DEFAULT_EXTRACTION_MAX_TOKENS = int(os.environ.get("LLM_EXTRACTION_MAX_TOKENS", "6000"))
 DEFAULT_SYNTHESIS_MAX_TOKENS = int(os.environ.get("LLM_SYNTHESIS_MAX_TOKENS", "16000"))
 
+# The single-pass selector is intentionally based on the configured context
+# window, not equal to it. Input must leave room for the extraction response
+# and prompt/schema text. SINGLE_PASS_TOKEN_BUDGET can be lowered for a model
+# whose practical limit is below its advertised context window.
+_DEFAULT_PROMPT_SCHEMA_RESERVE = 3000
+_DEFAULT_MODEL_CONTEXT_WINDOW = int(os.environ.get("LLM_CONTEXT_WINDOW", "32768"))
+SINGLE_PASS_TOKEN_BUDGET = int(
+    os.environ.get(
+        "SINGLE_PASS_TOKEN_BUDGET",
+        str(
+            max(
+                4096,
+                _DEFAULT_MODEL_CONTEXT_WINDOW
+                - DEFAULT_EXTRACTION_MAX_TOKENS
+                - _DEFAULT_PROMPT_SCHEMA_RESERVE,
+            )
+        ),
+    )
+)
+
 # Stage 4 (embedded SQL / per-chunk technical extraction) is the slowest
 # stage because it makes one LLM call per chunk. Chunks are independent, so
 # they're extracted concurrently; 4 workers was overly conservative for
@@ -90,6 +114,15 @@ DEFAULT_SYNTHESIS_MAX_TOKENS = int(os.environ.get("LLM_SYNTHESIS_MAX_TOKENS", "1
 # override it per environment (e.g. lower it back down if the LLM provider's
 # rate limit needs it).
 DEFAULT_CHUNK_WORKERS = 8
+
+# Bounded number of model-driven review passes the coverage-gap loop may
+# trigger after the first synthesis call (see `find_coverage_gaps` /
+# `RuleSynthesizerAgent.revise`). Kept small and bounded on purpose: a
+# gap that's still unresolved after this many targeted look-backs is far
+# more likely genuinely ambiguous/technical than something more retries
+# would fix, and should surface as a reviewable ambiguity instead of
+# looping. Override via PIPELINE_COVERAGE_RETRIES per environment.
+DEFAULT_COVERAGE_RETRIES = int(os.environ.get("PIPELINE_COVERAGE_RETRIES", "2"))
 
 
 def supported_analysis_dialect(ingestion: IngestionResult) -> Optional[str]:
@@ -111,17 +144,18 @@ class PipelineRunResult:
     pipeline run.
 
     `report` is the clean, business-facing Markdown document.
-    `verification_report` is the companion traceability artifact (source
-    provenance, rule IDs, reconciliation, run metadata) that deliberately
-    does not appear in `report`. `ingestion` carries the parsed object
+    `verification_report` is the in-memory traceability diagnostic (source
+    provenance, rule IDs, reconciliation, run metadata) that is emitted to
+    the run log and deliberately does not appear in `report`. It is retained
+    on the result for programmatic callers, but is never written as a second
+    Markdown artifact. `ingestion` carries the parsed object
     identity (`object_name`, `canonical_object_name`, `schema`,
     `object_type`) so callers can derive output filenames from what the
     SQL actually declares rather than from the input filename - see
     `src.ingestion.ingestion.build_object_identity_stem`.
 
-    Kept as a small dataclass (rather than a bare string) specifically so
-    the business report and the verification artifact can never be
-    accidentally conflated into one file again.
+    Kept as a small dataclass (rather than a bare string) so the business
+    report and diagnostic output cannot be accidentally conflated.
     """
 
     report: str
@@ -147,8 +181,22 @@ class LogicRulesExtractorPipeline:
         dialect: str = "auto",
         extraction_max_tokens: int = DEFAULT_EXTRACTION_MAX_TOKENS,
         synthesis_max_tokens: int = DEFAULT_SYNTHESIS_MAX_TOKENS,
+        max_coverage_retries: int = DEFAULT_COVERAGE_RETRIES,
+        single_pass_token_budget: Optional[int] = None,
     ):
         self.llm_config = llm_config or load_llm_config()
+        self.max_coverage_retries = max_coverage_retries
+        configured_budget = os.environ.get("SINGLE_PASS_TOKEN_BUDGET")
+        model_context_window = int(getattr(self.llm_config, "context_window", _DEFAULT_MODEL_CONTEXT_WINDOW))
+        self.single_pass_token_budget = int(
+            configured_budget
+            if configured_budget is not None
+            else (
+                single_pass_token_budget
+                if single_pass_token_budget is not None
+                else max(4096, model_context_window - extraction_max_tokens - _DEFAULT_PROMPT_SCHEMA_RESERVE)
+            )
+        )
         self.model_name = self.llm_config.model_name
         self.retrieval_k = retrieval_k
         self.chunk_workers = self._resolve_chunk_workers(chunk_workers)
@@ -200,7 +248,7 @@ class LogicRulesExtractorPipeline:
     ) -> PipelineRunResult:
         """Run the full pipeline against a single .sql input file and
         return a `PipelineRunResult` containing the business report, its
-        companion verification/traceability artifact, and the parsed
+    verification/traceability diagnostics, and the parsed
         ingestion result (object identity) the caller can use to derive
         output filenames.
 
@@ -294,12 +342,41 @@ class LogicRulesExtractorPipeline:
         if kb_seconds > 0:
             logger.info("Persistent knowledge base ready in %.2fs", kb_seconds)
         analysis_dialect = supported_analysis_dialect(ingestion)
-        chunk_extractions = self._extract_all_chunks(
-            ingestion,
-            run_metadata=run_metadata,
-            analysis_dialect=analysis_dialect,
-            telemetry_tracker=telemetry_tracker,
+        full_rag_context = self._retrieve_full_source_context(ingestion)
+        estimated_tokens = self._estimate_single_pass_tokens(ingestion.raw_code, full_rag_context)
+        single_pass = self._use_single_pass(ingestion, estimated_tokens)
+        selected_budget = getattr(self, "single_pass_token_budget", SINGLE_PASS_TOKEN_BUDGET)
+        extraction_execution = {
+            "estimated_input_tokens": estimated_tokens,
+            "single_pass_token_budget": selected_budget,
+            "selected_path": "single-pass" if single_pass else "chunked",
+            "extraction_calls": 1 if single_pass else len(ingestion.chunks),
+            "merge_ran": not single_pass,
+        }
+        logger.info(
+            "Stage 4 extraction selection: estimated_tokens=%s budget=%s path=%s extraction_calls=%s merge_ran=%s",
+            estimated_tokens,
+            selected_budget,
+            extraction_execution["selected_path"],
+            extraction_execution["extraction_calls"],
+            extraction_execution["merge_ran"],
         )
+        if single_pass:
+            chunk_extractions = [
+                self._extract_full_source(
+                    ingestion,
+                    rag_context=full_rag_context,
+                    analysis_dialect=analysis_dialect,
+                    telemetry_tracker=telemetry_tracker,
+                )
+            ]
+        else:
+            chunk_extractions = self._extract_all_chunks(
+                ingestion,
+                run_metadata=run_metadata,
+                analysis_dialect=analysis_dialect,
+                telemetry_tracker=telemetry_tracker,
+            )
         extraction_guardrail_warnings = self._collect_extraction_guardrail_warnings(chunk_extractions)
         retrieval_seconds, extraction_seconds = self._chunk_timing_totals(chunk_extractions)
         stage_4_seconds = time.perf_counter() - stage_start
@@ -316,12 +393,34 @@ class LogicRulesExtractorPipeline:
 
         _report_progress("Stage 5/6: Reasoning over the technical extraction into business rules")
         stage_start = time.perf_counter()
-        merged_extraction = self._merge_extractions(chunk_extractions, ingestion=ingestion)
-        deterministic_chains = extract_nested_decision_chains(ingestion.raw_code)
-        if not deterministic_chains:
-            deterministic_chains = extract_procedural_decision_chains(ingestion.raw_code)
+        merged_extraction = (
+            self._single_pass_extraction_payload(chunk_extractions[0], ingestion)
+            if single_pass
+            else self._merge_extractions(chunk_extractions, ingestion=ingestion)
+        )
+        merged_extraction["extraction_execution"] = extraction_execution
+        # Deterministic, source-derived decision-ladder evidence. Two
+        # independent constructs are checked because either can carry a
+        # source-supported multi-branch business decision that the LLM
+        # extraction stage must not be allowed to silently drop, merge, or
+        # reword away: procedural IF/ELSIF/ELSE ladders (Oracle PL/SQL
+        # only - T-SQL has no THEN/END IF), and CASE WHEN/THEN/ELSE/END
+        # expressions (identical ANSI SQL in both Oracle and T-SQL, so a
+        # single check covers both dialects). Neither firing does not mean
+        # the object has no decision logic - it means this deterministic
+        # pass found no *unambiguous, single-target* ladder to anchor on.
+        procedural_ladder_chains = (
+            extract_nested_decision_chains(ingestion.raw_code)
+            or extract_procedural_decision_chains(ingestion.raw_code)
+        )
+        case_expression_chains = extract_case_assignment_decision_chains(ingestion.raw_code)
+        deterministic_chains = case_expression_chains + procedural_ladder_chains
         if deterministic_chains:
-            merged_extraction["decision_chains"] = deterministic_chains
+            # Keep deterministic chains as structured technical context for
+            # the model; they never replace or rewrite synthesized rules.
+            merged_extraction["decision_chains"] = merge_decision_chains(
+                deterministic_chains, merged_extraction.get("decision_chains", [])
+            )
         semantic_findings = find_semantic_anomalies(
             ingestion.raw_code,
             merged_extraction.get("calculations", []),
@@ -355,6 +454,72 @@ class LogicRulesExtractorPipeline:
             telemetry_tracker=telemetry_tracker,
         )
         synthesis.data["run_metadata"] = run_metadata_to_dict(run_metadata)
+
+        # Coverage-driven revision loop. This is the general-purpose
+        # completeness backstop: `find_coverage_gaps` is a purely lexical,
+        # dialect-agnostic scan for CASE/WHEN/IF/ELSIF keyword positions
+        # that no synthesized rule's evidence appears to reference - it
+        # has no idea what a gap *means*, so it never authors a rule
+        # itself. When it finds one, the model gets a second, narrowly
+        # scoped look at exactly that source region and decides for
+        # itself whether a rule belongs there (see
+        # `RuleSynthesizerAgent.revise`). Bounded to a small number of
+        # retries so a genuinely ambiguous or non-business region doesn't
+        # loop forever; whatever remains uncovered after that is reported
+        # as an ambiguity, never silently dropped and never fabricated.
+        coverage_gaps = find_coverage_gaps(
+            ingestion.raw_code, synthesis.data.get("business_rules", [])
+        )
+        coverage_retries_used = 0
+        while coverage_gaps and coverage_retries_used < self.max_coverage_retries:
+            coverage_retries_used += 1
+            _report_progress(
+                f"Coverage check found {len(coverage_gaps)} unreviewed decision "
+                f"point(s); asking the model to review (attempt {coverage_retries_used})"
+            )
+            revision = self.synthesizer_agent.revise(
+                object_name=ingestion.object_name,
+                object_type=ingestion.object_type,
+                parameter_summary=parameter_summary,
+                merged_extraction=synthesis_input,
+                existing_rules=synthesis.data.get("business_rules", []),
+                gaps=coverage_gaps,
+                dialect=analysis_dialect or ingestion.dialect,
+                raw_source=ingestion.raw_code,
+                telemetry_tracker=telemetry_tracker,
+            )
+            if revision is None:
+                # No gaps to review, dialect unsupported, or the revision
+                # call itself failed to parse - either way, stop retrying
+                # rather than loop on a call that isn't making progress.
+                break
+            synthesis.data["business_rules"] = revision.data.get(
+                "business_rules", synthesis.data.get("business_rules", [])
+            )
+            synthesis.guardrail_warnings = list(synthesis.guardrail_warnings or []) + list(
+                revision.guardrail_warnings or []
+            )
+            coverage_gaps = find_coverage_gaps(
+                ingestion.raw_code, synthesis.data.get("business_rules", [])
+            )
+        merged_extraction["coverage_check"] = {
+            "retries_used": coverage_retries_used,
+            "unresolved_gaps": [
+                {
+                    "line_start": gap.line_start,
+                    "line_end": gap.line_end,
+                    "snippet": gap.snippet,
+                    "keywords": gap.keywords,
+                }
+                for gap in coverage_gaps
+            ],
+        }
+        if coverage_gaps:
+            gap_findings = [format_gap_for_ambiguity(gap) for gap in coverage_gaps]
+            merged_extraction["ambiguities"].extend(gap_findings)
+            synthesis.data["ambiguities"] = list(synthesis.data.get("ambiguities", []) or [])
+            synthesis.data["ambiguities"].extend(gap_findings)
+
         logger.info("Stage 5/6 completed in %.2fs (business reasoning)", time.perf_counter() - stage_start)
 
         _report_progress("Stage 6/6: Reconciling deterministic evidence against synthesized output")
@@ -404,9 +569,6 @@ class LogicRulesExtractorPipeline:
         _report_progress("Stage 7/7: Applying output guardrails and formatting final report")
         stage_start = time.perf_counter()
         report_filename = f"{build_object_identity_stem(ingestion, fallback_stem=Path(sql_file_path).stem)}_report.md"
-        verification_filename = (
-            f"{build_object_identity_stem(ingestion, fallback_stem=Path(sql_file_path).stem)}_verification.md"
-        )
         report = self.formatter_agent.format(
             ingestion=ingestion,
             merged_extraction=merged_extraction,
@@ -414,7 +576,6 @@ class LogicRulesExtractorPipeline:
             canonical_ir=canonical_ir,
             extraction_guardrail_warnings=extraction_guardrail_warnings,
             run_metadata=run_metadata,
-            verification_filename=verification_filename,
         )
         verification_report = self.formatter_agent.format_verification(
             ingestion=ingestion,
@@ -424,6 +585,16 @@ class LogicRulesExtractorPipeline:
             run_metadata=run_metadata,
             report_filename=report_filename,
             extraction_guardrail_warnings=extraction_guardrail_warnings,
+        )
+        # Verification is intentionally log-only: the CLI and Streamlit
+        # entry points capture this diagnostic text in their pipeline log,
+        # while the user-facing output directory contains only the business
+        # report. Keeping it out of a second Markdown artifact prevents
+        # provenance from drifting away from the run that produced it.
+        logger.info(
+            "Verification/traceability diagnostics for %s:\n%s",
+            report_filename,
+            verification_report.rstrip(),
         )
         logger.info("Stage 7/7 completed in %.2fs (final report generation)", time.perf_counter() - stage_start)
         return PipelineRunResult(report=report, verification_report=verification_report, ingestion=ingestion)
@@ -438,6 +609,131 @@ class LogicRulesExtractorPipeline:
         # agent's own loader so there is exactly one place that owns
         # "what file types are accepted".
         return CodeIngestionAgent._load_file(sql_file_path)
+
+    @staticmethod
+    def _estimate_text_tokens(value: str) -> int:
+        """Conservatively estimate tokens without coupling the app to a tokenizer."""
+        return max(1, math.ceil(len(value or "") / 3))
+
+    def _estimate_single_pass_tokens(self, raw_code: str, rag_context: str) -> int:
+        """Estimate the extraction prompt input plus a safety reserve."""
+        return (
+            self._estimate_text_tokens(raw_code)
+            + self._estimate_text_tokens(rag_context)
+            + _DEFAULT_PROMPT_SCHEMA_RESERVE
+        )
+
+    def _use_single_pass(self, ingestion: IngestionResult, estimated_tokens: int) -> bool:
+        """Select full-source extraction only when the supported dialect fits."""
+        budget = getattr(self, "single_pass_token_budget", SINGLE_PASS_TOKEN_BUDGET)
+        return bool(supported_analysis_dialect(ingestion)) and estimated_tokens <= budget
+
+    def _retrieve_full_source_context(self, ingestion: IngestionResult) -> str:
+        """Retrieve the same kind of KB context used by chunk extraction."""
+        query = (
+            f"{ingestion.dialect} {ingestion.object_type} full source banking logic: "
+            f"{ingestion.raw_code[:400]}"
+        )
+        retrieve = getattr(self.retrieval_agent, "retrieve_context_text", None)
+        return retrieve(query, k=self.retrieval_k) if retrieve is not None else ""
+
+    def _extract_full_source(
+        self,
+        ingestion: IngestionResult,
+        *,
+        rag_context: str,
+        analysis_dialect: str,
+        telemetry_tracker: Optional[LLMTelemetryTracker] = None,
+    ) -> ChunkExtraction:
+        """Run the existing technical extractor once over the complete source."""
+        extraction_start = time.perf_counter()
+        try:
+            extraction = self.extraction_agent.extract(
+                chunk_id="full_source",
+                chunk_kind="full_source",
+                code_chunk=ingestion.raw_code,
+                rag_context=rag_context,
+                object_type=ingestion.object_type,
+                object_name=ingestion.object_name,
+                chunk_context=["full_source"],
+                embedded_sql=[sql for chunk in ingestion.chunks for sql in (chunk.embedded_sql or [])],
+                dialect=analysis_dialect,
+                telemetry_tracker=telemetry_tracker,
+            )
+        except Exception as exc:  # noqa: BLE001
+            extraction = ChunkExtraction(
+                chunk_id="full_source",
+                chunk_kind="full_source",
+                chunk_context=["full_source"],
+                data={
+                    "conditions": [], "decision_chains": [], "loops": [],
+                    "tables_read": [], "tables_written": [], "calculations": [],
+                    "exception_handling": [], "ambiguities": [],
+                },
+                parse_error=str(exc),
+                guardrail_warnings=[f"Full-source extraction failed: {exc}"],
+            )
+        setattr(extraction, "_timings", {"retrieval": 0.0, "extraction": time.perf_counter() - extraction_start})
+        return extraction
+
+    @staticmethod
+    def _single_pass_extraction_payload(
+        extraction: ChunkExtraction, ingestion: IngestionResult
+    ) -> Dict[str, Any]:
+        """Adapt one extraction result to the established merged-evidence shape."""
+        sections = (
+            "conditions", "decision_chains", "loops", "tables_read", "tables_written",
+            "calculations", "exception_handling", "ambiguities",
+        )
+        payload: Dict[str, Any] = {section: [] for section in sections}
+        support_confidence = derive_chunk_support_confidence(
+            parse_error=extraction.parse_error,
+            guardrail_warnings=extraction.guardrail_warnings,
+            has_direct_evidence=bool(extraction.data.get("tables_read") or extraction.data.get("tables_written")),
+            has_embedded_sql=bool(extraction.embedded_sql),
+            ambiguity_count=len(extraction.data.get("ambiguities", []) or []),
+            dynamic_sql_detected=any("Dynamic SQL detected" in w for w in extraction.guardrail_warnings),
+            parser_unavailable=any("structural validation was unavailable" in w.lower() for w in extraction.guardrail_warnings),
+        )
+        for section in sections:
+            for item in extraction.data.get(section, []) or []:
+                if isinstance(item, dict):
+                    annotated_item = dict(item)
+                    annotated_item.setdefault("source_chunk_id", extraction.chunk_id)
+                    annotated_item.setdefault("source_chunk_kind", extraction.chunk_kind)
+                    annotated_item.setdefault("source_chunk_context", extraction.chunk_context)
+                    annotated_item.setdefault("source_parse_error", extraction.parse_error)
+                    annotated_item.setdefault("source_guardrail_warnings", extraction.guardrail_warnings)
+                    annotated_item.setdefault("source_confidence", support_confidence)
+                    annotated_item.setdefault("source_file", ingestion.source_filename)
+                    annotated_item.setdefault("source_char_start", 0)
+                    annotated_item.setdefault("source_char_end", len(ingestion.raw_code))
+                    annotated_item.setdefault("source_line_start", 1)
+                    annotated_item.setdefault("source_line_end", ingestion.raw_code.count("\n") + 1)
+                    annotated_item.setdefault("source_location_status", "full_source")
+                    payload[section].append(annotated_item)
+                else:
+                    payload[section].append(item)
+        payload["chunk_provenance"] = [{
+            "chunk_id": extraction.chunk_id,
+            "chunk_kind": extraction.chunk_kind,
+            "chunk_context": extraction.chunk_context,
+            "embedded_sql": extraction.embedded_sql,
+            "parse_error": extraction.parse_error,
+            "guardrail_warnings": extraction.guardrail_warnings,
+            "support_confidence": support_confidence,
+            "source_file": ingestion.source_filename,
+            "source_char_start": 0,
+            "source_char_end": len(ingestion.raw_code),
+            "source_line_start": 1,
+            "source_line_end": ingestion.raw_code.count("\n") + 1,
+            "source_location_status": "full_source",
+        }]
+        if extraction.parse_error:
+            payload["ambiguities"].append(
+                "Full-source technical extraction returned malformed JSON and needs manual review."
+            )
+        return payload
 
     def _extract_all_chunks(
         self,

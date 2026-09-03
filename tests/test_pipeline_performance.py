@@ -199,3 +199,50 @@ def test_pipeline_init_does_not_eagerly_build_kb(monkeypatch):
     )
 
     assert build_calls["count"] == 0
+
+
+def test_small_source_uses_one_full_source_extraction_without_merge():
+    pipeline = _make_pipeline(chunk_workers=2)
+    pipeline.single_pass_token_budget = 10000
+    ingestion = IngestionResult(
+        object_name="demo",
+        object_type="PROCEDURE",
+        parameters=[],
+        raw_code="BEGIN UPDATE t SET flag = 1; END;",
+        chunks=[
+            CodeChunk(chunk_id="01", kind="main_body", text="part one"),
+            CodeChunk(chunk_id="02", kind="main_body", text="part two"),
+        ],
+        dialect="TSQL",
+        concrete_dialect="tsql",
+        source_filename="demo.sql",
+    )
+
+    context = pipeline._retrieve_full_source_context(ingestion)
+    assert pipeline._use_single_pass(ingestion, pipeline._estimate_single_pass_tokens(ingestion.raw_code, context))
+    extraction = pipeline._extract_full_source(
+        ingestion,
+        rag_context=context,
+        analysis_dialect="tsql",
+    )
+    assert pipeline.extraction_agent.calls == ["full_source"]
+    payload = pipeline._single_pass_extraction_payload(extraction, ingestion)
+    assert payload["chunk_provenance"][0]["source_location_status"] == "full_source"
+
+
+def test_oversized_source_selects_existing_chunked_path():
+    pipeline = _make_pipeline(chunk_workers=1)
+    pipeline.single_pass_token_budget = 10
+    ingestion = IngestionResult(
+        object_name="demo",
+        object_type="PROCEDURE",
+        parameters=[],
+        raw_code="BEGIN " + ("x" * 1000) + " END;",
+        chunks=[CodeChunk(chunk_id="01", kind="main_body", text="part")],
+        dialect="TSQL",
+        concrete_dialect="tsql",
+    )
+
+    estimated = pipeline._estimate_single_pass_tokens(ingestion.raw_code, "context")
+    assert estimated > pipeline.single_pass_token_budget
+    assert not pipeline._use_single_pass(ingestion, estimated)
