@@ -322,8 +322,32 @@ class PatternRetrievalAgent:
         pairs = self.retrieve(query, k=k)
         if not pairs:
             return "No directly relevant pattern context found."
+        pairs = self._deduplicate_context_pairs(pairs)
         blocks = []
         for doc_text, meta in pairs:
             source = (meta or {}).get("source", "knowledge_base")
             blocks.append(f"[Source: {source}]\n{doc_text.strip()}")
         return "\n\n".join(blocks)
+
+    @staticmethod
+    def _deduplicate_context_pairs(
+        pairs: List[Tuple[str, Dict[str, str]]],
+    ) -> List[Tuple[str, Dict[str, str]]]:
+        """Remove only exact duplicate LLM context blocks.
+
+        Retrieval results remain unchanged. This affects only the string sent
+        to extraction. The source label is part of the identity so identical
+        text from separately labelled sources is retained rather than losing
+        provenance. First occurrence wins, preserving retrieval order.
+        """
+        unique: List[Tuple[str, Dict[str, str]]] = []
+        seen = set()
+        for doc_text, meta in pairs or []:
+            metadata = dict(meta or {})
+            source = metadata.get("source", "knowledge_base")
+            key = (str(source), str(doc_text).strip())
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append((doc_text, metadata))
+        return unique

@@ -1,0 +1,17 @@
+2026-09-03 09:57:05,757 | INFO | logic_rules_extractor.pipeline | Stage 1/6: Running input guardrails
+2026-09-03 09:57:05,758 | INFO | logic_rules_extractor.pipeline | Stage 1/6 completed in 0.00s (input guardrails)
+2026-09-03 09:57:05,758 | INFO | logic_rules_extractor.pipeline | Stage 2/6: Detecting dialect
+2026-09-03 09:57:05,763 | INFO | logic_rules_extractor.pipeline | Detected ORACLE dialect (confidence: high)
+2026-09-03 09:57:05,763 | INFO | logic_rules_extractor.pipeline | Stage 2/6 completed in 0.00s (dialect detection)
+2026-09-03 09:57:05,763 | INFO | logic_rules_extractor.pipeline | Stage 3/6: Preprocessing, parsing, and chunking /Users/dishajain/Desktop/logic_rules_extractor/samples/temp.sql
+2026-09-03 09:57:05,826 | INFO | logic_rules_extractor.pipeline | Detected ORACLE PROCEDURE 'DPD_Calculation' with 7 chunk(s)
+2026-09-03 09:57:05,826 | INFO | logic_rules_extractor.pipeline | Stage 3/6 completed in 0.06s (preprocessing/parsing/chunking)
+2026-09-03 09:57:05,826 | INFO | logic_rules_extractor.pipeline | Stage 4/6: Retrieving dependencies / pattern context and extracting logic per chunk (model: amazon.nova-lite-v1:0)
+2026-09-03 09:57:05,831 | INFO | logic_rules_extractor.pipeline | Persistent knowledge base ready in 0.01s
+2026-09-03 09:57:20,254 | INFO | logic_rules_extractor.pipeline | Stage 4/6 completed in 14.43s total (kb_ready=0.01s, retrieval/KB sum=0.19s, LLM extraction sum=34.69s, workers=8, chunks=7)
+2026-09-03 09:57:20,254 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
+2026-09-03 09:57:55,560 | INFO | logic_rules_extractor.pipeline | Stage 5/6 completed in 35.31s (business reasoning)
+2026-09-03 09:57:55,560 | INFO | logic_rules_extractor.pipeline | Stage 6/6: Reconciling deterministic evidence against synthesized output
+2026-09-03 09:57:55,616 | INFO | logic_rules_extractor.pipeline | Stage 6/6 completed in 0.06s (deterministic reconciliation)
+2026-09-03 09:57:55,617 | INFO | logic_rules_extractor.pipeline | Stage 7/7: Applying output guardrails and formatting final report
+2026-09-03 09:57:55,750 | INFO | logic_rules_extractor.pipeline | Stage 7/7 completed in 0.13s (final report generation)

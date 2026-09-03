@@ -74,3 +74,39 @@ def test_retriever_caches_repeat_queries(tmp_path):
 
     assert first == second
     assert agent._collection.calls == 1
+
+
+def test_retriever_removes_only_exact_duplicate_context_blocks():
+    pairs = [
+        ("same guidance", {"source": "oracle.md"}),
+        ("same guidance", {"source": "oracle.md"}),
+        ("different guidance", {"source": "tsql.md"}),
+    ]
+
+    result = PatternRetrievalAgent._deduplicate_context_pairs(pairs)
+
+    assert result == [pairs[0], pairs[2]]
+
+
+def test_retriever_keeps_identical_text_with_different_source_labels():
+    pairs = [
+        ("shared guidance", {"source": "oracle.md"}),
+        ("shared guidance", {"source": "tsql.md"}),
+    ]
+
+    result = PatternRetrievalAgent._deduplicate_context_pairs(pairs)
+
+    assert result == pairs
+
+
+def test_retriever_preserves_context_order_after_deduplication():
+    pairs = [
+        ("first", {"source": "one.md"}),
+        ("second", {"source": "two.md"}),
+        ("first", {"source": "one.md"}),
+        ("third", {"source": "three.md"}),
+    ]
+
+    result = PatternRetrievalAgent._deduplicate_context_pairs(pairs)
+
+    assert [doc for doc, _ in result] == ["first", "second", "third"]

@@ -127,6 +127,11 @@ system:
       Do not summarize, sample, or collapse a subset of these statements into a single
       generalized row (e.g. never write "for each value from 2 to 6" — list value 2, 3,
       4, 5, and 6 as separate rows).
+    - DO NOT REPEAT THE OUTER CONDITION: in a decision_logic_rows table, put the
+      branch-specific condition in each row, not the same eligibility predicate copied
+      into every row. Across separate rules, repeat a condition only when the rules
+      intentionally write different output fields; otherwise represent the shared
+      decision as one rule with ordered rows.
     - When the source exposes a full branch chain, keep the outer eligibility filter and
       the downstream branch ladder as separate business rules instead of merging them into
       one summary sentence.
@@ -245,6 +250,22 @@ system:
           business language. Only use an empty list when the rule genuinely has no gating
           condition beyond the object processing every record it receives - never leave it
           empty merely because restating the condition feels redundant with "condition".
+          PLAIN BUSINESS LANGUAGE MEANS AN ACTUAL SENTENCE, NOT ALIAS-STRIPPED SQL - a
+          reader must never be able to tell this used to be a WHERE clause. Translate the
+          predicate's real-world meaning, splitting a compound AND/OR expression into one
+          eligibility item per distinct condition it tests, and drop pure NULL-defaulting
+          plumbing (ISNULL/COALESCE) entirely once you've captured what the check means:
+              Raw predicate (do NOT write this into "eligibility"):
+                COALESCE(B.FLGPROCESSING, 'N') = 'N' AND COALESCE(FINALASSETCLASSALT_KEY, 1) = 1
+                AND COALESCE(A.BALANCE, 0) > 0 AND A.ASSET_NORM <> 'ALWYS_STD'
+              Correct "eligibility" array for that same predicate:
+                ["Customer is not currently mid-processing",
+                 "Account's current asset class is Standard",
+                 "Outstanding balance is greater than zero",
+                 "Account is not flagged as always-standard"]
+          Every condition/threshold/operator in the original predicate must still be
+          represented by SOME item (never drop a real business check to make the list
+          shorter) - only the wording changes, never the substance.
         * "tie_priority_handling" - OPTIONAL, and STRICT: populate it ONLY when the
           technical extraction itself establishes an explicit precedence between two or
           more conditions that could otherwise both apply to the same output field (for
@@ -343,7 +364,7 @@ system:
         }
       ],
       "calculations": [
-        {"metric": "<what is being calculated, business term>", "explanation": "<plain-language formula breakdown>"}
+        {"field": "<derived field or business value>", "formula": "<source-grounded formula using the actual field names>"}
       ],
       "exception_handling_summary": "<plain-language operational risk summary of what happens on failure paths>",
       "ambiguities": ["<carried-forward or newly identified items needing human review, written in your own words with no quoted source text, or empty list>"]
@@ -557,6 +578,22 @@ system:
           business language. Only use an empty list when the rule genuinely has no gating
           condition beyond the object processing every record it receives - never leave it
           empty merely because restating the condition feels redundant with "condition".
+          PLAIN BUSINESS LANGUAGE MEANS AN ACTUAL SENTENCE, NOT ALIAS-STRIPPED SQL - a
+          reader must never be able to tell this used to be a WHERE clause. Translate the
+          predicate's real-world meaning, splitting a compound AND/OR expression into one
+          eligibility item per distinct condition it tests, and drop pure NULL-defaulting
+          plumbing (ISNULL/COALESCE) entirely once you've captured what the check means:
+              Raw predicate (do NOT write this into "eligibility"):
+                COALESCE(B.FLGPROCESSING, 'N') = 'N' AND COALESCE(FINALASSETCLASSALT_KEY, 1) = 1
+                AND COALESCE(A.BALANCE, 0) > 0 AND A.ASSET_NORM <> 'ALWYS_STD'
+              Correct "eligibility" array for that same predicate:
+                ["Customer is not currently mid-processing",
+                 "Account's current asset class is Standard",
+                 "Outstanding balance is greater than zero",
+                 "Account is not flagged as always-standard"]
+          Every condition/threshold/operator in the original predicate must still be
+          represented by SOME item (never drop a real business check to make the list
+          shorter) - only the wording changes, never the substance.
         * "tie_priority_handling" - OPTIONAL, and STRICT: populate it ONLY when the
           technical extraction itself establishes an explicit precedence between two or
           more conditions that could otherwise both apply to the same output field (for
@@ -655,7 +692,7 @@ system:
         }
       ],
       "calculations": [
-        {"metric": "<what is being calculated, business term>", "explanation": "<plain-language formula breakdown>"}
+        {"field": "<derived field or business value>", "formula": "<source-grounded formula using the actual field names>"}
       ],
       "exception_handling_summary": "<plain-language operational risk summary of what happens on failure paths>",
       "ambiguities": ["<carried-forward or newly identified items needing human review, written in your own words with no quoted source text, or empty list>"]
@@ -682,6 +719,13 @@ system:
     SOURCE DIALECT: Microsoft SQL Server T-SQL. The technical extraction you are given has already
     normalized dialect-specific syntax into structured JSON - your job is entirely about
     business meaning, not about the underlying SQL dialect.
+
+    COMMON OUTPUT CONTRACT: Apply the same business-rule structure used for every
+    supported dialect. Keep one rule per distinct decision, preserve source-order
+    decision_logic_rows, do not repeat an outer eligibility predicate in every row,
+    retain literal assignment outcomes, and keep technical/audit side effects
+    separate from the core business decision. Use the shared JSON schema and
+    business-readable fields exactly as specified below.
 
     You must explain what the logic ACCOMPLISHES and WHY it exists (the business or
     regulatory intent), never HOW it is implemented in code.
@@ -837,6 +881,12 @@ system:
       (the rule-level field, not the row-level one) may restate the chain's "subject" in
       short compact form; its "action" stays a one-line summary naming only that rule's
       own field, per the rule above.
+    - OUTCOME MUST BE THE LITERAL ASSIGNED VALUE, NEVER A PARAPHRASE: for a direct
+      assignment represented in decision_logic_rows, copy the assigned value exactly
+      from the source. Do not replace it with a generic description of the field.
+    - SEQUENTIAL UPDATE PASSES ON THE SAME FIELDS: when later updates affect rows also
+      affected by earlier updates, state that the later effect wins for those rows;
+      do not describe sequential passes as independent.
     - RULE NAMES MUST BE SHORT LABELS, NOT SENTENCES: "rule_name" is a 4-8 word label a
       reader could scan in a table of contents (e.g. "Reset negative DPD to zero", "Assign
       SMA class from days overdue"), never a restatement of the full condition.
@@ -852,6 +902,22 @@ system:
           business language. Only use an empty list when the rule genuinely has no gating
           condition beyond the object processing every record it receives - never leave it
           empty merely because restating the condition feels redundant with "condition".
+          PLAIN BUSINESS LANGUAGE MEANS AN ACTUAL SENTENCE, NOT ALIAS-STRIPPED SQL - a
+          reader must never be able to tell this used to be a WHERE clause. Translate the
+          predicate's real-world meaning, splitting a compound AND/OR expression into one
+          eligibility item per distinct condition it tests, and drop pure NULL-defaulting
+          plumbing (ISNULL/COALESCE) entirely once you've captured what the check means:
+              Raw predicate (do NOT write this into "eligibility"):
+                COALESCE(B.FLGPROCESSING, 'N') = 'N' AND COALESCE(FINALASSETCLASSALT_KEY, 1) = 1
+                AND COALESCE(A.BALANCE, 0) > 0 AND A.ASSET_NORM <> 'ALWYS_STD'
+              Correct "eligibility" array for that same predicate:
+                ["Customer is not currently mid-processing",
+                 "Account's current asset class is Standard",
+                 "Outstanding balance is greater than zero",
+                 "Account is not flagged as always-standard"]
+          Every condition/threshold/operator in the original predicate must still be
+          represented by SOME item (never drop a real business check to make the list
+          shorter) - only the wording changes, never the substance.
         * "tie_priority_handling" - OPTIONAL, and STRICT: populate it ONLY when the
           technical extraction itself establishes an explicit precedence between two or
           more conditions that could otherwise both apply to the same output field (for
@@ -950,7 +1016,7 @@ system:
         }
       ],
       "calculations": [
-        {"metric": "<what is being calculated, business term>", "explanation": "<plain-language formula breakdown>"}
+        {"field": "<derived field or business value>", "formula": "<source-grounded formula using the actual field names>"}
       ],
       "exception_handling_summary": "<plain-language operational risk summary of what happens on failure paths>",
       "ambiguities": ["<carried-forward or newly identified items needing human review, written in your own words with no quoted source text, or empty list>"]
@@ -968,6 +1034,16 @@ system:
     above. Do not send empty-list placeholders for these three keys as a matter of habit.
 
 user_template: |
+  STRUCTURE STABILITY: Do not repeat the same outer eligibility predicate in
+  every decision_logic_rows entry. Keep only the branch-specific condition
+  in each row. Across separate rules, repeat a condition only when the rules
+  intentionally write different output fields; otherwise use one rule with
+  ordered rows. Preserve distinct decisions and all source-supported fields.
+  GROUPING OVERRIDE: When the same predicate and same assigned outcome are
+  applied independently to multiple fields, group them into one rule and list
+  all affected fields. Keep separate rules only when the decision, predicate,
+  outcome, or source execution behavior is materially different.
+
   OBJECT NAME: {object_name}
   OBJECT TYPE: {object_type}
   SQL DIALECT: {dialect}
@@ -978,13 +1054,25 @@ user_template: |
 
   The JSON may contain a source_sql field with the original procedure. Use it only
   to resolve business-bearing logic missing from an incomplete technical extraction;
-  do not invent facts that are absent from both inputs. Return every top-level field
+  do not invent facts that are absent from both inputs. Treat all line comments and
+  block comments as non-executable documentation: never use commented-out statements,
+  disabled branches, example code, or comment text as active business rules,
+  conditions, outcomes, calculations, table operations, or step-flow facts. When a
+  technical extraction and source_sql disagree, prefer executable structured evidence
+  and preserve the disagreement in ambiguities rather than promoting commented code.
+  Return every top-level field
   required by the schema. When the source supports them, purpose_summary,
   step_by_step_flow, calculations, exception_handling_summary, and all distinct
-  business-rule families must be populated. Return business rules in source order,
-  preserve ordered branches, and keep technical/audit side effects separate from
-  the core business decision. Keep gating conditions as rule metadata; do not
-  create a separate Markdown eligibility section or any Markdown formatting.
+  business-rule families must be populated with all materially distinct executable
+  logic. The purpose summary must identify the main business outcome and affected
+  entity levels when those are explicit in the evidence. The step-by-step flow must
+  cover the executable processing stages in source order, not merely repeat rule
+  titles. Each calculation must preserve its source field names and formula. The
+  exception summary must describe an executable failure path when one is present.
+  Return business rules in source order, preserve ordered branches, and keep
+  technical/audit side effects separate from the core business decision. Keep gating
+  conditions as rule metadata; do not create a separate Markdown eligibility section
+  or any Markdown formatting.
   Do not return an empty business_rules array when
   executable business logic is present in the source or extraction.
 

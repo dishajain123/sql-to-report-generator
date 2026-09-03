@@ -34,7 +34,7 @@ import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from typing import Optional
 
 from src.ingestion.guardrails import ground_business_rules_against_extraction, validate_synthesis_shape
@@ -182,13 +182,19 @@ class RuleSynthesizerAgent:
                     data["business_rules"] = self._remove_operational_status_rules(
                         data["business_rules"], merged_extraction
                     )
+                    data["business_rules"] = self._remove_non_business_cleanup_rules(
+                        data["business_rules"], merged_extraction
+                    )
                     data["business_rules"] = self._augment_rules_from_executable_operations(
                         data["business_rules"], merged_extraction
                     )
                     data["business_rules"] = self._canonicalize_synthesis_families(
                         data["business_rules"], merged_extraction
                     )
-                    self._complete_synthesis_from_deterministic_facts(data, merged_extraction)
+                    data["business_rules"] = self._split_multi_field_rules_using_decision_chains(
+                        data["business_rules"], merged_extraction
+                    )
+                    self._complete_synthesis_from_deterministic_facts(data, merged_extraction, raw_source=raw_source)
                     self._append_completeness_warnings(data, merged_extraction)
                     guardrail_warnings.extend(
                         ground_business_rules_against_extraction(
@@ -268,13 +274,19 @@ class RuleSynthesizerAgent:
         data["business_rules"] = self._remove_operational_status_rules(
             data["business_rules"], merged_extraction
         )
+        data["business_rules"] = self._remove_non_business_cleanup_rules(
+            data["business_rules"], merged_extraction
+        )
         data["business_rules"] = self._augment_rules_from_executable_operations(
             data["business_rules"], merged_extraction
         )
         data["business_rules"] = self._canonicalize_synthesis_families(
             data["business_rules"], merged_extraction
         )
-        self._complete_synthesis_from_deterministic_facts(data, merged_extraction)
+        data["business_rules"] = self._split_multi_field_rules_using_decision_chains(
+            data["business_rules"], merged_extraction
+        )
+        self._complete_synthesis_from_deterministic_facts(data, merged_extraction, raw_source=raw_source)
         self._append_completeness_warnings(data, merged_extraction)
         guardrail_warnings.extend(
             ground_business_rules_against_extraction(
@@ -444,6 +456,169 @@ class RuleSynthesizerAgent:
         return filtered
 
     @staticmethod
+    def _remove_non_business_cleanup_rules(
+        rules: List[Dict[str, Any]],
+        merged_extraction: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Keep pure temporary-object cleanup in technical lineage only.
+
+        A DROP of a temporary table is an execution concern, not a business
+        decision. This narrow filter requires deterministic operation
+        evidence and an empty business-field set, so it cannot hide a rule
+        describing a meaningful state change. The operation remains in
+        ``merged_extraction`` for verification and provenance consumers.
+        """
+        operations = [
+            row for row in (merged_extraction or {}).get("table_operations", []) or []
+            if isinstance(row, dict)
+            and str(row.get("active_status") or "ACTIVE").upper() == "ACTIVE"
+            and str(row.get("operation") or "").upper() == "DROP"
+        ]
+        cleanup_tables = {
+            str(row.get("table") or "").strip().upper()
+            for row in operations
+            if re.search(r"(^#|TEMP|TMP|TEMPORARY)", str(row.get("table") or ""), re.IGNORECASE)
+        }
+        if not cleanup_tables:
+            return list(rules or [])
+
+        filtered: List[Dict[str, Any]] = []
+        for rule in rules or []:
+            if not isinstance(rule, dict):
+                continue
+            fields = rule.get("fields_affected") or []
+            if isinstance(fields, str):
+                fields = [fields]
+            has_business_fields = any(str(field).strip() for field in fields)
+            rule_text = json.dumps(rule, sort_keys=True, default=str).lower()
+            is_cleanup_description = any(
+                marker in rule_text for marker in ("drop", "temporary", "temp table", "cleanup")
+            )
+            has_decision = bool(rule.get("decision_logic_rows") or rule.get("decision_logic"))
+            if is_cleanup_description and not has_business_fields and not has_decision:
+                continue
+            filtered.append(rule)
+        return filtered
+
+    @staticmethod
+    def _split_multi_field_rules_using_decision_chains(
+        rules: List[Dict[str, Any]],
+        merged_extraction: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Deterministically split a rule that spans 2+ output fields into
+        one rule per field, using the structured `decision_chains` data
+        (`branch_condition` + per-field `assignments`) as ground truth -
+        never guessing a split from the rule's own prose or from
+        clustering outcome text.
+
+        Why this exists: the synthesis prompt already instructs the model
+        to keep one output field per rule and to use `decision_chains` as
+        the authoritative source for exactly this case, but prompt
+        compliance is probabilistic - a real production example merged a
+        days-overdue classification ladder (output field: SMA_CLASS) with
+        a facility-type-driven reason chain (output field: SMA_REASON)
+        into one rule's decision table, because the model grouped them by
+        eye instead of by the chain structure. Rather than rely on the
+        model getting this right every time, this makes the split itself
+        a deterministic data transform: IF the extraction captured a
+        `decision_chains` entry whose branches carry per-field
+        `assignments` for 2+ of this rule's `fields_affected`, THEN this
+        rebuilds correct, separate `decision_logic_rows` for each field
+        directly from that chain - the model's job stays "describe what
+        this field's rule means in business language", not "get the
+        branch/field bookkeeping right by itself".
+
+        Matching a rule to a chain is deliberately conservative: only a
+        rule whose `fields_affected` set is covered by (a subset of, or
+        equal to) the union of fields assigned across ALL branches of one
+        chain is split against that chain. If no matching chain is found
+        (e.g. an older cached extraction predating this fix, or a chain
+        that genuinely doesn't cover this rule), the rule is returned
+        unchanged - this function only ever removes a known-mixed rule,
+        never invents a split it isn't sure of.
+        """
+        chains = merged_extraction.get("decision_chains") if isinstance(merged_extraction, dict) else None
+        if not isinstance(chains, list) or not chains:
+            return rules
+
+        # Pre-index each chain by the set of fields it assigns across all
+        # its branches, and pre-collect each field's ordered
+        # (condition, outcome) rows across the chain's branches.
+        chain_field_rows: List[Tuple[frozenset, Dict[str, List[Dict[str, str]]]]] = []
+        for chain in chains:
+            if not isinstance(chain, dict):
+                continue
+            branches = chain.get("branches")
+            if not isinstance(branches, list) or not branches:
+                continue
+            per_field_rows: Dict[str, List[Dict[str, str]]] = {}
+            for branch in branches:
+                if not isinstance(branch, dict):
+                    continue
+                condition = str(branch.get("branch_condition") or "").strip()
+                assignments = branch.get("assignments")
+                if not condition or not isinstance(assignments, dict) or not assignments:
+                    continue
+                for field, value in assignments.items():
+                    field_key = str(field).strip()
+                    if not field_key:
+                        continue
+                    per_field_rows.setdefault(field_key, []).append(
+                        {"condition": condition, "outcome": str(value)}
+                    )
+            if len(per_field_rows) < 2:
+                # Only genuinely multi-field chains are useful here - a
+                # single-field chain is already what the model is
+                # expected to produce as one ordinary rule.
+                continue
+            field_set = frozenset(f.lower() for f in per_field_rows.keys())
+            chain_field_rows.append((field_set, per_field_rows))
+
+        if not chain_field_rows:
+            return rules
+
+        result: List[Dict[str, Any]] = []
+        for rule in rules:
+            fields_affected = [str(f).strip() for f in (rule.get("fields_affected") or []) if str(f).strip()]
+            rule_field_set = frozenset(f.lower() for f in fields_affected)
+            if len(rule_field_set) < 2:
+                result.append(rule)
+                continue
+
+            matching_chain = None
+            for chain_fields, per_field_rows in chain_field_rows:
+                if rule_field_set and rule_field_set <= chain_fields:
+                    matching_chain = per_field_rows
+                    break
+            if matching_chain is None:
+                result.append(rule)
+                continue
+
+            base_name = str(rule.get("rule_name") or "").strip()
+            base_meaning = str(rule.get("business_meaning") or "").strip()
+            for field in fields_affected:
+                field_rows = matching_chain.get(field) or matching_chain.get(field.strip())
+                if not field_rows:
+                    # This particular field wasn't actually covered by the
+                    # matched chain's branches (e.g. fields_affected named
+                    # a field the chain doesn't touch) - keep it out of
+                    # the split rather than fabricating rows for it.
+                    continue
+                split_rule = dict(rule)
+                split_rule["fields_affected"] = [field]
+                split_rule["output_field"] = field
+                split_rule["decision_logic_rows"] = field_rows
+                split_rule["rule_name"] = (
+                    f"{base_name} — {field}" if base_name else f"Assign {field}"
+                )
+                split_rule["business_meaning"] = (
+                    base_meaning or f"Determines the value assigned to {field}."
+                )
+                result.append(split_rule)
+
+        return result
+
+    @staticmethod
     def _canonicalize_synthesis_families(
         rules: List[Dict[str, Any]],
         merged_extraction: Dict[str, Any],
@@ -463,7 +638,101 @@ class RuleSynthesizerAgent:
                 return ", ".join(str(item) for item in value if item is not None)
             return str(value).strip()
 
-        for rule in rules or []:
+        def reset_signature(rule: Dict[str, Any]) -> str:
+            rule_text = " ".join(
+                text(rule.get(key)).lower()
+                for key in ("rule_name", "action", "business_meaning")
+            )
+            if not any(token in rule_text for token in ("reset", "sanitize", "zero", "cleanup")):
+                return ""
+            target_fields = [
+                text(field).split(".")[-1].strip()
+                for field in (rule.get("fields_affected") or [])
+                if text(field).strip()
+            ]
+            if not target_fields or not all(field.upper().startswith("DPD_") for field in target_fields):
+                return ""
+            rows = rule.get("decision_logic_rows")
+            if not isinstance(rows, list) or not rows:
+                return ""
+            signatures = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    return ""
+                condition = text(row.get("condition"))
+                outcome = text(row.get("outcome"))
+                if not re.search(r"<\s*0|negative|below\s+0|less\s+than\s+0", condition, re.IGNORECASE):
+                    return ""
+                if not re.fullmatch(r"['\"]?0['\"]?", outcome):
+                    return ""
+                # Field names are the only intentional difference between
+                # repeated metric-reset rules. Do not merge other predicates.
+                condition = re.sub(r"\b(?:is\s+)?(?:below|less\s+than)\s+0\b", "<0", condition, flags=re.IGNORECASE)
+                condition = re.sub(r"\bnegative\b", "<0", condition, flags=re.IGNORECASE)
+                condition = re.sub(r"\bis\s+(?=<\s*0)", "", condition, flags=re.IGNORECASE)
+                condition = re.sub(
+                    r"\b(?:ISNULL|COALESCE)\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_]*)\s*,[^)]*\)",
+                    "<field>", condition, flags=re.IGNORECASE,
+                )
+                condition = re.sub(
+                    r"(?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_]*)\s*(?=<\s*0)",
+                    "<field>", condition, flags=re.IGNORECASE,
+                )
+                signatures.append(re.sub(r"\s+", "", condition).lower())
+            return "|".join(signatures)
+
+        def merge_repeated_resets(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            groups: "OrderedDict[str, List[Dict[str, Any]]]" = OrderedDict()
+            passthrough: List[Dict[str, Any]] = []
+            for item in items:
+                signature = reset_signature(item)
+                if signature:
+                    groups.setdefault(signature, []).append(item)
+                else:
+                    passthrough.append(item)
+
+            merged_items: List[Dict[str, Any]] = list(passthrough)
+            for signature, members in groups.items():
+                if len(members) == 1:
+                    merged_items.extend(members)
+                    continue
+                combined = dict(members[0])
+                fields: List[str] = []
+                rows: List[Dict[str, Any]] = []
+                seen_rows = set()
+                for member in members:
+                    for field in member.get("fields_affected") or []:
+                        value = text(field)
+                        if value and value.lower() not in {item.lower() for item in fields}:
+                            fields.append(value)
+                    for row in member.get("decision_logic_rows") or []:
+                        if not isinstance(row, dict):
+                            continue
+                        key = json.dumps(row, sort_keys=True, default=str)
+                        if key not in seen_rows:
+                            seen_rows.add(key)
+                            rows.append(dict(row))
+                    for key in ("eligibility", "source_evidence", "source_chunks", "source_chunk_ids",
+                                "source_statement_ids", "evidence_spans", "technical_references",
+                                "unresolved_ambiguities", "dependencies"):
+                        current = list(combined.get(key) or [])
+                        for value in member.get(key) or []:
+                            if value not in current:
+                                current.append(value)
+                        combined[key] = current
+                combined["fields_affected"] = fields
+                combined["output_field"] = ", ".join(fields)
+                combined["decision_logic_rows"] = rows
+                combined["rule_name"] = text(combined.get("rule_name")) or "Reset negative values to zero"
+                combined["rule_id"] = stable_id(
+                    "rule", "reset_negative_metrics",
+                    *(text(member.get("rule_id")) for member in members),
+                )
+                merged_items.append(combined)
+            return sorted(merged_items, key=lambda item: int(item.get("_source_index", 0)))
+
+        rules = merge_repeated_resets([rule for rule in (rules or []) if isinstance(rule, dict)])
+        for rule in rules:
             if not isinstance(rule, dict):
                 continue
             rows = rule.get("decision_logic_rows")
@@ -504,7 +773,50 @@ class RuleSynthesizerAgent:
                 rule["rule_name"] = "Set SMA flag to Y for processed accounts"
             elif "sma_class" in output_field and "finalassetclass" in operations_blob and "fallback" in lowered_name:
                 rule["rule_name"] = "Assign SMA class for accounts with final asset class key"
-        return list(rules or [])
+
+        # A model may emit the same structured filter more than once with
+        # different prose titles.  Collapse only exact structural duplicates;
+        # distinct conditions, outcomes, or branch rows remain independent.
+        unique_rules: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        for rule in rules:
+            condition = re.sub(r"\s+", "", text(rule.get("condition"))).lower()
+            rows = rule.get("decision_logic_rows") or []
+            row_signature = json.dumps(
+                [
+                    {
+                        "condition": re.sub(r"\s+", "", text(row.get("condition"))).lower(),
+                        "outcome": text(row.get("outcome")).lower(),
+                    }
+                    for row in rows if isinstance(row, dict)
+                ],
+                sort_keys=True,
+            )
+            if not condition and not row_signature:
+                unique_rules[f"unique:{len(unique_rules)}"] = rule
+                continue
+            key = json.dumps(
+                {
+                    "condition": condition,
+                    "output_field": text(rule.get("output_field")).lower(),
+                    "fields": sorted(text(field).lower() for field in (rule.get("fields_affected") or [])),
+                    "rows": row_signature,
+                },
+                sort_keys=True,
+            )
+            existing = unique_rules.get(key)
+            if existing is None:
+                unique_rules[key] = rule
+                continue
+            for field_name in (
+                "source_evidence", "source_chunks", "source_chunk_ids",
+                "source_statement_ids", "technical_references", "evidence_spans",
+            ):
+                values = list(existing.get(field_name) or [])
+                for value in rule.get(field_name) or []:
+                    if value not in values:
+                        values.append(value)
+                existing[field_name] = values
+        return list(unique_rules.values())
 
     @classmethod
     def _append_completeness_warnings(
@@ -532,6 +844,7 @@ class RuleSynthesizerAgent:
         cls,
         data: Dict[str, Any],
         merged_extraction: Dict[str, Any],
+        raw_source: str = "",
     ) -> None:
         """Complete omitted synthesis fields from explicit SQL facts.
 
@@ -608,6 +921,54 @@ class RuleSynthesizerAgent:
                 continue
             operation = str(row.get("operation") or "").upper()
             predicate = str(row.get("where_predicate") or "").strip()
+
+            # A model may already have combined the repeated negative-DPD
+            # updates into one family. In that case attach any omitted
+            # deterministic member statement to that family instead of
+            # creating a second, duplicate business rule.
+            is_negative_reset = (
+                operation == "UPDATE"
+                and str(row.get("table") or "").strip().upper() == "#DPD"
+                and bool(re.search(r"<\s*0", predicate))
+                and all(column.upper().startswith("DPD_") for column in columns)
+            )
+            if is_negative_reset:
+                reset_rule = next(
+                    (
+                        candidate for candidate in rules
+                        if "reset" in str(candidate.get("rule_name") or "").lower()
+                        and any(
+                            str(field).strip().upper().startswith("DPD_")
+                            for field in (candidate.get("fields_affected") or [])
+                        )
+                    ),
+                    None,
+                )
+                if reset_rule is not None:
+                    existing_fields = list(reset_rule.get("fields_affected") or [])
+                    for column in columns:
+                        if str(column).upper() not in {str(field).upper() for field in existing_fields}:
+                            existing_fields.append(column)
+                    reset_rule["fields_affected"] = existing_fields
+                    reset_rule["output_field"] = ", ".join(existing_fields)
+                    for key in ("source_evidence", "source_chunks", "technical_references"):
+                        values = list(reset_rule.get(key) or [])
+                        additions = (
+                            assignment_evidence(row) if key == "source_evidence"
+                            else [str(row.get("source_chunk_id"))] if key == "source_chunks" and row.get("source_chunk_id")
+                            else [statement_id]
+                        )
+                        for value in additions:
+                            if value and value not in values:
+                                values.append(value)
+                        reset_rule[key] = values
+                    spans = list(reset_rule.get("evidence_spans") or [])
+                    span = evidence_span(row)
+                    if span not in spans:
+                        spans.append(span)
+                    reset_rule["evidence_spans"] = spans
+                    represented.add(statement_id)
+                    continue
             field_text = ", ".join(columns)
             assignments_text = "; ".join(
                 f"{str(item.get('column') or '').strip().split('.')[-1]} = {str(item.get('expression') or '').strip()}"
@@ -698,6 +1059,184 @@ class RuleSynthesizerAgent:
                     )
                 else:
                     data["exception_handling_summary"] = "The source contains an explicit failure-handling path."
+
+        # A model can return a valid JSON object while omitting a material
+        # IF/ELSIF/ELSE ladder.  Recover only ladders that are explicit in the
+        # original source and assign multiple distinct literal values to the
+        # same field.  This is intentionally conservative: calculations,
+        # technical date branches, and uncertain prose are not promoted to
+        # business rules.
+        cls._complete_literal_assignment_ladders(data, raw_source)
+
+    @classmethod
+    def _complete_literal_assignment_ladders(cls, data: Dict[str, Any], source: str) -> None:
+        if not isinstance(data, dict) or not str(source or "").strip():
+            return
+
+        source_without_comments = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+        lines = source_without_comments.splitlines()
+        frames: List[Dict[str, Any]] = []
+        completed: List[Dict[str, Any]] = []
+        if_re = re.compile(r"^\s*IF\s+(.+?)\s+THEN\s*$", re.I)
+        elsif_re = re.compile(r"^\s*ELSIF\s+(.+?)\s+THEN\s*$", re.I)
+        else_re = re.compile(r"^\s*ELSE\s*$", re.I)
+        end_re = re.compile(r"^\s*END\s+IF\b", re.I)
+        assignment_re = re.compile(
+            r"^\s*([A-Za-z_][A-Za-z0-9_$#]*)\s*(?::=|=)\s*(.+?);\s*$",
+            re.I,
+        )
+
+        def new_branch(condition: str, line_no: int) -> Dict[str, Any]:
+            return {"condition": condition.strip(), "assignments": [], "line_start": line_no, "line_end": line_no}
+
+        for line_no, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("--"):
+                continue
+            match = if_re.match(line)
+            if match:
+                parent_condition = ""
+                if frames:
+                    parent_condition = str(frames[-1]["branches"][-1]["condition"])
+                condition = match.group(1)
+                if parent_condition:
+                    condition = f"{parent_condition} AND {condition}"
+                frame = {"parent": frames[-1] if frames else None, "branches": [new_branch(condition, line_no)]}
+                frames.append(frame)
+                continue
+            if frames and (match := elsif_re.match(line)):
+                parent_condition = ""
+                if frames[-1].get("parent"):
+                    parent_condition = str(frames[-1]["parent"]["branches"][-1]["condition"])
+                condition = match.group(1)
+                if parent_condition:
+                    condition = f"{parent_condition} AND {condition}"
+                frames[-1]["branches"].append(new_branch(condition, line_no))
+                continue
+            if frames and else_re.match(line):
+                parent_condition = ""
+                if frames[-1].get("parent"):
+                    parent_condition = str(frames[-1]["parent"]["branches"][-1]["condition"])
+                condition = "ELSE"
+                if parent_condition:
+                    condition = f"{parent_condition} AND ELSE"
+                frames[-1]["branches"].append(new_branch(condition, line_no))
+                continue
+            if frames and end_re.match(line):
+                frame = frames.pop()
+                for branch in frame["branches"]:
+                    branch["line_end"] = line_no
+                completed.append(frame)
+                continue
+            if frames:
+                match = assignment_re.match(line)
+                if match:
+                    frames[-1]["branches"][-1]["assignments"].append(
+                        {"field": match.group(1), "value": match.group(2).strip(), "line": line_no}
+                    )
+
+        rules = [rule for rule in data.get("business_rules", []) or [] if isinstance(rule, dict)]
+        ladder_rows: Dict[str, List[Dict[str, Any]]] = {}
+        for frame in completed:
+            branches = frame["branches"]
+            assignments = [item for branch in branches for item in branch["assignments"]]
+            by_field: Dict[str, List[Dict[str, Any]]] = {}
+            for item in assignments:
+                value = str(item.get("value") or "").strip()
+                field_name = str(item.get("field") or "").strip()
+                # Literal branch outcomes are safe to reconstruct.  Do not
+                # turn variable/date/calculation branches into business rules.
+                if not field_name or not value or not re.search(r"(?:'[^']*'|\"[^\"]*\"|[-+]?\d+(?:\.\d+)?)", value):
+                    continue
+                if field_name.upper().startswith(("DPD_", "V_")) and not re.search(
+                    r"class|bucket|provision|status|reason|flag|stage|category", field_name, re.I
+                ):
+                    continue
+                by_field.setdefault(field_name.upper(), []).append(item)
+
+            for field_name, field_assignments in by_field.items():
+                values = {str(item["value"]).upper() for item in field_assignments}
+                # A nested branch may contain two outcomes while its parent
+                # contributes the outer ELSE/default outcome.  Keep every
+                # branch from an explicit IF ladder here; the frame itself
+                # supplies the structural safety check.
+                if len(branches) < 2:
+                    continue
+                rows = []
+                for branch in branches:
+                    branch_items = [item for item in branch["assignments"] if str(item.get("field") or "").upper() == field_name]
+                    for item in branch_items:
+                        rows.append(
+                            {
+                                "condition": branch["condition"],
+                                "outcome": str(item["value"]).strip().strip("'").strip('"'),
+                                "_source_line": item.get("line", branch.get("line_start", 0)),
+                            }
+                        )
+                if not rows:
+                    continue
+                ladder_rows.setdefault(field_name, []).extend(rows)
+
+        for field_name, rows in ladder_rows.items():
+            rows.sort(key=lambda row: int(row.get("_source_line", 0) or 0))
+            source_spans = [
+                {
+                    "source_file": "",
+                    "char_start": -1,
+                    "char_end": -1,
+                    "line_start": int(row.get("_source_line", -1) or -1),
+                    "line_end": int(row.get("_source_line", -1) or -1),
+                    "chunk_id": "",
+                    "statement_id": "",
+                    "evidence_type": "OUTCOME",
+                    "source_location_status": "available",
+                }
+                for row in rows
+            ]
+            for row in rows:
+                row.pop("_source_line", None)
+            matching = [
+                rule for rule in rules
+                if field_name in {str(value).strip().upper().split(".")[-1] for value in (rule.get("fields_affected") or [])}
+                or field_name == str(rule.get("output_field") or "").strip().upper()
+            ]
+            rule = matching[0] if matching else None
+            if rule is None:
+                rule = {
+                    "rule_name": f"Assign {field_name} by source-defined conditions",
+                    "business_meaning": f"Assigns {field_name} according to the ordered conditions in the source.",
+                    "condition": "",
+                    "action": f"Set {field_name} to the branch outcome.",
+                    "output_field": field_name,
+                    "eligibility": [],
+                    "fields_affected": [field_name],
+                    "rule_type": "explicit",
+                    "confidence": "high",
+                    "validation_status": "verified",
+                    "source_evidence": [],
+                    "source_chunks": [],
+                    "technical_references": [],
+                    "evidence_spans": [],
+                    "unresolved_ambiguities": [],
+                    "dependencies": [],
+                    "rule_id": "",
+                }
+                rules.append(rule)
+            rule["decision_logic_rows"] = rows
+            rule["decision_logic"] = [row["condition"] for row in rows]
+            existing_spans = list(rule.get("evidence_spans") or [])
+            for span in source_spans:
+                if span not in existing_spans:
+                    existing_spans.append(span)
+            rule["evidence_spans"] = existing_spans
+            for row in rows:
+                evidence = f"{row['condition']} -> {row['outcome']}"
+                if evidence not in rule.setdefault("source_evidence", []):
+                    rule["source_evidence"].append(evidence)
+            rule.setdefault("confidence", "high")
+            rule.setdefault("validation_status", "verified")
+
+        data["business_rules"] = cls._normalize_business_rules(rules)
 
     @staticmethod
     def _augment_rules_from_executable_operations(
@@ -802,7 +1341,23 @@ class RuleSynthesizerAgent:
             decision_rows: Optional[List[Dict[str, Any]]] = None,
             meaning: Optional[str] = None,
         ) -> None:
-            if not rows or any(family_marker in rule_blob(rule) for rule in result):
+            if not rows:
+                return
+            if family_marker == "negative DPD values are reset":
+                existing_reset = any(
+                    any(
+                        str(field).strip().upper().split(".")[-1].startswith("DPD_")
+                        for field in (rule.get("fields_affected") or [])
+                    )
+                    and any(
+                        marker in rule_blob(rule)
+                        for marker in ("reset", "sanitize", "negative", "below 0", "less than 0")
+                    )
+                    for rule in result
+                )
+                if existing_reset:
+                    return
+            elif any(family_marker in rule_blob(rule) for rule in result):
                 return
             result.append(
                 {

@@ -391,7 +391,16 @@ def _extract_table_ops_from_tree(
                     table_occurrence=occurrence_index,
                 )
             )
-        if into_table_node is not None:
+        # In Oracle PL/SQL, `SELECT ... INTO variable FROM ...` assigns
+        # query results to a local variable; it does not write a table.
+        # T-SQL `SELECT ... INTO #table` is the opposite and must remain an
+        # INSERT operation. Keep this distinction here, at the existing AST
+        # extraction boundary, so downstream read/write consumers stay
+        # dialect-neutral.
+        is_oracle_variable_into = (
+            into_table_node is not None and str(dialect or "").lower() == "oracle"
+        )
+        if into_table_node is not None and not is_oracle_variable_into:
             operations.append(
                 _build_operation_record(
                     operation="INSERT",

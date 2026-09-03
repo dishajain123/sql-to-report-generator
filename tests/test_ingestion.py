@@ -599,6 +599,41 @@ def test_regex_fallback_preserves_where_without_alias(monkeypatch):
     )
 
 
+def test_oracle_select_into_variable_is_read_only():
+    chunk = CodeChunk(
+        chunk_id="oracle_select_into",
+        kind="main_body",
+        text=(
+            'SELECT "Date" INTO v_ProcessDate FROM SysDayMatrix '
+            'WHERE TimeKey = p_TIMEKEY AND ROWNUM = 1'
+        ),
+        embedded_sql=[],
+        context_path=["main_body"],
+    )
+
+    operations, _ = extract_table_operations_from_chunks([chunk], "oracle")
+    reads, writes = split_table_operations(operations)
+
+    assert not any(op["table"] == "v_ProcessDate" for op in writes)
+    assert any(op["table"] == "SysDayMatrix" and op["operation"] == "READ" for op in reads)
+
+
+def test_tsql_select_into_table_remains_a_write():
+    chunk = CodeChunk(
+        chunk_id="tsql_select_into",
+        kind="main_body",
+        text="SELECT account_id INTO #Overdue FROM LOAN_ACCOUNT WHERE overdue_days > 0",
+        embedded_sql=[],
+        context_path=["main_body"],
+    )
+
+    operations, _ = extract_table_operations_from_chunks([chunk], "tsql")
+    reads, writes = split_table_operations(operations)
+
+    assert any(op["table"] == "LOAN_ACCOUNT" and op["operation"] == "READ" for op in reads)
+    assert any(op["table"] == "#Overdue" and op["operation"] == "INSERT" for op in writes)
+
+
 def test_regex_fallback_captures_insert_and_delete(monkeypatch):
     def fail_parse_one(*args, **kwargs):
         raise sql_ops.ParseError("forced fallback")

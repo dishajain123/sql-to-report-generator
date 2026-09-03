@@ -50,6 +50,17 @@ system:
       "calculations": [
         {"result": "<what is being computed>", "formula": "<the literal expression>"}
       ],
+      "decision_chains": [
+        {
+          "subject": "<short label for what this chain decides, e.g. 'account SMA classification and reason'>",
+          "branches": [
+            {
+              "branch_condition": "<the literal condition for this branch, exactly as written, or the literal token \"ELSE\" for the default/fallback branch>",
+              "assignments": {"<FIELD_NAME>": "<literal value/expression assigned to that field in this branch>"}
+            }
+          ]
+        }
+      ],
       "exception_handling": [
         {"handler": "<exception name or WHEN OTHERS>", "behavior": "<rollback/log/re-raise/silent/etc>"}
       ],
@@ -79,6 +90,41 @@ system:
       empty list for "columns" on that entry rather than guessing, and add the unresolved
       part to "ambiguities".
     - Keep field values literal/precise and short (technical detail is fine here).
+    - DECISION CHAINS - THIS IS THE MOST IMPORTANT NEW FIELD, POPULATE IT CAREFULLY:
+      whenever this chunk contains a CASE/WHEN expression, an IF/ELSIF/ELSE chain, or a
+      sequence of separate UPDATE/SET statements against the same table where each
+      statement has a mutually exclusive condition on the same driving value (e.g. a
+      threshold ladder, a code-to-label lookup, a first-match priority chain), record it
+      as ONE entry in "decision_chains" - do not also scatter its individual branches
+      across "conditions" only; "decision_chains" is what lets a later stage correctly
+      group branches that assign MULTIPLE fields together without merging them with
+      unrelated branches that happen to touch the same field.
+      * One "decision_chains" entry per distinct chain (e.g. one CASE expression, one
+        IF/ELSIF ladder, one run of mutually-exclusive sibling UPDATE statements). Do not
+        merge two structurally separate chains into one entry just because they assign
+        some of the same fields - e.g. a numeric days-overdue ladder and a separate
+        facility-type-driven priority chain are TWO chains even if both eventually set
+        fields on the same row, unless the source itself evaluates them as one single
+        ordered branch structure.
+      * "branches" is ordered exactly as the branches are evaluated in the source (first
+        branch first; the default/ELSE/no-match path last, with "branch_condition"
+        literally "ELSE").
+      * "assignments" on each branch lists EVERY field that branch sets, as a
+        field-name -> literal-value map, using the field's real column name (never a raw
+        alias). If a branch only sets one field, "assignments" still has exactly one key -
+        this is what lets a later stage tell whether a chain is single-field or
+        genuinely multi-field, and split multi-field chains into one rule per field
+        without guessing.
+      * If two structurally different chains happen to assign the same field (e.g. one
+        chain sets SMA_CLASS from a days-overdue ladder, and a separate ELSE-style
+        fallback chain also sets SMA_CLASS from a different source's asset-class code),
+        keep them as separate "decision_chains" entries with the same field name
+        appearing in each - do not force them into one chain just because the field
+        matches.
+      * Do not fabricate a "decision_chains" entry for a single, standalone if/else with
+        no ladder structure and only one field affected - that is already fully captured
+        by a single "conditions" entry; reserve "decision_chains" for genuine multi-branch
+        or multi-field structures.
 
   oracle: |
     You are a senior database engineer performing a precise, technical reverse-engineering
@@ -122,6 +168,17 @@ system:
       "calculations": [
         {"result": "<what is being computed>", "formula": "<the literal expression>"}
       ],
+      "decision_chains": [
+        {
+          "subject": "<short label for what this chain decides, e.g. 'account SMA classification and reason'>",
+          "branches": [
+            {
+              "branch_condition": "<the literal condition for this branch, exactly as written, or the literal token \"ELSE\" for the default/fallback branch>",
+              "assignments": {"<FIELD_NAME>": "<literal value/expression assigned to that field in this branch>"}
+            }
+          ]
+        }
+      ],
       "exception_handling": [
         {"handler": "<exception name or WHEN OTHERS>", "behavior": "<rollback/log/re-raise/silent/etc>"}
       ],
@@ -154,6 +211,41 @@ system:
       declarations, BULK COLLECT / FORALL, cursor FOR loops, autonomous transactions,
       package-level state, and the standard EXCEPTION ... WHEN OTHERS handler block.
     - Keep field values literal/precise and short (technical detail is fine here).
+    - DECISION CHAINS - THIS IS THE MOST IMPORTANT NEW FIELD, POPULATE IT CAREFULLY:
+      whenever this chunk contains a CASE/WHEN expression, an IF/ELSIF/ELSE chain, or a
+      sequence of separate UPDATE/SET statements against the same table where each
+      statement has a mutually exclusive condition on the same driving value (e.g. a
+      threshold ladder, a code-to-label lookup, a first-match priority chain), record it
+      as ONE entry in "decision_chains" - do not also scatter its individual branches
+      across "conditions" only; "decision_chains" is what lets a later stage correctly
+      group branches that assign MULTIPLE fields together without merging them with
+      unrelated branches that happen to touch the same field.
+      * One "decision_chains" entry per distinct chain (e.g. one CASE expression, one
+        IF/ELSIF ladder, one run of mutually-exclusive sibling UPDATE statements). Do not
+        merge two structurally separate chains into one entry just because they assign
+        some of the same fields - e.g. a numeric days-overdue ladder and a separate
+        facility-type-driven priority chain are TWO chains even if both eventually set
+        fields on the same row, unless the source itself evaluates them as one single
+        ordered branch structure.
+      * "branches" is ordered exactly as the branches are evaluated in the source (first
+        branch first; the default/ELSE/no-match path last, with "branch_condition"
+        literally "ELSE").
+      * "assignments" on each branch lists EVERY field that branch sets, as a
+        field-name -> literal-value map, using the field's real column name (never a raw
+        alias). If a branch only sets one field, "assignments" still has exactly one key -
+        this is what lets a later stage tell whether a chain is single-field or
+        genuinely multi-field, and split multi-field chains into one rule per field
+        without guessing.
+      * If two structurally different chains happen to assign the same field (e.g. one
+        chain sets SMA_CLASS from a days-overdue ladder, and a separate ELSE-style
+        fallback chain also sets SMA_CLASS from a different source's asset-class code),
+        keep them as separate "decision_chains" entries with the same field name
+        appearing in each - do not force them into one chain just because the field
+        matches.
+      * Do not fabricate a "decision_chains" entry for a single, standalone if/else with
+        no ladder structure and only one field affected - that is already fully captured
+        by a single "conditions" entry; reserve "decision_chains" for genuine multi-branch
+        or multi-field structures.
 
   tsql: |
     You are a senior database engineer performing a precise, technical reverse-engineering
@@ -198,6 +290,17 @@ system:
       "calculations": [
         {"result": "<what is being computed>", "formula": "<the literal expression>"}
       ],
+      "decision_chains": [
+        {
+          "subject": "<short label for what this chain decides, e.g. 'account SMA classification and reason'>",
+          "branches": [
+            {
+              "branch_condition": "<the literal condition for this branch, exactly as written, or the literal token \"ELSE\" for the default/fallback branch>",
+              "assignments": {"<FIELD_NAME>": "<literal value/expression assigned to that field in this branch>"}
+            }
+          ]
+        }
+      ],
       "exception_handling": [
         {"handler": "<exception name or CATCH block>", "behavior": "<rollback/log/re-raise/silent/etc>"}
       ],
@@ -233,6 +336,41 @@ system:
       MERGE, common table expressions (WITH ... AS), and @@ROWCOUNT/@@ERROR/@@IDENTITY
       system variables.
     - Keep field values literal/precise and short (technical detail is fine here).
+    - DECISION CHAINS - THIS IS THE MOST IMPORTANT NEW FIELD, POPULATE IT CAREFULLY:
+      whenever this chunk contains a CASE/WHEN expression, an IF/ELSIF/ELSE chain, or a
+      sequence of separate UPDATE/SET statements against the same table where each
+      statement has a mutually exclusive condition on the same driving value (e.g. a
+      threshold ladder, a code-to-label lookup, a first-match priority chain), record it
+      as ONE entry in "decision_chains" - do not also scatter its individual branches
+      across "conditions" only; "decision_chains" is what lets a later stage correctly
+      group branches that assign MULTIPLE fields together without merging them with
+      unrelated branches that happen to touch the same field.
+      * One "decision_chains" entry per distinct chain (e.g. one CASE expression, one
+        IF/ELSIF ladder, one run of mutually-exclusive sibling UPDATE statements). Do not
+        merge two structurally separate chains into one entry just because they assign
+        some of the same fields - e.g. a numeric days-overdue ladder and a separate
+        facility-type-driven priority chain are TWO chains even if both eventually set
+        fields on the same row, unless the source itself evaluates them as one single
+        ordered branch structure.
+      * "branches" is ordered exactly as the branches are evaluated in the source (first
+        branch first; the default/ELSE/no-match path last, with "branch_condition"
+        literally "ELSE").
+      * "assignments" on each branch lists EVERY field that branch sets, as a
+        field-name -> literal-value map, using the field's real column name (never a raw
+        alias). If a branch only sets one field, "assignments" still has exactly one key -
+        this is what lets a later stage tell whether a chain is single-field or
+        genuinely multi-field, and split multi-field chains into one rule per field
+        without guessing.
+      * If two structurally different chains happen to assign the same field (e.g. one
+        chain sets SMA_CLASS from a days-overdue ladder, and a separate ELSE-style
+        fallback chain also sets SMA_CLASS from a different source's asset-class code),
+        keep them as separate "decision_chains" entries with the same field name
+        appearing in each - do not force them into one chain just because the field
+        matches.
+      * Do not fabricate a "decision_chains" entry for a single, standalone if/else with
+        no ladder structure and only one field affected - that is already fully captured
+        by a single "conditions" entry; reserve "decision_chains" for genuine multi-branch
+        or multi-field structures.
 
 user_template: |
   OBJECT TYPE: {object_type}

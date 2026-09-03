@@ -28,7 +28,6 @@ htmlcov/
 runtime/
 chroma_store/
 data/
-samples/output/
 
 # Build
 build/

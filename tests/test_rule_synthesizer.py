@@ -1226,12 +1226,42 @@ def test_deduplicate_business_rules_does_not_merge_unrelated_fields():
 
 def test_deduplicate_business_rules_preserves_first_occurrence_order():
     rules = [
-        {"fields_affected": ["A"], "business_meaning": "first"},
-        {"fields_affected": ["B"], "business_meaning": "second"},
-        {"fields_affected": ["A"], "business_meaning": "first duplicate, much longer text here"},
+        {"fields_affected": ["A"], "business_meaning": "Resets field A to zero when negative."},
+        {"fields_affected": ["B"], "business_meaning": "Sets field B from the lookup table."},
+        {
+            "fields_affected": ["A"],
+            "business_meaning": "Resets field A to zero whenever the value is negative before further processing.",
+        },
     ]
     result = ReportFormatterAgent._deduplicate_business_rules(rules)
     assert [r["fields_affected"] for r in result] == [["A"], ["B"]]
+
+
+def test_deduplicate_business_rules_does_not_merge_on_field_overlap_alone():
+    # Regression test for a real false-merge found in production output:
+    # a dead-code threshold-cap fragment and the live "reset negative
+    # values to zero" rule both happened to touch overlapping DPD
+    # fields, and field-overlap-only merging incorrectly combined them
+    # into one rule that misrepresented the source. Field overlap must
+    # never be sufficient on its own - the business_meaning/rule_name
+    # text has to also share real vocabulary.
+    rules = [
+        {
+            "rule_name": "Reset negative DPD to zero",
+            "fields_affected": ["DPD_IntService", "DPD_NoCredit", "DPD_Overdrawn", "DPD_Overdue", "DPD_StockStmt"],
+            "business_meaning": "Ensures that negative overdue days are reset to zero.",
+        },
+        {
+            "rule_name": "Cap overdue metric at reference period",
+            "fields_affected": ["DPD_IntService", "DPD_NoCredit", "DPD_Overdrawn", "DPD_Overdue", "DPD_StockStmt"],
+            "business_meaning": (
+                "Determines whether the account qualifies for further processing by comparing "
+                "each metric against its configured reference period threshold."
+            ),
+        },
+    ]
+    result = ReportFormatterAgent._deduplicate_business_rules(rules)
+    assert len(result) == 2
 
 
 def test_report_formatter_preserves_synthesized_rule_boundaries_for_display():
@@ -1265,6 +1295,194 @@ def test_report_formatter_renders_single_decision_logic_row():
         {"decision_logic_rows": [{"condition": "DPD_Max > 90", "outcome": "SMA-2"}]}
     )
     assert rows == [{"condition": "DPD_Max > 90", "outcome": "SMA-2"}]
+
+
+def test_report_formatter_simplifies_sql_predicates_only_at_render_time():
+    formatted = ReportFormatterAgent._pretty_condition_for_display(
+        "COALESCE(A.DPD_Max, 0) >= 31 AND A.FINALASSETCLASSALT_KEY <> 2"
+    )
+    assert formatted == "DPD_Max is at least 31 and FINALASSETCLASSALT_KEY is not 2"
+
+
+def test_report_formatter_collapses_repeated_negative_reset_rows():
+    rows = ReportFormatterAgent()._decision_logic_rows(
+        {
+            "rule_name": "Sanitize overdue-day metrics",
+            "decision_logic_rows": [
+                {"condition": "COALESCE(A.DPD_Overdue, 0) < 0", "outcome": "0"},
+                {"condition": "COALESCE(A.DPD_Overdrawn, 0) < 0", "outcome": "0"},
+            ],
+        }
+    )
+    assert rows == [{"condition": "Metric value < 0", "outcome": "Metric set to 0"}]
+
+
+def test_synthesis_merges_identical_negative_reset_patterns_across_fields():
+    rules = [
+        {
+            "rule_id": "r1",
+            "rule_name": "Reset negative DPD",
+            "business_meaning": "Reset negative DPD values.",
+            "fields_affected": ["DPD_Overdue"],
+            "decision_logic_rows": [{"condition": "COALESCE(A.DPD_Overdue, 0) < 0", "outcome": "0"}],
+            "source_chunks": ["chunk-1"],
+            "_source_index": 1,
+        },
+        {
+            "rule_id": "r2",
+            "rule_name": "Reset negative DPD",
+            "business_meaning": "Reset negative DPD values.",
+            "fields_affected": ["DPD_Overdrawn"],
+            "decision_logic_rows": [{"condition": "ISNULL(DPD_Overdrawn,0)<0", "outcome": "0"}],
+            "source_chunks": ["chunk-2"],
+            "_source_index": 2,
+        },
+    ]
+
+    result = RuleSynthesizerAgent._canonicalize_synthesis_families(rules, {})
+
+    assert len(result) == 1
+    assert result[0]["fields_affected"] == ["DPD_Overdue", "DPD_Overdrawn"]
+    assert result[0]["source_chunks"] == ["chunk-1", "chunk-2"]
+    assert len(result[0]["decision_logic_rows"]) == 2
+
+
+def test_synthesis_merges_all_equivalent_negative_zero_phrasings():
+    conditions = [
+        "COALESCE(DPD_Overdue, 0) < 0",
+        "DPD_Overdrawn is negative",
+        "DPD_IntService is below 0",
+        "DPD_NoCredit is less than 0",
+    ]
+    rules = [
+        {
+            "rule_name": "Reset negative DPD values",
+            "business_meaning": "Reset negative overdue values to zero.",
+            "fields_affected": [field],
+            "decision_logic_rows": [{"condition": condition, "outcome": "0"}],
+            "_source_index": index,
+        }
+        for index, (condition, field) in enumerate(
+            zip(conditions, ["DPD_Overdue", "DPD_Overdrawn", "DPD_IntService", "DPD_NoCredit"])
+        )
+    ]
+
+    result = RuleSynthesizerAgent._canonicalize_synthesis_families(rules, {})
+
+    assert len(result) == 1
+    assert result[0]["fields_affected"] == [
+        "DPD_Overdue", "DPD_Overdrawn", "DPD_IntService", "DPD_NoCredit"
+    ]
+
+
+def test_synthesis_does_not_merge_unrelated_zero_assignment():
+    rules = [
+        {
+            "rule_name": "Reset negative DPD values",
+            "business_meaning": "Reset negative overdue values to zero.",
+            "fields_affected": ["DPD_Overdue"],
+            "decision_logic_rows": [{"condition": "DPD_Overdue below 0", "outcome": "0"}],
+            "_source_index": 0,
+        },
+        {
+            "rule_name": "Set balance to zero",
+            "business_meaning": "Set balance to zero when the account is closed.",
+            "fields_affected": ["BALANCE"],
+            "decision_logic_rows": [{"condition": "account is closed", "outcome": "0"}],
+            "_source_index": 1,
+        },
+    ]
+
+    result = RuleSynthesizerAgent._canonicalize_synthesis_families(rules, {})
+
+    assert len(result) == 2
+
+
+def test_synthesis_collapses_exact_structural_filter_duplicates_only():
+    rules = [
+        {
+            "rule_name": "Filter classified accounts",
+            "condition": "asset_classification IS NOT NULL",
+            "output_field": "asset_classification",
+            "fields_affected": ["asset_classification"],
+            "source_evidence": ["WHERE asset_classification IS NOT NULL"],
+        },
+        {
+            "rule_name": "Keep rows with a classification",
+            "condition": "asset_classification IS NOT NULL",
+            "output_field": "asset_classification",
+            "fields_affected": ["asset_classification"],
+            "source_evidence": ["la.asset_classification IS NOT NULL"],
+        },
+    ]
+
+    result = RuleSynthesizerAgent._canonicalize_synthesis_families(rules, {})
+
+    assert len(result) == 1
+    assert result[0]["source_evidence"] == [
+        "WHERE asset_classification IS NOT NULL",
+        "la.asset_classification IS NOT NULL",
+    ]
+
+
+def test_synthesis_completes_literal_assignment_ladder_from_source():
+    data = {"business_rules": [], "calculations": [], "ambiguities": []}
+    source = """BEGIN
+  IF v_overdue_days <= 90 THEN
+    v_classification := 'STANDARD';
+  ELSIF v_overdue_days BETWEEN 91 AND 365 THEN
+    v_classification := 'SUBSTANDARD';
+  ELSE
+    v_classification := 'LOSS';
+  END IF;
+END;"""
+
+    RuleSynthesizerAgent._complete_synthesis_from_deterministic_facts(
+        data, {}, raw_source=source
+    )
+
+    rule = next(rule for rule in data["business_rules"] if rule["output_field"] == "V_CLASSIFICATION")
+    assert [row["outcome"] for row in rule["decision_logic_rows"]] == [
+        "STANDARD", "SUBSTANDARD", "LOSS"
+    ]
+    assert all(span["line_start"] > 0 for span in rule["evidence_spans"])
+
+
+def test_synthesis_completes_nested_literal_assignment_branches_with_parent_condition():
+    data = {"business_rules": [], "calculations": [], "ambiguities": []}
+    source = """BEGIN
+  IF v_overdue_days > 365 THEN
+    IF v_doubtful_since <= 365 THEN
+      v_classification := 'DOUBTFUL1';
+    ELSE
+      v_classification := 'DOUBTFUL2';
+    END IF;
+  ELSE
+    v_classification := 'STANDARD';
+  END IF;
+END;"""
+
+    RuleSynthesizerAgent._complete_synthesis_from_deterministic_facts(
+        data, {}, raw_source=source
+    )
+
+    rule = next(rule for rule in data["business_rules"] if rule["output_field"] == "V_CLASSIFICATION")
+    outcomes = [row["outcome"] for row in rule["decision_logic_rows"]]
+    assert outcomes == ["DOUBTFUL1", "DOUBTFUL2", "STANDARD"]
+    assert "v_overdue_days > 365" in rule["decision_logic_rows"][0]["condition"]
+
+
+def test_report_formatter_preserves_distinct_decision_rows():
+    rows = ReportFormatterAgent()._decision_logic_rows(
+        {
+            "rule_name": "Classify account",
+            "decision_logic_rows": [
+                {"condition": "DPD_Max BETWEEN 1 AND 30", "outcome": "SMA_0"},
+                {"condition": "DPD_Max BETWEEN 31 AND 60", "outcome": "SMA_1"},
+            ],
+        }
+    )
+    assert len(rows) == 2
 
 
 def test_report_formatter_derives_business_meaning_from_rule_name_when_needed():
@@ -1433,6 +1651,84 @@ def test_operational_process_status_is_not_promoted_to_business_rule():
     assert [rule["rule_name"] for rule in filtered] == ["Assign SMA class"]
 
 
+def test_pure_temporary_table_drop_is_not_a_business_rule():
+    rules = [
+        {
+            "rule_name": "Drop existing temporary tables",
+            "business_meaning": "Drops temporary tables before processing.",
+            "fields_affected": [],
+            "decision_logic": [],
+        },
+        {
+            "rule_name": "Reset DPD",
+            "business_meaning": "Resets negative DPD values.",
+            "fields_affected": ["DPD_Overdue"],
+        },
+    ]
+    context = {
+        "table_operations": [
+            {"table": "#DPD", "operation": "DROP", "active_status": "ACTIVE"}
+        ]
+    }
+
+    filtered = RuleSynthesizerAgent._remove_non_business_cleanup_rules(rules, context)
+
+    assert [rule["rule_name"] for rule in filtered] == ["Reset DPD"]
+
+
+def test_cleanup_filter_keeps_rule_with_business_fields():
+    rule = {
+        "rule_name": "Drop temporary account data after export",
+        "business_meaning": "Removes temporary account data after export.",
+        "fields_affected": ["ExportStatus"],
+    }
+    context = {
+        "table_operations": [
+            {"table": "#EXPORT", "operation": "DROP", "active_status": "ACTIVE"}
+        ]
+    }
+
+    filtered = RuleSynthesizerAgent._remove_non_business_cleanup_rules([rule], context)
+
+    assert filtered == [rule]
+
+
+def test_deterministic_completion_enriches_existing_negative_reset_family():
+    rule = {
+        "rule_name": "Reset negative DPD values to zero",
+        "fields_affected": ["DPD_Overdue"],
+        "output_field": "DPD_Overdue",
+        "source_evidence": ["DPD_Overdue < 0"],
+        "source_chunks": ["chunk_1"],
+        "technical_references": ["stmt_1"],
+        "evidence_spans": [],
+    }
+    extraction = {
+        "table_operations": [
+            {
+                "table": "#DPD",
+                "operation": "UPDATE",
+                "target_columns": ["DPD_StockStmt"],
+                "where_predicate": "DPD_StockStmt < 0",
+                "assigned_values": [{"column": "DPD_StockStmt", "expression": "0"}],
+                "source_chunk_id": "chunk_2",
+                "statement_id": "stmt_2",
+                "source_file": "sample.sql",
+                "source_line_start": 20,
+                "source_line_end": 20,
+                "active_status": "ACTIVE",
+            }
+        ]
+    }
+
+    data = {"business_rules": [rule]}
+    RuleSynthesizerAgent._complete_synthesis_from_deterministic_facts(data, extraction)
+
+    assert len(data["business_rules"]) == 1
+    assert data["business_rules"][0]["fields_affected"] == ["DPD_Overdue", "DPD_StockStmt"]
+    assert "stmt_2" in data["business_rules"][0]["technical_references"]
+
+
 def test_deterministic_completion_recognizes_qualified_dpd_fields_and_max_calculation():
     extraction = {
         "table_operations": [
@@ -1513,3 +1809,58 @@ def test_formatter_preserves_dynamic_synthesis_values_without_reference_fallback
     assert "Reconciles inventory quantities" in report
     assert "Read warehouse stock" in report
     assert "SMA-0" not in report
+
+def test_clean_sql_fragment_strips_aliases_and_null_wrappers():
+    # Regression test for real raw-SQL leakage found in production
+    # output: table aliases (A., dpd., DPD., AA., B.) and ISNULL/COALESCE
+    # NULL-defaulting wrappers must never reach the business report as
+    # literal SQL - see _clean_sql_fragment_for_display's docstring.
+    cases = [
+        (
+            "isnull(A.DPD_IntService,0)>=isnull(A.RefPeriodIntService,0)",
+            "DPD_IntService>=RefPeriodIntService",
+        ),
+        ("dpd.DPD_Max BETWEEN 1 AND 30", "DPD_Max BETWEEN 1 AND 30"),
+        ("COALESCE(DPD_IntService, 0) < 0", "DPD_IntService < 0"),
+        (
+            "AA.EffectiveToTimeKey = 49999 AND B.CustomerAcID IS NULL",
+            "EffectiveToTimeKey = 49999 AND CustomerAcID IS NULL",
+        ),
+    ]
+    for raw, expected in cases:
+        assert ReportFormatterAgent._clean_sql_fragment_for_display(raw) == expected
+
+
+def test_clean_sql_fragment_never_mangles_else_marker():
+    # "ELSE" is a structural marker for the default branch of a decision
+    # table, not a SQL fragment - _decision_logic_rows must pass it
+    # through untouched rather than running alias/wrapper cleanup on it.
+    fmt = ReportFormatterAgent()
+    rule = {
+        "decision_logic_rows": [
+            {"condition": "isnull(A.DPD_Max,0) > 90", "outcome": "'SMA_2'"},
+            {"condition": "ELSE", "outcome": "'OTHER'"},
+        ]
+    }
+    rows = fmt._decision_logic_rows(rule)
+    assert rows[0]["condition"] == "DPD_Max > 90"
+    assert rows[1]["condition"] == "ELSE"
+
+
+def test_decision_chains_present_in_extraction_schema_for_all_dialects():
+    # Regression test for the actual root cause of a real production bug:
+    # the synthesis prompt treats "decision_chains" as the authoritative
+    # source for multi-field decision ladders (see rule_synthesis.yaml),
+    # but the extraction stage never asked the model to populate it -
+    # so it was always empty, and the synthesis LLM had no structured
+    # signal to correctly split a rule spanning two output fields (e.g.
+    # SMA_CLASS + SMA_REASON getting merged into one rule's decision
+    # table). This guards against that gap reopening silently.
+    for dialect in ("default", "oracle", "tsql"):
+        from src.prompts.prompt_loader import get_prompt_set
+
+        prompt_set = get_prompt_set("logic_extraction.yaml", dialect=dialect if dialect != "default" else "oracle")
+        system_text = prompt_set["system"]
+        assert '"decision_chains"' in system_text
+        assert "branch_condition" in system_text
+        assert "assignments" in system_text

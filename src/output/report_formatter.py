@@ -72,6 +72,18 @@ from src.core.pipeline_utils import RunMetadata, run_metadata_to_dict
 from src.parsing.dedup import find_write_only_temp_tables
 
 _NOT_DETERMINED = "Not explicitly determined from source SQL."
+# Common, semantically-empty words excluded from the business-meaning
+# similarity check in `_rules_look_like_the_same_concept` - keeping this
+# short and generic (not domain-specific) so it doesn't accidentally
+# suppress a real signal word from any particular business domain.
+_STOPWORDS_FOR_RULE_SIMILARITY = frozenset(
+    {
+        "the", "and", "for", "are", "that", "this", "with", "from", "based",
+        "sets", "set", "when", "before", "after", "value", "values", "field",
+        "fields", "procedure", "record", "records", "source", "defined",
+        "applies", "updates", "update", "into", "each", "any", "not", "all",
+    }
+)
 
 # Common, generic (non-domain-specific) naming patterns used to spot an
 # account/customer/entity-style roll-up hierarchy and a history/movement
@@ -422,6 +434,40 @@ class ReportFormatterAgent:
         return frozenset({output_field}) if output_field else frozenset()
 
     @staticmethod
+    def _meaning_word_set(rule: Dict[str, Any]) -> frozenset:
+        text = f"{rule.get('rule_name') or ''} {rule.get('business_meaning') or ''}".lower()
+        words = {w for w in re.findall(r"[a-z]{3,}", text) if w not in _STOPWORDS_FOR_RULE_SIMILARITY}
+        return frozenset(words)
+
+    @staticmethod
+    def _rules_look_like_the_same_concept(rule_a: Dict[str, Any], rule_b: Dict[str, Any]) -> bool:
+        """Second gate for merging, alongside field-signature overlap.
+
+        Field overlap alone is NOT a safe merge signal on its own: two
+        genuinely different statements in the source can happen to touch
+        the same handful of fields (a real production example: a dead
+        threshold-cap fragment and the live "reset negative values to
+        zero" logic both touch DPD_IntService/DPD_NoCredit/etc, but they
+        are not the same rule and must never be merged just because their
+        field lists overlap - see report design notes). Require the two
+        rules' own business_meaning/rule_name text to also share enough
+        vocabulary to plausibly be the same underlying concept, using a
+        cheap Jaccard word-overlap check - no external NLP dependency,
+        but enough to block the false-merge case above (whose wording
+        shares almost no words with the reset-to-zero rule) while still
+        allowing genuine near-duplicates (whose wording is close
+        paraphrase of each other) to merge.
+        """
+        words_a = ReportFormatterAgent._meaning_word_set(rule_a)
+        words_b = ReportFormatterAgent._meaning_word_set(rule_b)
+        if not words_a or not words_b:
+            # No usable text to compare on either side - do not merge on
+            # field overlap alone; require an explicit signal.
+            return False
+        overlap = len(words_a & words_b) / len(words_a | words_b)
+        return overlap >= 0.25
+
+    @staticmethod
     def _deduplicate_business_rules(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Merge rules that write to the same field(s) into one.
 
@@ -441,15 +487,23 @@ class ReportFormatterAgent:
         guarantees the *displayed* report never shows two rules for the
         same field(s) regardless of where the duplicate came from.
 
-        Two rules are merged when their `fields_affected` (or, absent
-        that, `output_field`) sets are identical or one is a subset of
-        the other - never merged on partial/fuzzy overlap, to avoid
-        accidentally combining genuinely different rules that happen to
-        touch one shared field. Merging unions eligibility, decision
-        table rows (deduplicated by condition+outcome), source evidence,
-        and source chunks; keeps the longer/more complete business
-        meaning and rule name; and keeps the position of the FIRST
-        occurrence so execution ordering from canonical_ir is preserved.
+        Two rules are merged ONLY when BOTH hold:
+          1. Their `fields_affected` (or, absent that, `output_field`)
+             sets are identical or one is a subset of the other, AND
+          2. Their business_meaning/rule_name text shares enough
+             vocabulary to plausibly describe the same underlying
+             concept (see `_rules_look_like_the_same_concept`).
+        Field overlap alone is not sufficient - two structurally
+        different statements that happen to touch the same fields (e.g.
+        a dead code fragment and a live one covering an overlapping
+        field set) must never be silently combined into one rule; that
+        would misrepresent what the source actually does, which is worse
+        than leaving two separate rules in the report. Merging unions
+        eligibility, decision table rows (deduplicated by
+        condition+outcome), source evidence, and source chunks; keeps
+        the longer/more complete business meaning and rule name; and
+        keeps the position of the FIRST occurrence so execution ordering
+        from canonical_ir is preserved.
         """
         merged: List[Dict[str, Any]] = []
         signatures: List[frozenset] = []
@@ -461,7 +515,8 @@ class ReportFormatterAgent:
                 for i, existing_sig in enumerate(signatures):
                     if not existing_sig:
                         continue
-                    if sig == existing_sig or sig <= existing_sig or existing_sig <= sig:
+                    fields_overlap = sig == existing_sig or sig <= existing_sig or existing_sig <= sig
+                    if fields_overlap and ReportFormatterAgent._rules_look_like_the_same_concept(rule, merged[i]):
                         match_idx = i
                         break
             if match_idx is None:
@@ -656,11 +711,13 @@ class ReportFormatterAgent:
             for row in (consolidated_reads or []) + (consolidated_writes or [])
             if isinstance(row, dict)
         )
+        visible_reads = self._visible_table_count(consolidated_reads)
+        visible_writes = self._visible_table_count(consolidated_writes)
         rows = [
             ("Purpose", purpose),
             ("Business rules", str(len(rules))),
-            ("Tables read", str(len(consolidated_reads or []))),
-            ("Tables written", str(len(consolidated_writes or []))),
+            ("Tables read", str(visible_reads)),
+            ("Tables written", str(visible_writes)),
             ("Produces audit trail", "Yes — account and customer movement history" if history_present else "No"),
         ]
         lines = ["## At a Glance", "", "| | |", "|---|---|"]
@@ -674,6 +731,24 @@ class ReportFormatterAgent:
                 ]
             )
         return "\n".join(lines)
+
+    @staticmethod
+    def _visible_table_count(buckets: List[Dict[str, Any]]) -> int:
+        """Count only physical tables shown in the business report.
+
+        Temporary working tables and unresolved short alias tokens remain in
+        verification/provenance, but are intentionally excluded from the
+        reader-facing table count just as they are from Data Touched.
+        """
+        count = 0
+        for bucket in buckets or []:
+            table = str(bucket.get("table") or "").strip()
+            if not table or table.startswith("#"):
+                continue
+            if len(table) <= 3 and table.isalpha() and "." not in table and "_" not in table:
+                continue
+            count += 1
+        return count
 
     # ------------------------------------------------------------------
     # 2. What This Procedure Does
@@ -752,10 +827,10 @@ class ReportFormatterAgent:
         # a separate section to know which conditions gate THIS rule.
         if eligibility:
             if len(eligibility) == 1:
-                lines.append(f"**Eligibility:** {eligibility[0]}")
+                lines.append(f"**Eligibility:** {self._pretty_condition_for_display(eligibility[0])}")
             else:
                 lines.append("**Eligibility (all must hold):**")
-                lines.extend(f"- {e}" for e in eligibility)
+                lines.extend(f"- {self._pretty_condition_for_display(e)}" for e in eligibility)
         lines.append(f"**Meaning:** {business_meaning}")
         lines.append("")
 
@@ -1996,16 +2071,66 @@ class ReportFormatterAgent:
         return cleaned if cleaned.endswith(".") else cleaned + "."
 
     @staticmethod
+    def _clean_sql_fragment_for_display(text: str) -> str:
+        """Deterministic readability cleanup applied to condition/outcome/
+        eligibility text at render time only - never touches the
+        underlying rule data used for grounding, verification, or the
+        audit trail, only what gets printed in the business report.
+
+        Handles the two most common sources of raw-SQL leakage seen in
+        real output:
+
+        1. Table-alias prefixes on column references (`A.DPD_IntService`,
+           `dpd.DPD_Max`, `DPD.DPD_INTSERVICE`) - the synthesis prompt
+           already explicitly forbids printing a raw alias as if it were
+           a table name, but the model doesn't always comply for column
+           references embedded inside a condition/outcome string. Every
+           value that reaches this function is already known to be
+           condition/outcome/eligibility text (never a table name - those
+           come from `fields_affected`/Data Touched, a different code
+           path), so any `<word>.<identifier>` pattern found here is
+           structurally a column reference and the prefix is safe to
+           drop, keeping just the column name.
+        2. `ISNULL(x, y)` / `COALESCE(x, y)` NULL-defaulting wrappers -
+           collapsed to just `x`, which preserves the practical meaning
+           for a business reader (a NULL value being treated as the
+           default) while removing function-call noise. Applied
+           iteratively since these can nest.
+
+        This is intentionally conservative: it never rewrites operators,
+        never reorders boolean logic, and never invents wording - only
+        removes syntax that carries no additional business meaning.
+        """
+        if not text:
+            return text
+        cleaned = text
+        # Unwrap ISNULL(x, y) / COALESCE(x, y) -> x. Iterate a few passes
+        # to handle nesting; bounded so a pathological input can't loop.
+        wrapper_pattern = re.compile(r"\b(?:ISNULL|COALESCE)\s*\(\s*([^,()]+?)\s*,\s*[^()]+?\)", re.IGNORECASE)
+        for _ in range(4):
+            new_cleaned = wrapper_pattern.sub(r"\1", cleaned)
+            if new_cleaned == cleaned:
+                break
+            cleaned = new_cleaned
+        # Strip alias prefixes on column references: <word>.<identifier> -> <identifier>.
+        # Deliberately does not fire on things that aren't alias.column
+        # shaped (e.g. leaves quoted string literals and numbers alone).
+        cleaned = re.sub(r"\b[A-Za-z_][A-Za-z0-9_]*\.([A-Za-z_][A-Za-z0-9_]*)\b", r"\1", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+        return cleaned or text
+
+    @staticmethod
     def _rule_text_lines(value: Any) -> List[str]:
         if value is None:
             return []
         if isinstance(value, list):
-            return [str(item).strip() for item in value if str(item).strip()]
-        text = str(value).strip()
-        if not text:
-            return []
-        parts = [part.strip(" -") for part in re.split(r"(?:\n+|;\s+)", text) if part.strip(" -")]
-        return parts or [text]
+            items = [str(item).strip() for item in value if str(item).strip()]
+        else:
+            text = str(value).strip()
+            if not text:
+                return []
+            items = [part.strip(" -") for part in re.split(r"(?:\n+|;\s+)", text) if part.strip(" -")] or [text]
+        return [ReportFormatterAgent._clean_sql_fragment_for_display(item) for item in items]
 
     def _decision_logic_rows(self, rule: Dict[str, Any]) -> List[Dict[str, str]]:
         """Only returns rows for a genuine multi-band/lookup mapping
@@ -2026,21 +2151,72 @@ class ReportFormatterAgent:
             condition = str(row.get("condition") or row.get("when") or row.get("if") or "").strip()
             outcome = str(row.get("outcome") or row.get("then") or row.get("result") or "").strip()
             if condition or outcome:
+                # "ELSE" is a structural marker for the default branch,
+                # not a SQL fragment - leave it exactly as-is rather than
+                # running it through alias/wrapper cleanup.
+                clean_condition = (
+                    condition if condition.strip().upper() == "ELSE"
+                    else self._clean_sql_fragment_for_display(condition)
+                )
                 normalized.append(
                     {
-                        "condition": condition or "Not specified",
-                        "outcome": outcome or "Not specified",
+                        "condition": clean_condition or "Not specified",
+                        "outcome": self._clean_sql_fragment_for_display(outcome) or "Not specified",
                     }
                 )
+        # Repeated field-level cleanup assignments are one business pattern,
+        # not several different decisions. Collapse only the unambiguous
+        # shape "<metric> < 0 -> 0" when the rule itself is explicitly about
+        # reset/cleanup. The original rows remain intact in the verification
+        # artifact and in the rule payload.
+        rule_text = " ".join(
+            str(rule.get(key) or "").lower()
+            for key in ("rule_name", "action", "business_meaning")
+        )
+        reset_rows = [
+            row for row in normalized
+            if re.search(r"(?:<\s*0|negative)", row["condition"], re.IGNORECASE)
+            and re.fullmatch(r"['\"]?0['\"]?", row["outcome"].strip())
+        ]
+        if len(reset_rows) >= 2 and any(
+            token in rule_text for token in ("reset", "sanitize", "cleanup", "zero out", "set to zero")
+        ):
+            return [{"condition": "Metric value < 0", "outcome": "Metric set to 0"}]
         return normalized
 
     def _decision_logic_block(self, rows: List[Dict[str, str]]) -> List[str]:
         lines = ["| Condition | Outcome |", "|---|---|"]
         for row in rows:
             lines.append(
-                f"| {self._escape_table_cell(row['condition'])} | {self._escape_table_cell(row['outcome'])} |"
+                f"| {self._escape_table_cell(self._pretty_condition_for_display(row['condition']))} | {self._escape_table_cell(row['outcome'])} |"
             )
         return lines
+
+    @staticmethod
+    def _pretty_condition_for_display(condition: str) -> str:
+        """Make common SQL predicates readable without changing their meaning.
+
+        This is deliberately a presentation-only transformation. Raw
+        conditions remain in synthesis/reconciliation/verification data; the
+        business report simply avoids exposing null wrappers, aliases, and
+        operator-heavy syntax when a faithful plain-language equivalent is
+        unambiguous.
+        """
+        text = ReportFormatterAgent._clean_sql_fragment_for_display(str(condition or "").strip())
+        if not text or text.upper() == "ELSE":
+            return text
+        text = re.sub(r"\s+", " ", text).strip()
+        text = re.sub(r"\bBETWEEN\s+([^\s]+)\s+AND\s+([^\s]+)", r"is between \1 and \2", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*>=\s*", " is at least ", text)
+        text = re.sub(r"\s*<=\s*", " is at most ", text)
+        text = re.sub(r"\s*<>\s*", " is not ", text)
+        text = re.sub(r"\s*!=\s*", " is not ", text)
+        text = re.sub(r"\s+>\s*", " is above ", text)
+        text = re.sub(r"\s+<\s*", " is below ", text)
+        text = re.sub(r"\s*=\s*", " equals ", text)
+        text = re.sub(r"\s+AND\s+", " and ", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s+OR\s+", " or ", text, flags=re.IGNORECASE)
+        return text.strip()
 
     # ------------------------------------------------------------------
     # Review-priority icon / escaping / truncation
