@@ -48,6 +48,26 @@ def test_decision_rows_preserve_llm_supplied_assignments_separately():
     assert rows[0]["assignments"] == ["result := selected", "score := score + adjustment"]
 
 
+def test_business_report_includes_metadata_free_rule_summary_table():
+    report = ReportFormatterAgent()._business_rule_overview_table([
+        {
+            "rule_name": "Apply state transition",
+            "fields_affected": ["state_code"],
+            "business_meaning": "Updates the state when the input is eligible.",
+            "validation_status": "verified",
+            "rule_id": "internal-rule-id",
+            "reconciliation_status": "MATCHED",
+        }
+    ])
+    assert "## Business Rule Summary" in report
+    assert "| Rule | Affected Field | Business Purpose |" in report
+    assert "Apply state transition" in report
+    assert "state_code" in report
+    assert "validation_status" not in report
+    assert "internal-rule-id" not in report
+    assert "MATCHED" not in report
+
+
 def test_cited_dml_statement_is_not_reported_as_unreviewed_keyword():
     source = "INSERT INTO target_table (total_value) VALUES (base_value * factor_value);"
     rules = [{"source_evidence": ["base_value * factor_value"]}]
@@ -126,10 +146,10 @@ def test_business_rule_rendering_keeps_conditional_assignments_and_evidence():
         "validation_status": "verified",
     }
     report = ReportFormatterAgent()._business_rules_section([rule])
-    assert "**Condition:**" in report
-    assert "**Then:**" in report
-    assert report.count("input_flag = 1") == 1
-    assert "state_value := 'READY'" in report
+    assert "**Summary:**" in report
+    assert "Moves the item to the ready state." in report
+    assert "**Condition:**" not in report
+    assert "**Then:**" not in report
     assert "**Source Evidence:**" not in report
     assert "validation_status" not in report
 
@@ -143,11 +163,12 @@ def test_business_rule_labels_have_markdown_boundaries_and_no_redundant_prose():
         "business_meaning": "Sets the state to READY when input_code is 1.",
         "decision_logic_rows": [{"condition": "input_code = 1", "outcome": "READY"}],
     }])
-    assert "**Affected Field:** `state_code`\n\n**Condition:**" in report
-    assert "**Condition:**\n\n- input_code = 1\n\n**Then:**" in report
-    assert "- READY" in report
+    assert "**Affected Field:** `state_code`\n\n**Summary:**" in report
+    assert "**Condition:**" not in report
+    assert "**Then:**" not in report
+    assert "| input_code = 1 | READY |" in report
     assert "Sets state_code to READY." not in report
-    assert "Sets the state to READY when input_code is 1." not in report
+    assert "Sets the state to READY when input_code is 1." in report
     assert "When / Condition" not in report
     assert "Then / Result" not in report
 
@@ -214,12 +235,9 @@ def test_then_bullets_use_each_decision_row_outcome():
         ],
     }])
     for outcome in ("STANDARD", "SUBSTANDARD", "DOUBTFUL", "LOSS"):
-        assert f": {outcome}" in report
-    then_section = report.split("**Then:**", 1)[1].split("### Decision Logic", 1)[0]
-    assert then_section.count(": STANDARD") == 1
-    assert then_section.count(": SUBSTANDARD") == 1
-    assert then_section.count(": DOUBTFUL") == 1
-    assert then_section.count(": LOSS") == 1
+        assert outcome in report
+    assert "**Condition:**" not in report
+    assert "**Then:**" not in report
 
 
 def test_each_calculation_renders_its_own_output_field():
@@ -244,8 +262,8 @@ def test_decision_block_keeps_authored_secondary_result_in_action():
         "action": "Sets state_code to READY and score_value to 0.40.",
         "decision_logic_rows": [{"condition": "input_code = 1", "outcome": "READY"}],
     }])
-    assert "Sets state_code to READY and score_value to 0.40." in report
-    assert report.count("READY") == 2  # authored action plus the table result
+    assert "Not explicitly determined from source SQL." in report
+    assert "Sets state_code to READY and score_value to 0.40." not in report
 
 
 def test_calculations_render_expression_output_and_evidence_separately():
@@ -341,7 +359,7 @@ def test_assignments_are_not_rendered_as_fake_outcomes():
     }])
     assert "| Condition | Result |" in report
     assert "| Condition | Assignments |" not in report
-    assert "- input_value > threshold: result_value := input_value" in report
+    assert "| input_value > threshold | result_value := input_value |" in report
 
 
 def test_exception_summary_is_separate_from_business_rule_content():
@@ -363,8 +381,9 @@ def test_unrelated_sql_domain_has_no_formatter_semantic_fallback():
         "business_meaning": "Routes the package using the supplied temperature rule.",
         "source_evidence": ["route_code := 'COLD_CHAIN';"],
     }])
-    assert "temperature_celsius < threshold_celsius" in report
-    assert "route_code := 'COLD_CHAIN'" in report
+    assert "Routes the package using the supplied temperature rule." in report
+    assert "temperature_celsius < threshold_celsius" not in report
+    assert "route_code := 'COLD_CHAIN'" not in report
     assert "classification" not in report.lower()
     assert "provision" not in report.lower()
 
@@ -459,7 +478,7 @@ def test_grouped_renderer_keeps_all_branch_results_in_one_block():
     assert report.count("### R1 —") == 1
     assert "**Condition:**" not in report
     assert "**Then:**" not in report
-    assert "**Explanation:**" in report
+    assert "**Summary:**" in report
     assert report.count("### Decision Logic") == 1
     assert "| code = 1 | state := 'A' |" in report
     assert "| code = 2 | state := 'B' |" in report

@@ -194,6 +194,7 @@ class ReportFormatterAgent:
             ),
             self._what_this_does(synthesis, business_rules_for_display, resolved_merged_extraction),
             self._end_to_end_flow(synthesis, business_rules_for_display, resolved_merged_extraction),
+            self._business_rule_overview_table(business_rules_for_display),
             self._business_rules_section(
                 business_rules_for_display,
                 decision_blocks=ctx["decision_blocks"],
@@ -825,7 +826,7 @@ class ReportFormatterAgent:
         lines.extend([
             f"**Affected Field:** `{', '.join(affected)}`" if affected and affected[0] != "Not specified" else "**Affected Field:** Not specified",
             "",
-            "**Explanation:**",
+            "**Summary:**",
             "",
         ])
         lines.extend(f"- {value}" for value in explanations)
@@ -874,71 +875,21 @@ class ReportFormatterAgent:
     def _render_business_rule_block(self, idx: int, rule: Dict[str, Any]) -> List[str]:
         rule_name = self._business_rule_name(rule, idx)
         output_field = self._business_rule_output(rule)
-        condition = rule.get("condition") if isinstance(rule.get("condition"), str) else ""
-        eligibility = self._rule_text_lines(rule.get("eligibility"))
-        # Condition is the structured source of truth. Eligibility is only a
-        # fallback for older/partial model responses, not a second paraphrase.
-        when_values = self._distinct_text([condition] if condition.strip() else eligibility)
         decision_logic_rows = self._decision_logic_rows(rule)
-        if decision_logic_rows:
-            then_values: List[str] = []
-        else:
-            action = rule.get("action") if isinstance(rule.get("action"), str) else ""
-            meaning = rule.get("business_meaning") if isinstance(rule.get("business_meaning"), str) else ""
-            then_values = self._distinct_text([
-                self._field_references_for_display(action or meaning),
-                *self._rule_text_lines(rule.get("tie_priority_handling")),
-                *self._rule_text_lines(rule.get("default")),
-                *self._rule_text_lines(rule.get("when_not_eligible")),
-            ])
-        for row in decision_logic_rows:
-            branch_condition = self._pretty_condition_for_display(
-                str(row.get("condition") or "").strip()
-            )
-            outcome = self._field_references_for_display(
-                str(row.get("outcome") or "").strip()
-            )
-            assignments = row.get("assignments") or []
-            if assignments and not isinstance(assignments, list):
-                assignments = [assignments]
-            branch_results = [self._assignment_text(item) for item in assignments if str(item).strip()]
-            action = str(rule.get("action") or "").strip()
-            if outcome and not (
-                action
-                and self._action_has_unrepresented_result(action, [outcome, *branch_results])
-                and len(decision_logic_rows) == 1
-            ):
-                branch_results.append(outcome)
-            elif action and len(decision_logic_rows) == 1:
-                branch_results.append(action)
-            for result in branch_results:
-                then_values.append(
-                    f"{branch_condition}: {result}" if branch_condition and branch_condition != condition else result
-                )
-        action = str(rule.get("action") or "").strip()
-        represented_results = [
-            str(row.get("outcome") or "").strip()
-            for row in decision_logic_rows
-        ]
-        represented_results.extend(
-            self._assignment_text(item)
-            for row in decision_logic_rows
-            for item in (row.get("assignments") or [])
-        )
-        if action and len(decision_logic_rows) > 1 and self._action_has_unrepresented_result(action, represented_results):
-            then_values.append(self._field_references_for_display(action))
-        then_values = self._distinct_text(then_values)
+        meaning = str(rule.get("business_meaning") or "").strip()
+        summary_values = self._distinct_text([
+            self._field_references_for_display(meaning),
+            *self._rule_text_lines(rule.get("tie_priority_handling")),
+            *self._rule_text_lines(rule.get("default")),
+            *self._rule_text_lines(rule.get("when_not_eligible")),
+        ])
 
         lines = [f"### R{idx} — {rule_name}", ""]
         lines.append(f"**Affected Field:** `{output_field}`" if output_field != "Not specified" else "**Affected Field:** Not specified")
         lines.append("")
-        lines.append("**Condition:**")
+        lines.append("**Summary:**")
         lines.append("")
-        lines.extend(f"- {self._pretty_condition_for_display(value)}" for value in (when_values or ["Not specified"]))
-        lines.append("")
-        lines.append("**Then:**")
-        lines.append("")
-        lines.extend(f"- {value}" for value in (then_values or ["Not specified"]))
+        lines.extend(f"- {value}" for value in (summary_values or [_NOT_DETERMINED]))
         lines.append("")
 
         if decision_logic_rows:
@@ -1353,6 +1304,27 @@ class ReportFormatterAgent:
     # ------------------------------------------------------------------
     # 13. Business Rule Summary
     # ------------------------------------------------------------------
+
+    def _business_rule_overview_table(self, rules: List[Dict[str, Any]]) -> str:
+        """Render a business-facing rule index without internal metadata.
+
+        The verification summary intentionally includes reconciliation and
+        validation details. The main report gets the same rule inventory in
+        a presentation-only form so it remains useful without exposing
+        pipeline status or provenance identifiers.
+        """
+        header = ["| Rule | Affected Field | Business Purpose |", "|---|---|---|"]
+        if not rules:
+            return "## Business Rule Summary\n\n" + "\n".join(header) + "\n_No business rules were identified._"
+        rows = []
+        for idx, rule in enumerate(rules, start=1):
+            name = self._escape_table_cell(self._business_rule_name(rule, idx))
+            output = self._escape_table_cell(self._business_rule_output(rule))
+            purpose = self._escape_table_cell(
+                self._shorten_text(self._business_rule_business_meaning(rule), 140)
+            )
+            rows.append(f"| {name} | `{output}` | {purpose} |")
+        return "## Business Rule Summary\n\n" + self._render_split_table(header, rows)
 
     def _business_rule_summary_table(self, rules: List[Dict[str, Any]], include_technical_ids: bool = False) -> str:
         header = ["| Priority | Rule | Output | Business Purpose |", "|---|---|---|---|"]
@@ -2229,9 +2201,12 @@ class ReportFormatterAgent:
         lines = ["| Condition | Result |", "|---|---|"]
         for row in rows:
             condition = self._escape_table_cell(self._pretty_condition_for_display(row["condition"]))
-            outcome = self._escape_table_cell(
-                self._field_references_for_display(row.get("outcome") or "")
-            )
+            results = [self._field_references_for_display(row.get("outcome") or "")]
+            assignments = row.get("assignments") or []
+            if not isinstance(assignments, list):
+                assignments = [assignments]
+            results.extend(self._assignment_text(item) for item in assignments if str(item).strip())
+            outcome = self._escape_table_cell("; ".join(self._distinct_text(results)))
             lines.append(f"| {condition} | {outcome} |")
         return lines
 

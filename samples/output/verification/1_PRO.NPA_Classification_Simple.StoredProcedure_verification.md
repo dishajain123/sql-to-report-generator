@@ -1,29 +1,3 @@
-2026-09-04 07:54:09,418 | INFO | __main__ | Run started for 01_NPA_Classification_Simple.sql
-2026-09-04 07:54:09,418 | INFO | logic_rules_extractor.pipeline | Stage 1/6: Running input guardrails
-2026-09-04 07:54:09,419 | INFO | logic_rules_extractor.pipeline | Stage 1/6 completed in 0.00s (input guardrails)
-2026-09-04 07:54:09,419 | INFO | logic_rules_extractor.pipeline | Stage 2/6: Detecting dialect
-2026-09-04 07:54:09,421 | INFO | logic_rules_extractor.pipeline | Detected TSQL dialect (confidence: high)
-2026-09-04 07:54:09,421 | INFO | logic_rules_extractor.pipeline | Stage 2/6 completed in 0.00s (dialect detection)
-2026-09-04 07:54:09,421 | INFO | logic_rules_extractor.pipeline | Stage 3/6: Preprocessing, parsing, and chunking /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpecguqioj.sql
-2026-09-04 07:54:09,442 | INFO | logic_rules_extractor.pipeline | Detected TSQL PROCEDURE 'NPA_Classification_Simple' with 7 chunk(s)
-2026-09-04 07:54:09,442 | INFO | logic_rules_extractor.pipeline | Stage 3/6 completed in 0.02s (preprocessing/parsing/chunking)
-2026-09-04 07:54:09,442 | INFO | logic_rules_extractor.pipeline | Stage 4/6: Retrieving dependencies / pattern context and extracting logic per chunk (model: amazon.nova-lite-v1:0)
-2026-09-04 07:54:09,443 | INFO | logic_rules_extractor.pipeline | Persistent knowledge base ready in 0.00s
-2026-09-04 07:54:09,444 | INFO | logic_rules_extractor.pipeline | Stage 4 extraction selection: estimated_tokens=7103 budget=29768 path=single-pass extraction_calls=1 merge_ran=False
-2026-09-04 07:54:14,239 | INFO | logic_rules_extractor.pipeline | Stage 4/6 completed in 4.80s total (kb_ready=0.00s, retrieval/KB sum=0.00s, LLM extraction sum=4.80s, workers=8, chunks=1)
-2026-09-04 07:54:14,240 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
-2026-09-04 07:54:23,016 | INFO | src.validation.coverage_check | Coverage block lines=26-31 overlap_ratio=0.000 matched_rule=none uncovered=False
-2026-09-04 07:54:23,018 | INFO | src.validation.coverage_check | Coverage block lines=39-42 overlap_ratio=0.000 matched_rule=none uncovered=False
-2026-09-04 07:54:23,019 | INFO | src.validation.coverage_check | Coverage block lines=53-54 overlap_ratio=0.000 matched_rule=none uncovered=False
-2026-09-04 07:54:23,019 | INFO | src.validation.coverage_check | Coverage block lines=60-61 overlap_ratio=0.000 matched_rule=none uncovered=False
-2026-09-04 07:54:23,019 | INFO | src.validation.coverage_check | Coverage block lines=67-68 overlap_ratio=0.000 matched_rule=none uncovered=False
-2026-09-04 07:54:23,019 | INFO | src.validation.coverage_check | Coverage block lines=72-73 overlap_ratio=0.000 matched_rule=none uncovered=False
-2026-09-04 07:54:23,019 | INFO | src.validation.coverage_check | Coverage block lines=79-80 overlap_ratio=0.000 matched_rule=none uncovered=False
-2026-09-04 07:54:23,019 | INFO | logic_rules_extractor.pipeline | Stage 5/6 completed in 8.78s (business reasoning)
-2026-09-04 07:54:23,019 | INFO | logic_rules_extractor.pipeline | Stage 6/6: Reconciling deterministic evidence against synthesized output
-2026-09-04 07:54:23,028 | INFO | logic_rules_extractor.pipeline | Stage 6/6 completed in 0.01s (deterministic reconciliation)
-2026-09-04 07:54:23,028 | INFO | logic_rules_extractor.pipeline | Stage 7/7: Applying output guardrails and formatting final report
-2026-09-04 07:54:23,042 | INFO | logic_rules_extractor.pipeline | Verification/traceability diagnostics for PRO.NPA_Classification_Simple.StoredProcedure_report.md:
 # NPA Classification Simple — Verification & Traceability
 
 > Companion artifact to `PRO.NPA_Classification_Simple.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
@@ -151,4 +125,3 @@ _Quality is derived deterministically from parse success, grounding, conflicts, 
                     WHEN A.DaysPastDue <= 90 THEN 'STANDARD'...
 - Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE PRO.RunStatus
         SET COMPLETED = 'N', ErrorDate = GETDATE(), ErrorDescription = ERROR_MESSAGE(), RunCount =...
-2026-09-04 07:54:23,042 | INFO | logic_rules_extractor.pipeline | Stage 7/7 completed in 0.01s (final report generation)

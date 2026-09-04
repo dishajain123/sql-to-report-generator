@@ -248,9 +248,10 @@ system:
     - BUSINESS-READABLE REPORT FIELDS ARE REQUIRED, NOT OPTIONAL EXTRAS. The downstream
       report is assembled entirely from these fields (never from "condition"/"action" alone),
       so every business rule must populate them correctly:
-        * "business_meaning" - REQUIRED, always non-empty. One plain-language sentence
-          stating what this rule accomplishes, written so it stands alone without needing
-          "condition"/"action" for context.
+        * "business_meaning" - REQUIRED, always non-empty. Write one or two concise
+          plain-language sentences that summarize the rule's trigger and complete result,
+          including all meaningful assignments/results. This is the short report summary;
+          do not repeat the full literal condition or duplicate the action wording.
         * "eligibility" - REQUIRED whenever the technical extraction shows any gating
           condition for this rule (a WHERE/JOIN/IF filter, a required flag, a scheme or
           status check). Give one short array item per distinct gating condition, in plain
@@ -350,7 +351,7 @@ system:
       "business_rules": [
         {
           "rule_name": "<SHORT business-readable label for this rule, 4-8 words max, e.g. 'Reset negative DPD to zero' - never a full restatement of the condition>",
-          "business_meaning": "<REQUIRED. One plain-language sentence stating what this rule accomplishes, standing alone without needing condition/action for context>",
+          "business_meaning": "<REQUIRED. One or two concise sentences summarizing the trigger and complete result without duplicating the full condition/action>",
           "condition": "<the branch condition or threshold in its short, literal compact form exactly as it appears in the source (e.g. \"DpdDays > 90\", \"overdue_days <= 90\"), not a paraphrased narrative sentence - see STRICT STYLE RULES>",
           "action": "<business-language resulting action, naming the specific field(s) affected when data is written>",
           "output_field": "<primary business field this rule sets/affects, matching an entry in fields_affected, or \"\" if none>",
@@ -576,9 +577,10 @@ system:
     - BUSINESS-READABLE REPORT FIELDS ARE REQUIRED, NOT OPTIONAL EXTRAS. The downstream
       report is assembled entirely from these fields (never from "condition"/"action" alone),
       so every business rule must populate them correctly:
-        * "business_meaning" - REQUIRED, always non-empty. One plain-language sentence
-          stating what this rule accomplishes, written so it stands alone without needing
-          "condition"/"action" for context.
+        * "business_meaning" - REQUIRED, always non-empty. Write one or two concise
+          plain-language sentences that summarize the rule's trigger and complete result,
+          including all meaningful assignments/results. This is the short report summary;
+          do not repeat the full literal condition or duplicate the action wording.
         * "eligibility" - REQUIRED whenever the technical extraction shows any gating
           condition for this rule (a WHERE/JOIN/IF filter, a required flag, a scheme or
           status check). Give one short array item per distinct gating condition, in plain
@@ -678,7 +680,7 @@ system:
       "business_rules": [
         {
           "rule_name": "<SHORT business-readable label for this rule, 4-8 words max, e.g. 'Reset negative DPD to zero' - never a full restatement of the condition>",
-          "business_meaning": "<REQUIRED. One plain-language sentence stating what this rule accomplishes, standing alone without needing condition/action for context>",
+          "business_meaning": "<REQUIRED. One or two concise sentences summarizing the trigger and complete result without duplicating the full condition/action>",
           "condition": "<the branch condition or threshold in its short, literal compact form exactly as it appears in the source (e.g. \"DpdDays > 90\", \"overdue_days <= 90\"), not a paraphrased narrative sentence - see STRICT STYLE RULES>",
           "action": "<business-language resulting action, naming the specific field(s) affected when data is written>",
           "output_field": "<primary business field this rule sets/affects, matching an entry in fields_affected, or \"\" if none>",
@@ -900,9 +902,10 @@ system:
     - BUSINESS-READABLE REPORT FIELDS ARE REQUIRED, NOT OPTIONAL EXTRAS. The downstream
       report is assembled entirely from these fields (never from "condition"/"action" alone),
       so every business rule must populate them correctly:
-        * "business_meaning" - REQUIRED, always non-empty. One plain-language sentence
-          stating what this rule accomplishes, written so it stands alone without needing
-          "condition"/"action" for context.
+        * "business_meaning" - REQUIRED, always non-empty. Write one or two concise
+          plain-language sentences that summarize the rule's trigger and complete result,
+          including all meaningful assignments/results. This is the short report summary;
+          do not repeat the full literal condition or duplicate the action wording.
         * "eligibility" - REQUIRED whenever the technical extraction shows any gating
           condition for this rule (a WHERE/JOIN/IF filter, a required flag, a scheme or
           status check). Give one short array item per distinct gating condition, in plain
@@ -1002,7 +1005,7 @@ system:
       "business_rules": [
         {
           "rule_name": "<SHORT business-readable label for this rule, 4-8 words max, e.g. 'Reset negative DPD to zero' - never a full restatement of the condition>",
-          "business_meaning": "<REQUIRED. One plain-language sentence stating what this rule accomplishes, standing alone without needing condition/action for context>",
+          "business_meaning": "<REQUIRED. One or two concise sentences summarizing the trigger and complete result without duplicating the full condition/action>",
           "condition": "<the branch condition or threshold in its short, literal compact form exactly as it appears in the source (e.g. \"DpdDays > 90\", \"overdue_days <= 90\"), not a paraphrased narrative sentence - see STRICT STYLE RULES>",
           "action": "<business-language resulting action, naming the specific field(s) affected when data is written>",
           "output_field": "<primary business field this rule sets/affects, matching an entry in fields_affected, or \"\" if none>",

@@ -1044,7 +1044,7 @@ def test_formatter_preserves_llm_rule_fields_in_report():
     ):
         assert value in report
     assert "A.CUSTOM_CONDITION >= 7" not in report
-    assert "LLM supplied meaning." not in report
+    assert "LLM supplied meaning." in report
     assert "LLM supplied eligibility" not in report
     assert "LLM supplied action for CUSTOM_FIELD" not in report
 
