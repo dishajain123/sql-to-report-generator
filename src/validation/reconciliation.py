@@ -499,6 +499,48 @@ def _rule_candidate_rows(rule: Dict[str, Any], deterministic_rows: Sequence[Dict
     return candidate_rows
 
 
+def _expand_decision_chain_siblings(
+    candidate_rows: List[Dict[str, Any]], deterministic_rows: Sequence[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """If any candidate row came from a decision_chains branch, pull in
+    every other branch of that same chain too.
+
+    A rule's source_evidence commonly cites only one condition from a
+    multi-branch decision table (see the real SMA_Stage_Marking_Simple
+    bug: the rule cited only "A.OverdueDays BETWEEN 1 AND 30", but its
+    decision_logic_rows correctly described the full SMA_0/SMA_1/SMA_2/
+    ELSE ladder) - the rest of the ladder is not separate, uncited
+    evidence, it is the same structural fact the cited branch belongs to.
+    Grounding only the one literally-cited branch and leaving the rest of
+    an otherwise-fully-covered decision table looking unsupported would
+    reintroduce a version of the same root-cause bug this fix exists for,
+    just one branch narrower.
+
+    Uses the _chain_index tag _decision_chain_rows() attaches to each row
+    it emits - a purely structural, dialect-agnostic link back to "these
+    rows came from the same CASE/IF ladder", not a text-matching guess.
+    """
+    chain_indexes = {
+        row.get("_chain_index")
+        for row in candidate_rows
+        if row.get("_section") == "decision_chains" and row.get("_chain_index") is not None
+    }
+    if not chain_indexes:
+        return candidate_rows
+    expanded = list(candidate_rows)
+    seen_ids = {id(row) for row in expanded}
+    for row in deterministic_rows:
+        if row.get("_section") != "decision_chains":
+            continue
+        if row.get("_chain_index") not in chain_indexes:
+            continue
+        if id(row) in seen_ids:
+            continue
+        expanded.append(row)
+        seen_ids.add(id(row))
+    return expanded
+
+
 def _condition_overlap_key(condition: Dict[str, str]) -> Optional[Dict[str, Any]]:
     space = _condition_space(condition)
     if not space:
@@ -876,6 +918,97 @@ class ReconciliationResult:
         }
 
 
+def _decision_chain_rows(merged_extraction: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Turn each branch of every deterministically-extracted decision
+    chain (see src/validation/semantic_validation.py's CASE/IF-ladder
+    extractors) into a row shaped like a tables_read/tables_written row,
+    so it can flow through the exact same rule-matching helpers
+    (_rule_candidate_rows, _row_relevant_to_rule, _row_filter,
+    _row_columns, _row_assigned_values) without those helpers needing to
+    know two different row shapes.
+
+    This is the fix for the root cause of rules going LLM_ONLY despite
+    real deterministic evidence existing: _collect_deterministic_rows
+    previously only looked at tables_read/tables_written, so a rule
+    whose evidence is a CASE/IF branch condition (not a table-level WHERE
+    predicate) had literally no comparable deterministic row to match
+    against - not because the evidence was missing, but because this
+    function never collected that category of evidence in the first
+    place.
+
+    decision_chains branches do not currently carry chunk/statement
+    identity after guardrail normalization (see
+    src/ingestion/guardrails.py's _normalize_decision_chains, which
+    intentionally strips down to chain_type/subject/branches only), so
+    these rows rely on field/condition/outcome content matching
+    (_row_relevant_to_rule, and _rule_candidate_rows' source_evidence
+    containment fallback) rather than chunk/statement-id matching. That
+    is a real, current limitation - not a bug this function can fix on
+    its own - and is worth closing later by threading source-location
+    metadata through decision-chain extraction if finer-grained
+    provenance is needed.
+    """
+    rows: List[Dict[str, Any]] = []
+    chains = merged_extraction.get("decision_chains") or []
+    if not isinstance(chains, list):
+        return rows
+    for chain_idx, chain in enumerate(chains):
+        if not isinstance(chain, dict):
+            continue
+        branches = chain.get("branches") or []
+        if not isinstance(branches, list):
+            continue
+        for branch_idx, branch in enumerate(branches):
+            if not isinstance(branch, dict):
+                continue
+            condition = str(branch.get("branch_condition") or "").strip()
+            assignments = branch.get("assignments") or []
+            if not isinstance(assignments, list) or not assignments:
+                continue
+            fields: List[str] = []
+            assigned_values: List[Dict[str, str]] = []
+            for assignment in assignments:
+                if not isinstance(assignment, dict):
+                    continue
+                field_name = str(assignment.get("field") or "").strip()
+                value_text = str(assignment.get("value") or "").strip()
+                if not field_name:
+                    continue
+                fields.append(field_name)
+                assigned_values.append({"column": field_name, "expression": value_text})
+            if not fields:
+                continue
+            # Keep the branch condition exactly as written, including a
+            # bare "ELSE" for the default branch - this matches the
+            # convention already used everywhere else in this codebase
+            # (semantic_validation.py's extractors, decision_logic_rows
+            # in synthesized rules, the rendered Decision Logic tables) for
+            # representing a default branch. A synthesized rule's own
+            # decision_logic_rows conventionally cites the ELSE branch the
+            # same bare way, so matching on the literal text - rather than
+            # expanding it into a derived "NOT (...) AND NOT (...)"
+            # expression - is what actually lines up with real rule
+            # evidence.
+            filter_condition = condition
+            rows.append(
+                {
+                    "table": str(chain.get("subject") or "").strip(),
+                    "target_columns": fields,
+                    "columns": fields,
+                    "operation": "write",
+                    "filter_condition": filter_condition,
+                    "where_predicate": filter_condition,
+                    "statement_text": condition,
+                    "assigned_values": assigned_values,
+                    "_section": "decision_chains",
+                    "_chain_type": str(chain.get("chain_type") or "").strip(),
+                    "_chain_index": chain_idx,
+                    "_branch_index": branch_idx,
+                }
+            )
+    return rows
+
+
 def _collect_deterministic_rows(merged_extraction: Dict[str, Any]) -> List[Dict[str, Any]]:
     rows = []
     for row in merged_extraction.get("tables_read", []) or []:
@@ -888,6 +1021,7 @@ def _collect_deterministic_rows(merged_extraction: Dict[str, Any]) -> List[Dict[
             cloned = dict(row)
             cloned["_section"] = "tables_written"
             rows.append(cloned)
+    rows.extend(_decision_chain_rows(merged_extraction))
     return rows
 
 
@@ -1814,6 +1948,7 @@ def reconcile_deterministic_evidence(
         claim_outcomes = _rule_claim_outcomes(rule)
         source_chunks, source_statements = _rule_source_identity(rule)
         candidate_rows = _rule_candidate_rows(rule, deterministic_rows)
+        candidate_rows = _expand_decision_chain_siblings(candidate_rows, deterministic_rows)
         if candidate_rows:
             relevant_rows = [
                 row
@@ -1841,7 +1976,14 @@ def reconcile_deterministic_evidence(
                 if parsed and _clean_text(parsed.get("rhs")):
                     claim_outcome_set.add(_normalize_sql_fragment(parsed.get("rhs")).lower())
                 elif _clean_text(value):
-                    claim_outcome_set.add(_normalize_sql_fragment(value).lower())
+                    # Bare (non-"lhs = rhs") outcome text - e.g. a
+                    # decision_logic_rows "outcome" cell like "'SMA_0'" -
+                    # must have its quotes stripped the same way
+                    # _row_assigned_values already strips them from the
+                    # deterministic side, or an outcome that's otherwise
+                    # semantically identical (SMA_0 vs 'SMA_0') would be
+                    # reported as a false CONFLICT over quoting style alone.
+                    claim_outcome_set.add(_normalize_sql_fragment(_strip_quotes(value)).lower())
             field_union: set[str] = set()
             condition_union: set[str] = set()
             outcome_union: set[str] = set()

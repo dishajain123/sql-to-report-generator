@@ -1672,14 +1672,49 @@ class CodeIngestionAgent:
 
         CTEs starting with WITH are captured, and nested subqueries are
         skipped because spans only begin at depth 0.
+
+        A span closes on: a top-level semicolon; the start of the next
+        top-level statement (WITH/SELECT/INSERT/UPDATE/DELETE/MERGE,
+        immediately after a newline); a bare block-terminating END (closes
+        BEGIN/TRY/CATCH/IF - never a CASE, see below); or a batch
+        separator (T-SQL "GO" alone on its own line). These matter
+        because T-SQL and PL/SQL procedure bodies routinely omit
+        semicolons between statements entirely - relying on ";" alone
+        means a semicolon-free body silently merges every remaining
+        statement (and any trailing END/GO/block-closing text) into one
+        span, which then fails to structurally parse as a single SQL
+        statement even though each individual statement is perfectly
+        valid on its own.
+
+        SET and CASE can each legitimately start a new top-level span (a
+        bare "SET @x = ..." variable assignment, or a standalone CASE
+        expression), so they remain valid *openers* - but neither is used
+        as an implicit *statement-to-statement* closer, since both
+        routinely appear as a continuation of an already-open statement
+        (e.g. "UPDATE t SET col = (CASE WHEN ... END)"); treating them as
+        closers would incorrectly split a single UPDATE statement apart.
+
+        CASE...END is tracked with its own depth counter, separate from
+        paren depth, specifically so a bare (non-parenthesized)
+        "CASE ... END" expression - valid SQL, and common - is never
+        mistaken for a block-terminating END: only an END encountered
+        while no CASE is currently open is treated as a span boundary.
         """
         spans: List[Tuple[int, int]] = []
         n = len(masked)
-        keyword_re = re.compile(
+        start_keyword_re = re.compile(
             r"\b(WITH|SELECT|INSERT|UPDATE|DELETE|MERGE|SET|CASE)\b",
             re.IGNORECASE,
         )
+        boundary_keyword_re = re.compile(
+            r"\b(WITH|SELECT|INSERT|UPDATE|DELETE|MERGE)\b",
+            re.IGNORECASE,
+        )
+        case_re = re.compile(r"\bCASE\b", re.IGNORECASE)
+        end_re = re.compile(r"\bEND\b", re.IGNORECASE)
+        go_re = re.compile(r"\bGO\b", re.IGNORECASE)
         depth = 0
+        case_depth = 0
         i = 0
         start = None
 
@@ -1693,19 +1728,69 @@ class CodeIngestionAgent:
             ch = masked[i]
             if ch == "(":
                 depth += 1
-            elif ch == ")":
+                i += 1
+                continue
+            if ch == ")":
                 depth = max(0, depth - 1)
-            elif depth == 0:
-                if start is None:
-                    m = keyword_re.match(masked, i)
-                    if m:
-                        prev = prev_nonspace(i)
-                        if prev < 0 or masked[prev] in ";\n":
-                            start = i
-                            i = m.end() - 1
-                elif ch == ";" and depth == 0:
-                    spans.append((start, i + 1))
+                i += 1
+                continue
+            if depth != 0:
+                i += 1
+                continue
+
+            # depth == 0 from this point on.
+            case_m = case_re.match(masked, i)
+            if case_m:
+                case_depth += 1
+                # CASE may also be a valid statement opener in its own
+                # right - fall through to the normal start-detection
+                # below rather than consuming/continuing here.
+            else:
+                end_m = end_re.match(masked, i)
+                if end_m:
+                    if case_depth > 0:
+                        case_depth -= 1
+                    elif start is not None:
+                        spans.append((start, i))
+                        start = None
+                    i = end_m.end()
+                    continue
+
+            if start is None:
+                m = start_keyword_re.match(masked, i)
+                if m:
+                    prev = prev_nonspace(i)
+                    if prev < 0 or masked[prev] in ";\n":
+                        start = i
+                        i = m.end()
+                        continue
+                i += 1
+                continue
+
+            if ch == ";":
+                spans.append((start, i + 1))
+                start = None
+                i += 1
+                continue
+
+            bm = boundary_keyword_re.match(masked, i)
+            if bm:
+                prev = prev_nonspace(i)
+                if prev >= 0 and masked[prev] == "\n" and i > start:
+                    spans.append((start, i))
+                    start = i
+                    i = bm.end()
+                    continue
+
+            gm = go_re.match(masked, i)
+            if gm:
+                prev = prev_nonspace(i)
+                if prev >= 0 and masked[prev] == "\n":
+                    spans.append((start, i))
                     start = None
+                    i = gm.end()
+                    continue
+
             i += 1
 
         if start is not None:

@@ -949,3 +949,144 @@ def test_build_object_identity_stem_generic_for_other_object_types():
         canonical_object_name="rpt_summary",
     )
     assert build_object_identity_stem(ingestion) == "dbo.rpt_summary.View"
+
+
+# --------------------------------------------------------------------------
+# Regression tests for _find_sql_statement_spans' semicolon-free boundary
+# detection (see coverage/grounding fix for SMA_Stage_Marking_Simple-style
+# T-SQL bodies that never use ";" between statements).
+# --------------------------------------------------------------------------
+
+def test_semicolon_free_updates_are_split_into_separate_parseable_statements(agent):
+    """Regression test for the real bug: a semicolon-free T-SQL body with
+    several UPDATE...SET...(CASE...END)...FROM...WHERE statements back to
+    back used to be merged into one unparseable span by
+    _find_sql_statement_spans (it only closed a span on ";"). Each
+    statement here must come back separately and parse cleanly.
+    """
+    body = (
+        "UPDATE A\n"
+        "SET A.SmaStage = (\n"
+        "        CASE\n"
+        "            WHEN A.OverdueDays BETWEEN 1 AND 30 THEN 'SMA_0'\n"
+        "            WHEN A.OverdueDays BETWEEN 31 AND 60 THEN 'SMA_1'\n"
+        "            ELSE NULL\n"
+        "        END\n"
+        "    )\n"
+        "FROM PRO.AccountCal A\n"
+        "WHERE A.OverdueDays > 0\n"
+        "\n"
+        "UPDATE A\n"
+        "SET A.FlagSma = (\n"
+        "        CASE\n"
+        "            WHEN A.SmaStage IS NOT NULL THEN 'Y'\n"
+        "            ELSE 'N'\n"
+        "        END\n"
+        "    )\n"
+        "FROM PRO.AccountCal A\n"
+    )
+    spans = CodeIngestionAgent._find_sql_statement_spans(body)
+    assert len(spans) == 2
+    first = body[spans[0][0]:spans[0][1]].strip()
+    second = body[spans[1][0]:spans[1][1]].strip()
+    assert first.startswith("UPDATE A")
+    assert "SmaStage" in first
+    assert "FlagSma" not in first
+    assert second.startswith("UPDATE A")
+    assert "FlagSma" in second
+
+
+def test_semicolon_free_update_before_block_end_is_bounded_by_end(agent):
+    """A statement followed directly by a block-terminating END (e.g. the
+    end of a TRY block) with no semicolon and no following statement
+    keyword must still be closed at the END, not left open until EOF
+    (which would swallow trailing BEGIN CATCH / END CATCH text into the
+    statement and break parsing)."""
+    body = (
+        "BEGIN TRY\n"
+        "UPDATE PRO.RunStatus\n"
+        "SET COMPLETED = 'Y', ErrorDate = NULL\n"
+        "WHERE ProcessName = 'demo'\n"
+        "END TRY\n"
+        "BEGIN CATCH\n"
+        "UPDATE PRO.RunStatus\n"
+        "SET COMPLETED = 'N', ErrorDate = GETDATE()\n"
+        "WHERE ProcessName = 'demo'\n"
+        "END CATCH\n"
+    )
+    spans = CodeIngestionAgent._find_sql_statement_spans(body)
+    assert len(spans) == 2
+    first = body[spans[0][0]:spans[0][1]].strip()
+    second = body[spans[1][0]:spans[1][1]].strip()
+    assert "END TRY" not in first
+    assert "BEGIN CATCH" not in first
+    assert "COMPLETED = 'Y'" in first
+    assert "END CATCH" not in second
+    assert "COMPLETED = 'N'" in second
+
+
+def test_bare_case_end_is_not_mistaken_for_a_block_boundary(agent):
+    """A CASE...END with no wrapping parentheses must stay intact as one
+    statement - the END that closes the CASE must never be treated as a
+    block-terminating END that would incorrectly split the statement."""
+    body = (
+        "UPDATE t SET x = CASE WHEN a = 1 THEN 'Y' ELSE 'N' END\n"
+        "UPDATE t2 SET y = 1 WHERE z = 2\n"
+    )
+    spans = CodeIngestionAgent._find_sql_statement_spans(body)
+    assert len(spans) == 2
+    first = body[spans[0][0]:spans[0][1]].strip()
+    assert first == "UPDATE t SET x = CASE WHEN a = 1 THEN 'Y' ELSE 'N' END"
+
+
+def test_update_inside_if_begin_end_block_is_isolated_by_the_block_end(agent):
+    """A single UPDATE wrapped in IF EXISTS(...) BEGIN ... END must be
+    recognized as its own statement bounded by that END, and a following
+    statement after the block must not be merged into it."""
+    body = (
+        "IF EXISTS (SELECT 1 FROM t)\n"
+        "BEGIN\n"
+        "    UPDATE t SET x = 1 WHERE y = 2\n"
+        "END\n"
+        "UPDATE t2 SET z = 3\n"
+    )
+    spans = CodeIngestionAgent._find_sql_statement_spans(body)
+    assert len(spans) == 2
+    assert body[spans[0][0]:spans[0][1]].strip() == "UPDATE t SET x = 1 WHERE y = 2"
+    assert body[spans[1][0]:spans[1][1]].strip() == "UPDATE t2 SET z = 3"
+
+
+def test_semicolon_terminated_statements_are_unaffected(agent):
+    """Existing semicolon-terminated behavior must be unchanged."""
+    body = "UPDATE t SET x = 1;\nUPDATE t2 SET y = 2;\n"
+    spans = CodeIngestionAgent._find_sql_statement_spans(body)
+    assert len(spans) == 2
+    assert body[spans[0][0]:spans[0][1]].strip() == "UPDATE t SET x = 1;"
+    assert body[spans[1][0]:spans[1][1]].strip() == "UPDATE t2 SET y = 2;"
+
+
+def test_sma_stage_marking_style_statements_structurally_parse_end_to_end(agent):
+    """Full end-to-end regression using the exact statement shapes from the
+    real SMA_Stage_Marking_Simple bug report: every statement must come
+    back validated (no 'Could not fully structurally parse' warning)."""
+    body = (
+        "UPDATE A\n"
+        "SET A.SmaStage = (\n"
+        "        CASE\n"
+        "            WHEN A.OverdueDays BETWEEN 1 AND 30 THEN 'SMA_0'\n"
+        "            WHEN A.OverdueDays BETWEEN 31 AND 60 THEN 'SMA_1'\n"
+        "            ELSE NULL\n"
+        "        END\n"
+        "    )\n"
+        "FROM PRO.AccountCal A\n"
+        "WHERE A.OverdueDays > 0\n"
+        "\n"
+        "UPDATE PRO.RunStatus\n"
+        "SET COMPLETED = 'N', ErrorDate = GETDATE(), ErrorDescription = ERROR_MESSAGE()\n"
+        "WHERE ProcessName = 'demo'\n"
+        "END CATCH\n"
+    )
+    warnings = []
+    stmts = agent._extract_and_validate_sql(body, warnings, dialect="tsql")
+    assert len(stmts) == 2
+    assert not any("Could not fully structurally parse" in w for w in warnings)

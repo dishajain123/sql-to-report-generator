@@ -1406,3 +1406,362 @@ def test_quality_score_does_not_double_count_llm_only_and_contradiction_review_i
     # The review flag must still correctly reflect that real issues exist — dedup must
     # not hide genuine problems, only stop charging the score for them twice.
     assert deduplicated["status"] == "REVIEW_REQUIRED"
+
+# --------------------------------------------------------------------------
+# Regression tests for decision-chain grounding (see
+# _decision_chain_rows / _collect_deterministic_rows). Root cause: a rule
+# whose deterministic evidence is a CASE/IF branch condition (not a
+# table-level WHERE predicate) previously had no comparable deterministic
+# row to match against at all, because _collect_deterministic_rows only
+# ever looked at tables_read/tables_written. This is what made every
+# condition-based rule in objects like SMA_Stage_Marking_Simple come back
+# LLM_ONLY regardless of whether the source actually supported it.
+# --------------------------------------------------------------------------
+
+def _decision_chain(subject, branches):
+    return {"chain_type": "CASE_EXPRESSION", "subject": subject, "branches": branches}
+
+
+def test_decision_chain_branch_grounds_rule_with_no_table_evidence():
+    """Test A (from the investigation brief): deterministic evidence for a
+    CASE-branch condition must ground the matching LLM rule, even though
+    there is zero tables_read/tables_written evidence for it."""
+    ingestion = _make_ingestion(dialect="TSQL")
+    merged = {
+        "tables_read": [],
+        "tables_written": [],
+        "llm_tables_read": [],
+        "llm_tables_written": [],
+        "decision_chains": [
+            _decision_chain(
+                "A.OverdueDays",
+                [
+                    {"branch_condition": "A.OverdueDays BETWEEN 1 AND 30", "assignments": [{"field": "SmaStage", "value": "'SMA_0'"}]},
+                ],
+            )
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            fields_affected=["SmaStage"],
+            condition="A.OverdueDays BETWEEN 1 AND 30",
+            action="SmaStage = 'SMA_0'",
+            source_evidence=["A.OverdueDays BETWEEN 1 AND 30"],
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    record = _find_record(result, kind="rule", status="MATCHED")
+    assert record.status not in {"LLM_ONLY", "UNRESOLVED"}
+    assert any("smastage" in c.lower() for c in record.deterministic_evidence["target_columns"])
+
+
+def test_decision_chain_grounding_does_not_require_provenance_metadata():
+    """Test B: decision_chains rows carry no chunk/statement identity
+    (guardrail normalization strips it), so grounding here necessarily
+    happens without that metadata. Confirms this does not, on its own,
+    push the rule into a worse status than MATCHED."""
+    ingestion = _make_ingestion(dialect="TSQL")
+    merged = {
+        "tables_read": [],
+        "tables_written": [],
+        "llm_tables_read": [],
+        "llm_tables_written": [],
+        "decision_chains": [
+            _decision_chain(
+                "A.FacilityType",
+                [
+                    {"branch_condition": "A.FacilityType IN ('CC', 'OD')", "assignments": [{"field": "SmaReason", "value": "'CASH CREDIT / OVERDRAFT OVERDUE'"}]},
+                    {"branch_condition": "ELSE", "assignments": [{"field": "SmaReason", "value": "'OTHER FACILITY OVERDUE'"}]},
+                ],
+            )
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            fields_affected=["SmaReason"],
+            condition="A.FacilityType IN ('CC', 'OD')",
+            action="SmaReason = 'CASH CREDIT / OVERDRAFT OVERDUE'",
+            source_evidence=["A.FacilityType IN ('CC', 'OD')"],
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    record = _find_record(result, kind="rule", status="MATCHED")
+    assert record.status == "MATCHED"
+
+
+def test_decision_chain_contradicting_llm_claim_remains_a_conflict():
+    """Test C: a genuine contradiction between the LLM's claimed outcome
+    and the deterministic branch outcome must still be reported as a
+    CONFLICT - grounding decision_chains must never weaken real conflict
+    detection."""
+    ingestion = _make_ingestion(dialect="TSQL")
+    merged = {
+        "tables_read": [],
+        "tables_written": [],
+        "llm_tables_read": [],
+        "llm_tables_written": [],
+        "decision_chains": [
+            _decision_chain(
+                "A.OverdueDays",
+                [
+                    {"branch_condition": "A.OverdueDays BETWEEN 1 AND 30", "assignments": [{"field": "SmaStage", "value": "'SMA_0'"}]},
+                    {"branch_condition": "ELSE", "assignments": [{"field": "SmaStage", "value": "NULL"}]},
+                ],
+            )
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            fields_affected=["SmaStage"],
+            condition="A.OverdueDays BETWEEN 1 AND 30",
+            # Deliberately wrong outcome vs. the deterministic branch (which says 'SMA_0').
+            action="SmaStage = 'SMA-1'",
+            source_evidence=["A.OverdueDays BETWEEN 1 AND 30"],
+            decision_logic_rows=[
+                {"condition": "A.OverdueDays BETWEEN 1 AND 30", "outcome": "'SMA-1'"},
+            ],
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    record = _find_record(result, kind="rule", status="CONFLICT")
+    assert record.comparison["outcome_status"] == "CONFLICT"
+
+
+def test_rule_with_genuinely_no_deterministic_evidence_stays_llm_only():
+    """Test D: a rule with no matching decision_chains, no table evidence,
+    and no citable source_evidence must remain LLM_ONLY - the fix must not
+    cause everything to be marked grounded regardless of actual evidence."""
+    ingestion = _make_ingestion(dialect="TSQL")
+    merged = {
+        "tables_read": [],
+        "tables_written": [],
+        "llm_tables_read": [],
+        "llm_tables_written": [],
+        "decision_chains": [],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            fields_affected=["SomeUnrelatedField"],
+            condition="X = 1",
+            action="SomeUnrelatedField = 'Y'",
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    record = _find_record(result, kind="rule", status="LLM_ONLY")
+    assert record.status == "LLM_ONLY"
+
+
+def test_decision_chain_rows_never_pollute_table_level_reconciliation():
+    """Decision-chain-derived rows are tagged _section='decision_chains'
+    and must never be picked up by the tables_read/tables_written
+    comparison loop (which filters deterministic_rows by _section) -
+    only by rule reconciliation."""
+    ingestion = _make_ingestion(dialect="TSQL")
+    merged = {
+        "tables_read": [],
+        "tables_written": [_table_row("ACCOUNT", "UPDATE", columns=["STATUS"])],
+        "llm_tables_read": [],
+        "llm_tables_written": [_table_row("ACCOUNT", "UPDATE", columns=["STATUS"])],
+        "decision_chains": [
+            _decision_chain(
+                "X",
+                [
+                    {"branch_condition": "X > 1", "assignments": [{"field": "Y", "value": "1"}]},
+                    {"branch_condition": "ELSE", "assignments": [{"field": "Y", "value": "0"}]},
+                ],
+            )
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            fields_affected=["STATUS"],
+            condition="STATUS = 'A'",
+            action="STATUS = 'A'",
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    table_records = [r for r in result.records if r.kind == "tables_written"]
+    assert len(table_records) == 1
+    assert table_records[0].deterministic_evidence.get("table") == "ACCOUNT"
+
+
+def test_decision_chain_sibling_branches_ground_via_partial_citation():
+    """The real bug report's exact shape: the rule's source_evidence cites
+    only ONE branch condition, but its decision_logic_rows correctly
+    describes the full ladder (including ELSE). The uncited sibling
+    branches must still be pulled in via _expand_decision_chain_siblings,
+    since they are the same structural decision table, not separate
+    uncited claims."""
+    ingestion = _make_ingestion(dialect="TSQL")
+    merged = {
+        "tables_read": [],
+        "tables_written": [],
+        "llm_tables_read": [],
+        "llm_tables_written": [],
+        "decision_chains": [
+            _decision_chain(
+                "A.OverdueDays",
+                [
+                    {"branch_condition": "A.OverdueDays BETWEEN 1 AND 30", "assignments": [{"field": "SmaStage", "value": "'SMA_0'"}]},
+                    {"branch_condition": "A.OverdueDays BETWEEN 31 AND 60", "assignments": [{"field": "SmaStage", "value": "'SMA_1'"}]},
+                    {"branch_condition": "ELSE", "assignments": [{"field": "SmaStage", "value": "NULL"}]},
+                ],
+            )
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            fields_affected=["SmaStage"],
+            condition=None,
+            action=None,
+            # Only ONE branch cited - matches the real bug report exactly.
+            source_evidence=["A.OverdueDays BETWEEN 1 AND 30"],
+            decision_logic_rows=[
+                {"condition": "A.OverdueDays BETWEEN 1 AND 30", "outcome": "'SMA_0'"},
+                {"condition": "A.OverdueDays BETWEEN 31 AND 60", "outcome": "'SMA_1'"},
+                {"condition": "ELSE", "outcome": "NULL"},
+            ],
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    record = _find_record(result, kind="rule", status="MATCHED")
+    assert record.comparison["condition_status"] != "CONFLICT"
+    assert record.comparison["outcome_status"] != "CONFLICT"
+    assert "else" in record.deterministic_evidence["filters"][0].lower() or \
+        any("else" in f.lower() for f in record.deterministic_evidence["filters"])
+
+
+def test_decision_chain_sibling_expansion_does_not_leak_across_chains():
+    """Sibling expansion must stay within the same chain - a candidate
+    from chain 0 must never pull in branches belonging to a completely
+    different chain 1, even if both assign to fields with the same name
+    coincidentally."""
+    ingestion = _make_ingestion(dialect="TSQL")
+    merged = {
+        "tables_read": [],
+        "tables_written": [],
+        "llm_tables_read": [],
+        "llm_tables_written": [],
+        "decision_chains": [
+            _decision_chain(
+                "A.OverdueDays",
+                [
+                    {"branch_condition": "A.OverdueDays BETWEEN 1 AND 30", "assignments": [{"field": "SmaStage", "value": "'SMA_0'"}]},
+                    {"branch_condition": "ELSE", "assignments": [{"field": "SmaStage", "value": "NULL"}]},
+                ],
+            ),
+            _decision_chain(
+                "B.SomethingElse",
+                [
+                    {"branch_condition": "B.SomethingElse = 1", "assignments": [{"field": "SmaStage", "value": "'UNRELATED'"}]},
+                    {"branch_condition": "ELSE", "assignments": [{"field": "SmaStage", "value": "'DEFAULT'"}]},
+                ],
+            ),
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            fields_affected=["SmaStage"],
+            condition=None,
+            action=None,
+            source_evidence=["A.OverdueDays BETWEEN 1 AND 30"],
+            decision_logic_rows=[
+                {"condition": "A.OverdueDays BETWEEN 1 AND 30", "outcome": "'SMA_0'"},
+                {"condition": "ELSE", "outcome": "NULL"},
+            ],
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    record = _find_record(result, kind="rule", status="MATCHED")
+    assert "UNRELATED" not in record.deterministic_evidence["assigned_values"]
+    assert "DEFAULT" not in record.deterministic_evidence["assigned_values"]
+    """Realistic production shape (matches the actual SMA_Stage_Marking_Simple
+    report): one rule whose decision_logic_rows cite an entire multi-branch
+    decision table, all branches for the same field. Every branch's
+    condition/outcome must be found in the deterministic evidence with no
+    spurious conflict, since the rule and the source agree completely."""
+    ingestion = _make_ingestion(dialect="TSQL")
+    merged = {
+        "tables_read": [],
+        "tables_written": [],
+        "llm_tables_read": [],
+        "llm_tables_written": [],
+        "decision_chains": [
+            _decision_chain(
+                "A.OverdueDays",
+                [
+                    {"branch_condition": "A.OverdueDays BETWEEN 1 AND 30", "assignments": [{"field": "SmaStage", "value": "'SMA_0'"}]},
+                    {"branch_condition": "A.OverdueDays BETWEEN 31 AND 60", "assignments": [{"field": "SmaStage", "value": "'SMA_1'"}]},
+                    {"branch_condition": "ELSE", "assignments": [{"field": "SmaStage", "value": "NULL"}]},
+                ],
+            )
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            fields_affected=["SmaStage"],
+            condition=None,
+            action=None,
+            source_evidence=[
+                "A.OverdueDays BETWEEN 1 AND 30",
+                "A.OverdueDays BETWEEN 31 AND 60",
+            ],
+            decision_logic_rows=[
+                {"condition": "A.OverdueDays BETWEEN 1 AND 30", "outcome": "'SMA_0'"},
+                {"condition": "A.OverdueDays BETWEEN 31 AND 60", "outcome": "'SMA_1'"},
+                {"condition": "ELSE", "outcome": "NULL"},
+            ],
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    record = _find_record(result, kind="rule", status="MATCHED")
+    assert record.comparison["outcome_status"] != "CONFLICT"
+    assert record.comparison["condition_status"] != "CONFLICT"
