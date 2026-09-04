@@ -184,6 +184,7 @@ class ReportFormatterAgent:
 
         sections = [
             self._title_block(ingestion, synthesis),
+            self._source_truncation_banner(extraction_guardrail_warnings or []),
             self._at_a_glance(
                 ingestion,
                 synthesis,
@@ -192,8 +193,10 @@ class ReportFormatterAgent:
                 business_rules_for_display,
                 resolved_merged_extraction,
             ),
+            self._reconciliation_notice(resolved_merged_extraction, synthesis),
             self._what_this_does(synthesis, business_rules_for_display, resolved_merged_extraction),
             self._end_to_end_flow(synthesis, business_rules_for_display, resolved_merged_extraction),
+            self._called_procedures_section(ingestion),
             self._business_rule_overview_table(business_rules_for_display),
             self._business_rules_section(
                 business_rules_for_display,
@@ -201,6 +204,7 @@ class ReportFormatterAgent:
             ),
             self._calculations(synthesis, resolved_merged_extraction),
             self._data_touched_section(consolidated_reads, consolidated_writes, business_rules_for_display),
+            self._hardcoded_values_section(ingestion),
             self._exception_handling(synthesis, getattr(ingestion, "raw_code", ""), resolved_merged_extraction),
             self._findings_section(
                 synthesis,
@@ -215,16 +219,75 @@ class ReportFormatterAgent:
         return "\n\n".join(sections).strip() + "\n"
 
     @staticmethod
-    def _reconciliation_notice(merged_extraction: Dict[str, Any]) -> str:
-        quality = merged_extraction.get("quality") if isinstance(merged_extraction, dict) else {}
-        status = str((quality or {}).get("status") or "").upper()
-        if status not in {"REVIEW_REQUIRED", "FAIL", "FAILED"}:
+    def _source_truncation_banner(extraction_guardrail_warnings: List[str]) -> str:
+        """A source-level truncation (the input guardrail's char-limit cut,
+        `guardrails.py: MAX_INPUT_CHARS`) must be a loud, top-of-document
+        statement, not a warning buried in a log the reader never opens.
+        Before this, `format()` accepted `extraction_guardrail_warnings` as
+        a parameter but never actually read it, so a procedure clipped by
+        the size limit produced a report with no indication that its last
+        portion of logic was silently dropped.
+        """
+        for warning in extraction_guardrail_warnings or []:
+            text = str(warning or "")
+            if "processing limit" in text.lower() and "truncated" in text.lower():
+                return (
+                    "> **⚠ SOURCE TRUNCATED — INCOMPLETE ANALYSIS**\n"
+                    f"> {text}\n"
+                    "> Everything below reflects only the analyzed portion of the source. "
+                    "Do not treat this report as complete."
+                )
+        return ""
+
+    @staticmethod
+    def _reconciliation_notice(merged_extraction: Dict[str, Any], synthesis: SynthesisResult) -> str:
+        """Business-language banner surfacing what the validator actually
+        found, instead of the reader seeing "None identified" while the
+        pipeline's own quality score is near zero. This used to be dead
+        code (built, never called from `format()`) - see the docstring
+        history; without it a low-confidence report and a clean report
+        rendered identically to the reader.
+        """
+        quality = merged_extraction.get("quality") or synthesis.data.get("quality") or {}
+        if not isinstance(quality, dict) or not quality:
             return ""
+        status = str(quality.get("status") or "").upper()
+        review_required = bool(quality.get("review_required")) or status in {
+            "REVIEW_REQUIRED",
+            "FAIL",
+            "FAILED",
+            "LOW_CONFIDENCE",
+        }
+        if not review_required:
+            return ""
+
+        coverage = quality.get("coverage") or merged_extraction.get("reconciliation", {}).get("coverage") or {}
+        score = quality.get("score")
+
+        detail_bits: List[str] = []
+        synthesized_rules = coverage.get("synthesized_rules")
+        grounded_rules = coverage.get("rules_with_deterministic_support")
+        if synthesized_rules:
+            ungrounded = synthesized_rules - (grounded_rules or 0)
+            if ungrounded > 0:
+                detail_bits.append(
+                    f"{ungrounded} of {synthesized_rules} rules could not be traced back to source statements"
+                )
+        total_statements = coverage.get("total_statements")
+        parsed_statements = coverage.get("parsed_statements")
+        if total_statements:
+            unmatched_pct = round(100 - float(coverage.get("statement_parse_success_pct") or 0), 1)
+            if unmatched_pct > 0:
+                detail_bits.append(f"{unmatched_pct}% of SQL statements were not matched to a rule")
+        contradiction_count = coverage.get("contradictions")
+        if contradiction_count:
+            detail_bits.append(f"{contradiction_count} contradiction(s) were flagged between source and report")
+
+        detail = " — " + "; ".join(detail_bits) + "." if detail_bits else "."
+        score_bit = f" (quality score {score}/100)" if score is not None else ""
         return (
-            "## Review Required\n\n"
-            "The reconciliation stage detected source/report inconsistencies. "
-            "Business Rules, Calculations, and Data Touched are provisional and "
-            "must not be treated as confirmed until the discrepancies are resolved."
+            "**Automated verification:** REVIEW REQUIRED" + score_bit + detail
+            + " See the companion verification report before relying on this document."
         )
 
     def format_verification(
@@ -609,7 +672,10 @@ class ReportFormatterAgent:
             ("Business rules", str(len(rules))),
             ("Tables read", str(visible_reads)),
             ("Tables written", str(visible_writes)),
-            ("Produces audit trail", "Yes — records audit events" if history_tables else "No"),
+            (
+                "Produces audit trail",
+                "Yes — records audit events" if history_tables else "Not detected",
+            ),
         ]
         lines = ["## At a Glance", "", "| | |", "|---|---|"]
         lines.extend(f"| {label} | {value} |" for label, value in rows)
@@ -674,6 +740,68 @@ class ReportFormatterAgent:
             return f"## Process Flow\n\n_{_NOT_DETERMINED}_"
         lines = [f"{i + 1}. {self._strip_leading_numbering(step)}" for i, step in enumerate(steps)]
         return "## Process Flow\n\n" + "\n".join(lines)
+
+    @staticmethod
+    def _called_procedures_section(ingestion: IngestionResult) -> str:
+        """List statically-callable EXEC targets in source order.
+
+        222 EXEC calls were measured across 76/91 client procedures, with
+        one orchestrator (MAINPROECESSFORASSETCLASSFICATION_BACKDTD_TWO)
+        making 23 and containing almost no business logic of its own - its
+        entire business meaning IS the call sequence. Without this
+        section, an orchestrator's report showed near-zero business rules
+        with no indication of what it actually does (call other
+        procedures, in order), and a called child's report gave no hint
+        of when or in what order it runs relative to its siblings.
+        """
+        calls = getattr(ingestion, "called_procedures", None) or []
+        if not calls:
+            return ""
+        rows = ["| Order | Procedure | Arguments |", "|---|---|---|"]
+        for i, call in enumerate(calls, start=1):
+            name = str(call.get("name") or "").strip() or "Not specified"
+            arguments = str(call.get("arguments") or "").strip() or "_none_"
+            rows.append(f"| {i} | `{name}` | `{arguments}` |")
+        return (
+            "## Called Procedures\n\n"
+            f"This procedure calls {len(calls)} other stored procedure(s), in this order:\n\n"
+            + "\n".join(rows)
+        )
+
+    @staticmethod
+    def _hardcoded_values_section(ingestion: IngestionResult) -> str:
+        """List live hardcoded date literals found in the source.
+
+        293 hardcoded date literals were measured in live (non-commented)
+        code across 28/91 client files - in a regulatory batch these are
+        usually either a deliberate cutover boundary or a forgotten test
+        value, and this is typically the first thing an audit reviewer
+        asks about. Deterministic and cheap: no LLM involvement, so
+        nothing here can be missed by a model or hallucinated.
+        """
+        dates = getattr(ingestion, "hardcoded_dates", None) or []
+        if not dates:
+            return ""
+        counts: "OrderedDict[str, List[str]]" = OrderedDict()
+        for entry in dates:
+            value = str(entry.get("value") or "").strip()
+            line = str(entry.get("line") or "").strip()
+            if not value:
+                continue
+            counts.setdefault(value, []).append(line)
+        if not counts:
+            return ""
+        rows = ["| Value | Occurrences | Line(s) |", "|---|---|---|"]
+        for value, lines in counts.items():
+            shown_lines = ", ".join(lines[:8])
+            if len(lines) > 8:
+                shown_lines += f", + {len(lines) - 8} more"
+            rows.append(f"| `{value}` | {len(lines)} | {shown_lines} |")
+        return (
+            "## Hardcoded Values\n\n"
+            "Literal date values found directly in the source (not parameters or config lookups):\n\n"
+            + "\n".join(rows)
+        )
 
     # ------------------------------------------------------------------
     # (Dead "Eligibility" section removed - this used to pool every
@@ -884,8 +1012,20 @@ class ReportFormatterAgent:
             *self._rule_text_lines(rule.get("when_not_eligible")),
         ])
 
+        eligibility_items = self._rule_text_lines(rule.get("eligibility"))
+
         lines = [f"### R{idx} — {rule_name}", ""]
         lines.append(f"**Affected Field:** `{output_field}`" if output_field != "Not specified" else "**Affected Field:** Not specified")
+        lines.append("")
+        if eligibility_items:
+            lines.append("**Applies to:**")
+            lines.append("")
+            lines.extend(f"- {item}" for item in eligibility_items)
+        else:
+            # An empty "eligibility" list means the source showed no gating
+            # condition at all - that is itself a material fact (the rule
+            # runs unconditionally) and must be stated, not left silent.
+            lines.append("**Applies to:** all rows (no additional conditions found in the source)")
         lines.append("")
         lines.append("**Summary:**")
         lines.append("")
@@ -1536,6 +1676,36 @@ class ReportFormatterAgent:
         )
         return f"## Exception Handling\n\n{summary}"
 
+    @staticmethod
+    def _is_control_or_audit_table(table_name: str, write_bucket: Optional[Dict[str, Any]]) -> bool:
+        """Behavior-first control/audit detection, not just a name regex.
+
+        `PRO.RunStatus` and `PRO.PROCESSMONITOR` are written by nearly
+        every procedure in the client corpus with start/end time, status,
+        and process-identity columns - unambiguously control/audit tables
+        - but neither matches a HISTORY/AUDIT/MOVEMENT name pattern, so a
+        name-only check would leave them sitting in the same undifferentiated
+        list as `PRO.AccountCal`. Name patterns remain the primary signal
+        (cheap, precise); a column-shape signal is added as a fallback for
+        exactly this case.
+        """
+        if _HISTORY_TABLE_PATTERN.search(table_name) or re.search(
+            r"RUNSTATUS|PROCESSMONITOR|PROCESS_MONITOR|JOBLOG|JOB_LOG|ERRORLOG|ERROR_LOG",
+            table_name,
+            re.IGNORECASE,
+        ):
+            return True
+        if not write_bucket:
+            return False
+        columns = " ".join(str(c) for c in (write_bucket.get("target_columns") or [])).casefold()
+        control_signals = (
+            "errordate", "errordescription", "error_date", "error_description",
+            "runcount", "run_count", "processname", "process_name",
+            "starttime", "start_time", "endtime", "end_time", "completed",
+        )
+        hits = sum(1 for signal in control_signals if signal in columns)
+        return hits >= 2
+
     def _data_touched_section(
         self,
         consolidated_reads: List[Dict[str, Any]],
@@ -1545,6 +1715,7 @@ class ReportFormatterAgent:
         reads_by_table = {b["table"].upper(): b for b in consolidated_reads}
         writes_by_table = {b["table"].upper(): b for b in consolidated_writes}
         all_keys = list(OrderedDict.fromkeys(list(writes_by_table.keys()) + list(reads_by_table.keys())))
+        temp_table_keys = [k for k in all_keys if k.startswith("#")]
         display_keys = [k for k in all_keys if not k.startswith("#")]
         # Defensive filter against unresolved SQL aliases leaking through
         # as if they were table names (e.g. a self-join alias like "AA"
@@ -1559,40 +1730,100 @@ class ReportFormatterAgent:
         # this filter removes is still fully visible in the verification
         # report's technical lineage, so no evidence is silently lost -
         # only this specific display is protected from a bad name.
+        pre_alias_filter_count = len(display_keys)
         display_keys = [
             k for k in display_keys
             if not (len(k) <= 3 and k.isalpha() and "." not in k and "_" not in k)
         ]
-        if not display_keys:
+        unresolved_alias_count = pre_alias_filter_count - len(display_keys)
+        if not display_keys and not temp_table_keys:
             return "## Data Touched\n\n_None identified._"
 
-        header = ["| Table | Read/Write | Purpose |", "|---|---|---|"]
-        rows: List[str] = []
-        for key in display_keys:
-            write_bucket = writes_by_table.get(key)
-            read_bucket = reads_by_table.get(key)
-            bucket = write_bucket or read_bucket
-            table_name = bucket["table"]
-            if write_bucket and read_bucket:
-                rw = "Read + Write"
-            elif write_bucket:
-                rw = "Write"
-            else:
-                rw = "Read"
-            purpose = self._table_purpose_text(write_bucket, read_bucket, rules)
-            rows.append(
-                f"| `{self._escape_table_cell(table_name)}` | {rw} | "
-                f"{self._escape_table_cell(purpose)} |"
-            )
+        def _render_rows(keys: List[str]) -> List[str]:
+            out: List[str] = []
+            for key in keys:
+                write_bucket = writes_by_table.get(key)
+                read_bucket = reads_by_table.get(key)
+                bucket = write_bucket or read_bucket
+                table_name = bucket["table"]
+                if write_bucket and read_bucket:
+                    rw = "Read + Write"
+                elif write_bucket:
+                    rw = "Write"
+                else:
+                    rw = "Read"
+                purpose = self._table_purpose_text(write_bucket, read_bucket, rules)
+                out.append(
+                    f"| `{self._escape_table_cell(table_name)}` | {rw} | "
+                    f"{self._escape_table_cell(purpose)} |"
+                )
+            return out
 
-        skipped = len(all_keys) - len(display_keys)
+        header = ["| Table | Read/Write | Purpose |", "|---|---|---|"]
+        # Row-count budget per role subsection before collapsing the tail
+        # behind a count. A flat 146-row table (the corpus's largest,
+        # InsertDataforAssetClassficationRBL) is not a business artifact;
+        # grouping by role plus this cap makes even that procedure's
+        # Data Touched section readable.
+        role_row_cap = 20
+
+        def _render_group(title: str, keys: List[str]) -> str:
+            if not keys:
+                return ""
+            visible, hidden = keys[:role_row_cap], keys[role_row_cap:]
+            body = self._render_split_table(header, _render_rows(visible))
+            if hidden:
+                body += f"\n\n_+ {len(hidden)} more {title.lower()} table(s) - see the verification report._"
+            return f"### {title}\n\n{body}"
+
+        control_keys = [
+            k for k in display_keys
+            if self._is_control_or_audit_table(writes_by_table.get(k, reads_by_table.get(k, {})).get("table", k), writes_by_table.get(k))
+        ]
+        remaining_keys = [k for k in display_keys if k not in control_keys]
+        target_keys = [k for k in remaining_keys if k in writes_by_table]
+        source_keys = [k for k in remaining_keys if k not in writes_by_table]
+
+        sections: List[str] = []
+        if display_keys:
+            # Below a small table count, the role split adds structure
+            # without adding value - render one flat table as before.
+            if len(display_keys) <= 8:
+                sections.append(self._render_split_table(header, _render_rows(display_keys)))
+            else:
+                for title, keys in (
+                    ("Target (written)", target_keys),
+                    ("Source (read-only)", source_keys),
+                    ("Control / Audit", control_keys),
+                ):
+                    rendered = _render_group(title, keys)
+                    if rendered:
+                        sections.append(rendered)
+        else:
+            sections.append("_No permanent tables identified._")
+
+        # Temp tables (# / ##) are frequently where the actual business
+        # logic lives in this codebase (a procedure stages its work in a
+        # temp table, then writes back to the permanent table at the
+        # end) - they are surfaced as their own subsection rather than
+        # silently folded into a vague "omitted" footnote.
+        if temp_table_keys:
+            sections.append(_render_group("Working Tables (temporary)", temp_table_keys) or "")
+
         note = ""
-        if skipped:
+        if unresolved_alias_count:
+            # This is NOT the same thing as a temp table - it is a SQL
+            # alias (e.g. a self-join "A") that the deterministic
+            # table-resolution step could not map back to its base table
+            # within this chunk. Do not describe it as a "working" or
+            # "temporary" table; that asserts something about the source
+            # that this filter has no evidence for.
             note = (
-                f"\n\n_{skipped} working/temporary table(s) used only for intermediate calculation "
-                "steps are omitted here - see the pipeline run log for the full technical lineage._"
+                f"\n\n_{unresolved_alias_count} table reference(s) could not be resolved to a table "
+                "name and are omitted from this list - see the verification report for the full "
+                "technical lineage._"
             )
-        return "## Data Touched\n\n" + self._render_split_table(header, rows) + note
+        return "## Data Touched\n\n" + "\n\n".join(s for s in sections if s) + note
 
     @staticmethod
     def _table_purpose_text(

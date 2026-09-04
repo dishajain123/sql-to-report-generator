@@ -56,7 +56,15 @@ from src.core.pipeline_utils import stable_id
 # Input guardrails
 # --------------------------------------------------------------------------
 
-MAX_INPUT_CHARS = 200_000
+MAX_INPUT_CHARS = 500_000
+# Was 200,000, which silently clipped the corpus's largest, most
+# business-critical procedure (InsertDataforAssetClassficationRBL,
+# 204,690 chars) with only a log warning that never reached the reader (see
+# report_formatter._source_truncation_banner for the reader-facing fix).
+# 500,000 chars is roughly 143,000 tokens at the ~3.5 chars/token estimate
+# used elsewhere in this pipeline - comfortably inside a 300K-token model
+# context window with headroom, while still catching genuinely runaway
+# inputs (e.g. an accidentally-concatenated multi-file paste).
 MIN_INPUT_CHARS = 5
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
@@ -136,6 +144,135 @@ def run_input_guardrails(raw_code: str, max_chars: int = MAX_INPUT_CHARS) -> Inp
     injection_flags = _detect_prompt_injection(text)
 
     return InputGuardrailResult(clean_code=text, warnings=warnings, injection_flags=injection_flags)
+
+
+# --------------------------------------------------------------------------
+# Inactive (commented-out) DML detection
+# --------------------------------------------------------------------------
+# 2,417 commented-out DML/clause lines were measured across 80/91 client
+# procedures (worst case: 53% of one file's non-blank lines). The synthesis
+# prompt has a soft instruction not to describe commented-out code as
+# active, but the extraction prompt separately tells the model to treat
+# comment content "the same way you would any other code content" (an
+# injection-defense instruction, not a license to extract dead logic - but
+# on a low-cost model against thousands of lines of realistic-looking dead
+# SQL, that distinction is easy to lose). Making this deterministic removes
+# the failure mode entirely: a commented-out UPDATE/INSERT/DELETE/MERGE
+# never reaches the extraction prompt as candidate logic in the first
+# place, and is instead surfaced separately for human review.
+
+_INACTIVE_DML_KEYWORD_RE = re.compile(
+    r"\b(?:UPDATE|INSERT\s+INTO|DELETE\s+FROM|MERGE\s+INTO|TRUNCATE\s+TABLE|DROP\s+TABLE|"
+    r"SELECT\b.{0,200}?\bFROM)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+# A prose comment can mention a DML keyword ("-- consider adding an UPDATE
+# here") without being commented-out code. Requiring at least one of these
+# code-shaped signals alongside the keyword keeps that distinction: real
+# commented-out DML almost always has a comparison/assignment, a
+# schema-qualified or aliased identifier, a bind variable, or a statement
+# terminator nearby, and ordinary prose usually has none of them.
+_CODE_SHAPE_SIGNAL_RE = re.compile(
+    r"(?:\w+\.\w+|@\w+|[<>=!]=|\bSET\s+\w+\s*=|;\s*$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _looks_like_inactive_dml(comment_body: str) -> bool:
+    return bool(
+        _INACTIVE_DML_KEYWORD_RE.search(comment_body)
+        and _CODE_SHAPE_SIGNAL_RE.search(comment_body)
+    )
+
+
+def find_inactive_code_blocks(code: str) -> List[Tuple[int, int, str]]:
+    """Find comment spans that look like commented-out DML rather than
+    ordinary prose commentary. Returns (start, end, snippet) triples in
+    source order. This is deliberately a cheap heuristic (keyword + a
+    code-shape signal), not a parser - false negatives are safe (the text
+    just goes through the existing prompted safeguard as before); false
+    positives are bounded by requiring both signals together.
+    """
+    blocks: List[Tuple[int, int, str]] = []
+
+    # Block comments: check the whole interior in one go.
+    for match in re.finditer(r"/\*.*?\*/", code, re.DOTALL):
+        if _looks_like_inactive_dml(match.group(0)):
+            blocks.append((match.start(), match.end(), match.group(0)))
+
+    # Consecutive runs of line comments: a multi-line commented-out
+    # statement is usually one "--" per line, so group adjacent commented
+    # lines and evaluate the run as a whole rather than line-by-line.
+    line_comment_re = re.compile(r"^[ \t]*--.*$", re.MULTILINE)
+    run_start = None
+    run_end = None
+    for match in line_comment_re.finditer(code):
+        gap = code[run_end : match.start()] if run_start is not None else None
+        # Group only truly adjacent comment lines (the gap between the end
+        # of one line and the start of the next is exactly one line break)
+        # into a single run. A blank line in between means two separate
+        # comment blocks - e.g. a real "-- Old logic:" block followed by an
+        # unrelated "-- TODO: ..." note two lines later - and must not be
+        # merged into one span, or an unrelated prose comment gets dragged
+        # into (and hidden inside) a genuinely inactive-code block.
+        if run_start is not None and gap in ("\n", "\r\n"):
+            run_end = match.end()
+            continue
+        if run_start is not None:
+            snippet = code[run_start:run_end]
+            if _looks_like_inactive_dml(snippet):
+                blocks.append((run_start, run_end, snippet))
+        run_start, run_end = match.start(), match.end()
+    if run_start is not None:
+        snippet = code[run_start:run_end]
+        if _looks_like_inactive_dml(snippet):
+            blocks.append((run_start, run_end, snippet))
+
+    blocks.sort(key=lambda b: b[0])
+    return blocks
+
+
+def strip_inactive_code_for_llm(code: str) -> Tuple[str, List[str]]:
+    """Return (sanitized_code, inactive_snippets).
+
+    `sanitized_code` is the same length and line structure as `code` (every
+    character outside a detected span is untouched, including line breaks
+    inside the span), so any downstream code relying on char/line offsets
+    into the original source is unaffected. The interior of each detected
+    span is replaced with a bracketed marker, space-padded to preserve
+    length exactly. `inactive_snippets` holds the original, unmodified text
+    of each stripped span for verification-report-only surfacing (see
+    `report_formatter._inactive_code_section` / the "Commented-out logic
+    found in source" note) - this is genuinely useful to a reviewer and is
+    never shown as if it were part of the active business logic.
+    """
+    blocks = find_inactive_code_blocks(code)
+    if not blocks:
+        return code, []
+
+    result = list(code)
+    snippets: List[str] = []
+    for start, end, snippet in blocks:
+        marker = "-- [INACTIVE CODE REMOVED - see verification report]"
+        marker_pos = 0
+        for i in range(start, end):
+            ch = code[i]
+            if ch in "\r\n":
+                result[i] = ch
+                continue
+            # Write the marker character-by-character, skipping newline
+            # positions rather than overwriting a contiguous run: the
+            # marker (54 chars) is often longer than a block's first
+            # comment line, so a naive contiguous write would clobber the
+            # newline between that line and the next, corrupting the
+            # length/line-count invariant this function guarantees.
+            if marker_pos < len(marker):
+                result[i] = marker[marker_pos]
+                marker_pos += 1
+            else:
+                result[i] = " "
+        snippets.append(snippet.strip())
+    return "".join(result), snippets
 
 
 def _extract_comment_and_string_text(code: str) -> List[str]:

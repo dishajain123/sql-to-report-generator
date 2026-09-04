@@ -588,13 +588,29 @@ def find_coverage_gaps(
         elif any(_rule_covers_dml_behavior(rule, region_text if isinstance(region_text, str) else "\n".join(region_text)) for rule in rules or []):
             covered_region_lines.update(region_lines)
 
+    # A single evidence fragment matching ANYWHERE in an executable region
+    # (e.g. one cited CASE branch) marks the WHOLE region covered above -
+    # including its WHERE/ON/HAVING predicate and any other, uncited
+    # branches. That is deliberately too coarse for gating: WHERE/ON/HAVING
+    # lines must instead be validated individually against a rule's own
+    # predicate evidence (the `predicate_covered` check further below,
+    # which is the only place that actually compares predicate literals/
+    # tokens). Without this exclusion, every predicate line short-circuited
+    # at `if line_number in covered_region_lines: continue` before that
+    # check ever ran - which is why coverage logs showed
+    # `overlap_ratio=0.000 matched_rule=none uncovered=False` on blocks
+    # whose WHERE clause was never actually verified against anything.
+    covered_region_lines -= set(predicate_tokens_by_line)
+
     gaps: List[CoverageGap] = []
     for group_index, group in enumerate(groups):
         uncovered_lines: List[int] = []
         group_best_ratio = 0.0
         group_best_rule = None
+        region_covered_lines = 0
         for line_number in group:
             if line_number in covered_region_lines:
+                region_covered_lines += 1
                 continue
             line_tokens = _tokens(lines[line_number - 1] if line_number <= len(lines) else "")
             if not line_tokens:
@@ -662,12 +678,25 @@ def find_coverage_gaps(
                 len(line_tokens) >= 2 and line_best_overlap < 2
             )):
                 uncovered_lines.append(line_number)
-        logger.info(
-            "Coverage block lines=%s-%s overlap_ratio=%.3f matched_rule=%s uncovered=%s",
-            group[0], group[-1], group_best_ratio,
-            group_best_rule if group_best_rule is not None else "none",
-            bool(uncovered_lines),
-        )
+        if region_covered_lines == len(group):
+            # Every line in this block was matched via blanket
+            # region-level fragment coverage (a cited CASE branch, etc.),
+            # not via the per-line scoring loop below - log that plainly
+            # instead of printing a fabricated overlap_ratio=0.000/
+            # matched_rule=none, which reads as "nothing matched" when the
+            # opposite happened.
+            logger.info(
+                "Coverage block lines=%s-%s region_covered=True (matched via blanket region evidence, "
+                "not per-line scoring) uncovered=False",
+                group[0], group[-1],
+            )
+        else:
+            logger.info(
+                "Coverage block lines=%s-%s overlap_ratio=%.3f matched_rule=%s uncovered=%s",
+                group[0], group[-1], group_best_ratio,
+                group_best_rule if group_best_rule is not None else "none",
+                bool(uncovered_lines),
+            )
         if not uncovered_lines:
             continue
         start, end = uncovered_lines[0], uncovered_lines[-1]

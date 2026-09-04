@@ -47,10 +47,10 @@ import codecs
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import sqlglot
-from sqlglot.errors import ParseError
+from sqlglot.errors import ParseError, SqlglotError
 
 from src.validation.confidence import derive_chunk_support_confidence
 from src.dialect.detector import (
@@ -194,6 +194,15 @@ class IngestionResult:
     # left untouched and remains the exact technical identifier used
     # for source-code matching/reconciliation.
     canonical_object_name: str = ""
+    # Statically-callable EXEC targets in source order (see
+    # CodeIngestionAgent.find_called_procedures). Empty for objects that
+    # make no procedure calls. Dynamic-SQL EXEC forms are excluded.
+    called_procedures: List[Dict[str, str]] = field(default_factory=list)
+    # Live (non-commented) hardcoded date-literal strings in source order
+    # (see CodeIngestionAgent.find_hardcoded_dates). A regulatory reviewer's
+    # first question about a batch procedure is usually "what are the
+    # hardcoded values", and this answers it deterministically.
+    hardcoded_dates: List[Dict[str, str]] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------
@@ -308,8 +317,11 @@ _PARAM_LINE_ORACLE = re.compile(
 #   @p_account_id INT
 #   @p_result VARCHAR(50) OUTPUT
 #   @p_status INT = 0 OUT
+#   @Date AS Varchar(20)          -- optional "AS" before the datatype
+#   @Result as Int = 0 OutPut     -- "AS" is case-insensitive and optional
 _PARAM_LINE_TSQL = re.compile(
     r"^\s*(@[A-Za-z0-9_]+)\s+"
+    r"(?:AS\s+)?"
     r"([A-Za-z0-9_.]+(?:\([^)]*\))?)"
     r"(?:\s*=\s*[^,]+?)?"
     r"\s*(OUTPUT|OUT)?\s*$",
@@ -320,6 +332,21 @@ _GO_BATCH_SPLIT = re.compile(r"^[ \t]*GO[ \t]*$", re.IGNORECASE | re.MULTILINE)
 _DYNAMIC_SQL_ORACLE = re.compile(r"\b(?:EXECUTE\s+IMMEDIATE|DBMS_SQL(?:\b|\.)?)", re.IGNORECASE)
 _DYNAMIC_SQL_TSQL = re.compile(
     r"\b(?:SP_EXECUTESQL\b|EXEC(?:UTE)?\s*\(\s*|EXEC(?:UTE)?\s+@)",
+    re.IGNORECASE,
+)
+
+# A static, literal call to another stored procedure - e.g.
+#   EXEC PRO.UpdateNetBalance_AccountWise @TimeKey
+#   EXECUTE [PRO].[SMA_MARKING] @TimeKey = @TimeKey
+#   @rc = EXEC dbo.SomeCheck @account_id
+# Deliberately excludes the dynamic-SQL shapes already matched by
+# _DYNAMIC_SQL_TSQL (EXEC(...), EXEC @var, sp_executesql) - those have no
+# statically-knowable target and are flagged separately, not listed here.
+_TSQL_STATIC_EXEC = re.compile(
+    r"\bEXEC(?:UTE)?\s+"
+    r"(?:(@[A-Za-z0-9_]+)\s*=\s*)?"
+    rf"((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))*)"
+    r"(?:\s+|$)([^\n\r;]*)",
     re.IGNORECASE,
 )
 
@@ -439,6 +466,8 @@ class CodeIngestionAgent:
         if object_name_status == "verified" and object_name != "UNKNOWN_OBJECT":
             object_schema = self.extract_object_schema(clean_code, object_type, dialect=prompt_dialect)
         canonical_object_name = self.derive_canonical_business_name(object_name)
+        called_procedures = self.find_called_procedures(clean_code, dialect=resolved_dialect)
+        hardcoded_dates = self.find_hardcoded_dates(clean_code)
 
         chunks = self.chunk_code(
             clean_code,
@@ -470,6 +499,8 @@ class CodeIngestionAgent:
             run_metadata=run_metadata,
             schema=object_schema,
             canonical_object_name=canonical_object_name,
+            called_procedures=called_procedures,
+            hardcoded_dates=hardcoded_dates,
         )
 
     # ------------------------------------------------------------------
@@ -1044,6 +1075,99 @@ class CodeIngestionAgent:
                 )
         return parameters
 
+    _DATE_LITERAL_RE = re.compile(
+        r"^(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2}/\d{4}|\d{1,2}-[A-Za-z]{3}-\d{2,4})$"
+    )
+
+    def find_hardcoded_dates(self, code: str) -> List[Dict[str, str]]:
+        """Return live (non-commented) hardcoded date-literal strings in
+        source order, each as {"value", "line"}.
+
+        293 hardcoded date literals were measured in LIVE code across 28
+        client files (e.g. '1900-01-01', '2020-09-30') - in a regulatory
+        batch these are usually either a deliberate cutover boundary or a
+        forgotten test value, and a reviewer needs to see them either way.
+        This is a single-pass character scan (comments and strings can't
+        be told apart with a shared regex-based mask, since masking blanks
+        BOTH to spaces) so that a date-shaped literal sitting inside a
+        commented-out block is never reported as live.
+        """
+        findings: List[Dict[str, str]] = []
+        n = len(code)
+        i = 0
+        while i < n:
+            two = code[i : i + 2]
+            if two == "--":
+                j = code.find("\n", i)
+                i = n if j == -1 else j
+                continue
+            if two == "/*":
+                j = code.find("*/", i + 2)
+                i = n if j == -1 else j + 2
+                continue
+            if code[i] == "'":
+                j = i + 1
+                while j < n:
+                    if code[j : j + 2] == "''":
+                        j += 2
+                        continue
+                    if code[j] == "'":
+                        j += 1
+                        break
+                    j += 1
+                literal = code[i + 1 : max(j - 1, i + 1)].strip()
+                if self._DATE_LITERAL_RE.match(literal):
+                    line = code.count("\n", 0, i) + 1
+                    findings.append({"value": literal, "line": str(line)})
+                i = j
+                continue
+            i += 1
+        return findings
+
+    def find_called_procedures(self, code: str, dialect: str = TSQL) -> List[Dict[str, str]]:
+        """Return statically-callable EXEC targets in source order, each as
+        {"name", "arguments", "line"}. T-SQL only for now (the client
+        corpus is 91/91 T-SQL and this is the shape ~76/91 files use - 222
+        EXEC calls total, with one orchestrator alone making 23).
+        Dynamic-SQL EXEC forms (EXEC(...), EXEC @var, sp_executesql) are
+        deliberately excluded - there is no statically-knowable target to
+        list, and they are already flagged separately as dynamic SQL.
+        """
+        if normalize_dialect_name(dialect) != TSQL:
+            return []
+        masked = self._mask_strings_and_comments(code, mask_brackets=False)
+        calls: List[Dict[str, str]] = []
+        for match in _TSQL_STATIC_EXEC.finditer(masked):
+            start = match.start()
+            return_var, name, arguments = match.groups()
+            # Skip a match whose target position is itself inside a
+            # dynamic-SQL EXEC shape (EXEC(...) / EXEC @var / sp_executesql)
+            # - _TSQL_STATIC_EXEC's own target group requires a real
+            # identifier so it won't match "(" directly, but "EXEC @sql"
+            # (dynamic: execute the string held in @sql) and
+            # "EXEC @rc = dbo.Proc" (static: capture Proc's return code)
+            # share the same "EXEC @" prefix, so this check is skipped
+            # whenever a return-variable assignment was already
+            # positively matched - that shape is unambiguously static.
+            if return_var is None:
+                dyn = _DYNAMIC_SQL_TSQL.match(masked, start)
+                if dyn:
+                    continue
+            name = re.sub(r"\s+", "", name)
+            # "EXEC sp_executesql ..." doesn't match _DYNAMIC_SQL_TSQL at
+            # the "EXEC" position (that pattern only catches "EXEC("/"EXEC
+            # @"/a bare "SP_EXECUTESQL" call) but is still dynamic SQL, not
+            # a real procedure named sp_executesql - exclude it explicitly.
+            if re.sub(r"[\[\]]", "", name).strip(".").upper() == "SP_EXECUTESQL":
+                continue
+            arguments = arguments.strip().rstrip(",").strip()
+            line = code.count("\n", 0, start) + 1
+            entry = {"name": name, "arguments": arguments, "line": str(line)}
+            if return_var:
+                entry["return_variable"] = return_var
+            calls.append(entry)
+        return calls
+
     def _extract_parameters_tsql(self, code: str, masked: str) -> List[Parameter]:
         params, _, _ = self._extract_parameters_tsql_detailed(code, masked)
         return params
@@ -1060,9 +1184,30 @@ class CodeIngestionAgent:
             return [], True, False
 
         # Parameter list runs from right after the object name up to the
-        # first top-level "AS" keyword (parentheses are optional in T-SQL).
+        # top-level "AS" keyword that opens the procedure body (parentheses
+        # are optional in T-SQL). This must NOT be the *first* "AS" found
+        # after the object name: a parameter declared as "@Date AS Varchar(20)"
+        # (an "AS" between name and datatype - valid, if unusual, T-SQL, and
+        # seen throughout the client corpus, e.g. ACLMainRunProcessForDummy)
+        # contains its own "AS" that appears before the real body-opening one
+        # and would otherwise truncate the parameter list after the very
+        # first parameter's type keyword. The body-opening "AS" is reliably
+        # alone on its own line (a strong, consistent SSMS-script
+        # convention); prefer that match, and only fall back to the first
+        # "AS" found (previous behavior) if no standalone-line "AS" exists.
         search_start = header_match.end()
-        as_match = re.search(r"\bAS\b", masked[search_start:], re.IGNORECASE)
+        remainder = masked[search_start:]
+        as_match = None
+        for candidate in re.finditer(r"\bAS\b", remainder, re.IGNORECASE):
+            line_start = remainder.rfind("\n", 0, candidate.start()) + 1
+            line_end = remainder.find("\n", candidate.end())
+            if line_end == -1:
+                line_end = len(remainder)
+            if remainder[line_start:line_end].strip().upper() == "AS":
+                as_match = candidate
+                break
+        if as_match is None:
+            as_match = re.search(r"\bAS\b", remainder, re.IGNORECASE)
         if not as_match:
             return [], False, True
         param_block_masked = masked[search_start : search_start + as_match.start()]
@@ -1084,14 +1229,30 @@ class CodeIngestionAgent:
             offset = param_block_masked.index("(") + 1
             end_offset = param_block_masked.rindex(")")
             param_block = param_block[offset:end_offset]
+            param_block_masked = param_block_masked[offset:end_offset]
 
-        params_raw = self._split_top_level_commas(param_block)
+        # Split BOTH the masked and raw blocks at identical positions - the
+        # comma/paren structure that drives the split is unaffected by
+        # masking (masking only blanks out string/comment interiors, never
+        # commas or parens), so the two lists always line up 1:1. The
+        # masked segment is used for the primary match (safe from a
+        # trailing inline comment on the header line, e.g.
+        # "CREATE PROCEDURE ... --26857", gluing onto the front of the
+        # first parameter and failing the "starts with @" check). The raw
+        # segment is a fallback for when a default-value literal (e.g.
+        # `='N'`) got masked down to pure whitespace and stripped away
+        # entirely, leaving nothing for the pattern's default-value group
+        # to match - retrying against the unmasked text recovers those
+        # without weakening the pattern for a genuinely empty/malformed
+        # default (e.g. `= )`), which correctly continues to fail on both.
+        params_raw_masked = self._split_top_level_commas(param_block_masked)
+        params_raw_original = self._split_top_level_commas(param_block)
 
         parameters: List[Parameter] = []
         saw_candidate = False
         complete = True
-        for raw in params_raw:
-            raw = raw.strip()
+        for raw_masked, raw_original in zip(params_raw_masked, params_raw_original):
+            raw = raw_masked.strip()
             if not raw:
                 continue
             if self._is_tsql_header_option_fragment(raw):
@@ -1100,7 +1261,17 @@ class CodeIngestionAgent:
                 complete = False
                 continue
             saw_candidate = True
-            m = _PARAM_LINE_TSQL.match(raw)
+            # Try the RAW (unmasked) text first: a masked default-value
+            # literal directly adjacent to "OUTPUT"/"OUT" (e.g.
+            # `= 'A' OUTPUT` -> masked to `=     OUTPUT`) loses the quote
+            # character that otherwise gives the regex a clear boundary
+            # between the default value and the direction keyword, and can
+            # silently swallow "OUTPUT" into the (also non-greedy) default
+            # group instead of capturing it as the direction. The masked
+            # text remains the fallback for cases where the raw text has a
+            # leading comment fragment glued onto the parameter itself
+            # (see the split-on-masked-text comment above).
+            m = _PARAM_LINE_TSQL.match(raw_original.strip()) or _PARAM_LINE_TSQL.match(raw)
             if m:
                 name, datatype, out_kw = m.groups()
                 direction = "OUT" if out_kw else "IN"
@@ -1635,7 +1806,14 @@ class CodeIngestionAgent:
                 sqlglot.parse_one(stmt, read=sqlglot_dialect)
                 validated.append(stmt)
                 continue
-            except ParseError:
+            except SqlglotError:
+                # Covers ParseError (bad grammar) AND TokenError (text that
+                # can't even be lexed, e.g. an unterminated banner comment
+                # or a stray quote/paren left over from a bad span cut).
+                # TokenError is a *sibling* of ParseError, not a subclass -
+                # catching only ParseError here let TokenError propagate
+                # all the way out of the pipeline and abort the whole run
+                # for a single statement (see ingestion.py TokenError fix).
                 pass
 
             commentless_stmt = re.sub(r"/\*.*?\*/", " ", stmt, flags=re.DOTALL)
@@ -1644,7 +1822,7 @@ class CodeIngestionAgent:
                 sqlglot.parse_one(commentless_stmt, read=sqlglot_dialect)
                 validated.append(stmt)
                 continue
-            except ParseError:
+            except SqlglotError:
                 pass
 
             parsed = False
@@ -1652,7 +1830,7 @@ class CodeIngestionAgent:
                 try:
                     sqlglot.parse_one(f"SELECT {stmt}", read=sqlglot_dialect)
                     parsed = True
-                except ParseError:
+                except SqlglotError:
                     parsed = False
 
             if parsed:

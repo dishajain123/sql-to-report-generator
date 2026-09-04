@@ -1045,7 +1045,13 @@ def test_formatter_preserves_llm_rule_fields_in_report():
         assert value in report
     assert "A.CUSTOM_CONDITION >= 7" not in report
     assert "LLM supplied meaning." in report
-    assert "LLM supplied eligibility" not in report
+    # Eligibility (the WHERE/JOIN/IF gating condition) IS meant to reach the
+    # report - it was a real accuracy defect that it didn't (see the
+    # "Applies to:" rendering in _render_business_rule_block). Only the raw
+    # `condition`/`action` fields are intentionally kept out, since their
+    # business-language equivalent already lives in `business_meaning` /
+    # the decision-logic table.
+    assert "LLM supplied eligibility" in report
     assert "LLM supplied action for CUSTOM_FIELD" not in report
 
 

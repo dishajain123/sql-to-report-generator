@@ -323,6 +323,13 @@ def test_data_touched_row_with_embedded_pipe_and_newline_does_not_break_table():
 
 
 def test_large_table_is_split_with_repeated_headers_and_no_rows_lost():
+    # Updated for the "group by role + collapse long tail" behavior (D4):
+    # a 146-table flat list (the corpus's largest real procedure) was not
+    # a readable business artifact, so past a role-section row cap the
+    # tail is now collapsed behind a count rather than rendered as an
+    # ever-longer table with repeated headers. Full detail for every table
+    # remains available via the verification report / reconciliation data;
+    # this section's job is to stay readable, not exhaustive.
     fmt = ReportFormatterAgent()
     consolidated_reads = fmt._consolidate_rows(
         [
@@ -332,12 +339,61 @@ def test_large_table_is_split_with_repeated_headers_and_no_rows_lost():
     )
     report = fmt._data_touched_section(consolidated_reads, [])
     assert _no_broken_table_rows(report)
-    assert "continued" in report
-    # every table name must still be present somewhere in the split output
-    for i in range(75):
+    assert "Source (read-only)" in report
+    # The first `role_row_cap` (20) tables are shown individually...
+    for i in range(20):
         assert f"PRO.TABLE_{i}" in report
-    # header line repeated more than once (split happened)
-    assert report.count("| Table | Read/Write | Purpose |") > 1
+    # ...and the remainder is collapsed behind an explicit count, not
+    # silently dropped.
+    assert "+ 55 more" in report
+    assert "PRO.TABLE_74" not in report
+
+
+def test_small_table_list_stays_flat_without_role_grouping():
+    # Below the role-grouping threshold, splitting into Target/Source/
+    # Control subsections would add structure without adding value - a
+    # handful of tables should still render as one flat table, matching
+    # pre-D4 behavior.
+    fmt = ReportFormatterAgent()
+    consolidated_reads = fmt._consolidate_rows(
+        [
+            {"table": "PRO.AccountCal", "target_columns": ["COL_A"], "operation": "READ"},
+            {"table": "PRO.RefTable", "target_columns": ["COL_B"], "operation": "READ"},
+        ]
+    )
+    report = fmt._data_touched_section(consolidated_reads, [])
+    assert "Source (read-only)" not in report
+    assert "PRO.AccountCal" in report
+    assert "PRO.RefTable" in report
+
+
+def test_control_table_is_grouped_separately_by_column_shape_not_name():
+    # PRO.RunStatus doesn't match a HISTORY/AUDIT/MOVEMENT name pattern,
+    # but is written with start/end/status/process-identity columns on
+    # nearly every procedure in the client corpus - unambiguously a
+    # control/audit table that must not sit in the same list as a normal
+    # business table like PRO.AccountCal.
+    fmt = ReportFormatterAgent()
+    consolidated_writes = fmt._consolidate_rows(
+        [
+            {
+                "table": "PRO.RunStatus",
+                "target_columns": ["Completed", "ErrorDate", "ErrorDescription", "RunCount"],
+                "operation": "UPDATE",
+            }
+            for _ in range(9)
+        ]
+        + [
+            {"table": f"PRO.BusinessTable_{i}", "target_columns": ["Col"], "operation": "UPDATE"}
+            for i in range(9)
+        ]
+    )
+    report = fmt._data_touched_section([], consolidated_writes)
+    assert "Control / Audit" in report
+    assert "Target (written)" in report
+    control_section = report.split("### Control / Audit")[1]
+    assert "PRO.RunStatus" in control_section
+    assert "PRO.BusinessTable_0" not in control_section
 
 
 def test_small_table_is_not_split():
@@ -349,7 +405,12 @@ def test_small_table_is_not_split():
     assert "continued" not in report
 
 
-def test_data_touched_omits_temp_working_tables_but_notes_the_omission():
+def test_data_touched_shows_temp_tables_in_their_own_working_section():
+    # Real temp tables (# / ##) are frequently where the actual business
+    # logic lives (stage in a temp table, write back to the permanent
+    # table at the end) - hiding them behind a vague "N omitted" footnote
+    # threw away the data flow. They now get their own subsection instead
+    # of being folded into the same bucket as unresolved SQL aliases.
     fmt = ReportFormatterAgent()
     consolidated_reads = fmt._consolidate_rows(
         [
@@ -358,9 +419,28 @@ def test_data_touched_omits_temp_working_tables_but_notes_the_omission():
         ]
     )
     report = fmt._data_touched_section(consolidated_reads, [])
-    assert "#DPD" not in report
+    assert "#DPD" in report
+    assert "Working Tables" in report
     assert "PRO.ACCOUNTCAL" in report
-    assert "working/temporary table" in report
+    # It must never be mislabeled as an unresolved-alias omission.
+    assert "could not be resolved" not in report
+
+
+def test_data_touched_flags_unresolved_aliases_without_calling_them_temp_tables():
+    # A short bare alias (e.g. self-join "A") is a *different* thing from a
+    # real temp table, and the report must not assert a fact about the
+    # source (that a temp table exists) it has no evidence for.
+    fmt = ReportFormatterAgent()
+    consolidated_reads = fmt._consolidate_rows(
+        [
+            {"table": "A", "target_columns": ["X"], "operation": "READ"},
+            {"table": "PRO.ACCOUNTCAL", "target_columns": ["Y"], "operation": "READ"},
+        ]
+    )
+    report = fmt._data_touched_section(consolidated_reads, [])
+    assert "PRO.ACCOUNTCAL" in report
+    assert "could not be resolved" in report
+    assert "working/temporary table" not in report
 
 
 def test_when_not_eligible_omitted_when_source_has_no_negative_path():

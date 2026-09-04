@@ -43,7 +43,7 @@ from src.extraction.logic_extractor import LogicExtractionAgent, ChunkExtraction
 from src.synthesis.rule_synthesizer import RuleSynthesizerAgent, SynthesisResult
 from src.output.report_formatter import ReportFormatterAgent
 from src.parsing.technical_sql_ops import extract_table_operations_from_chunks, split_table_operations
-from src.ingestion.guardrails import InputGuardrailError, run_input_guardrails
+from src.ingestion.guardrails import InputGuardrailError, run_input_guardrails, strip_inactive_code_for_llm
 from src.dialect.detector import UnsupportedDialectError, detect_dialect
 from src.core.llm_client import LLMConfig, create_llm_client, load_llm_config
 from src.core.llm_response_cache import PersistentLLMResponseCache
@@ -632,12 +632,19 @@ class LogicRulesExtractorPipeline:
     @staticmethod
     def _estimate_text_tokens(value: str) -> int:
         """Conservatively estimate tokens without coupling the app to a tokenizer."""
-        # SQL is unusually token-expensive: long identifiers, punctuation,
-        # operators, and quoted literals generally produce fewer characters
-        # per token than ordinary prose. A conservative estimate is safer
-        # than selecting full-source mode and discovering at the provider
-        # boundary that the prompt was truncated.
-        return max(1, math.ceil(len(value or "") / 1.5))
+        # Calibrated to ~3.5 chars/token for SQL. The previous 1.5 chars/token
+        # divisor was roughly 2.3x more pessimistic than real Bedrock usage
+        # (measured: sample runs used ~2,521 completion tokens against a
+        # source far smaller than that ratio implied), which pushed objects
+        # into the chunked extraction path - where rules fragment, duplicate,
+        # and get lost in the merge - even when they would fit comfortably in
+        # a single pass. Still deliberately conservative (not pushed to the
+        # ~4 chars/token typical of general code) since under-counting here
+        # is safe (falls back to chunking) and over-counting is not
+        # (truncated single-pass prompt). Validate against the actual
+        # `inputTokens` Bedrock returns (already captured in telemetry) if
+        # this needs recalibrating further for a specific model/corpus.
+        return max(1, math.ceil(len(value or "") / 3.5))
 
     def _estimate_single_pass_tokens(self, raw_code: str, rag_context: str) -> int:
         """Estimate the extraction prompt input plus a safety reserve."""
@@ -671,11 +678,19 @@ class LogicRulesExtractorPipeline:
     ) -> ChunkExtraction:
         """Run the existing technical extractor once over the complete source."""
         extraction_start = time.perf_counter()
+        # Strip commented-out DML before it ever reaches the extraction
+        # prompt (see strip_inactive_code_for_llm docstring) - this must be
+        # deterministic, not left to a prompted instruction the model can
+        # lose track of against thousands of lines of realistic-looking
+        # dead SQL. The sanitized text is what gets sent AND what
+        # ground_extraction_against_source checks the response against, so
+        # nothing here can be "grounded" in dead code.
+        sanitized_source, inactive_snippets = strip_inactive_code_for_llm(ingestion.raw_code)
         try:
             extraction = self.extraction_agent.extract(
                 chunk_id="full_source",
                 chunk_kind="full_source",
-                code_chunk=ingestion.raw_code,
+                code_chunk=sanitized_source,
                 rag_context=rag_context,
                 object_type=ingestion.object_type,
                 object_name=ingestion.object_name,
@@ -697,6 +712,15 @@ class LogicRulesExtractorPipeline:
                 parse_error=str(exc),
                 guardrail_warnings=[f"Full-source extraction failed: {exc}"],
             )
+        if inactive_snippets:
+            # Verification-report-only note (see format_verification's
+            # guardrail_warnings surfacing) - never promoted to the
+            # business report. Genuinely useful to a reviewer, and removes
+            # the risk of a repealed rule being documented as active.
+            extraction.guardrail_warnings = list(extraction.guardrail_warnings or []) + [
+                f"Commented-out logic found in source ({len(inactive_snippets)} block(s)) and excluded "
+                "from extraction - not included in the business rules."
+            ]
         setattr(extraction, "_timings", {"retrieval": 0.0, "extraction": time.perf_counter() - extraction_start})
         return extraction
 
@@ -877,11 +901,12 @@ class LogicRulesExtractorPipeline:
                     return index, extraction
 
         extraction_start = time.perf_counter()
+        sanitized_chunk_text, inactive_snippets = strip_inactive_code_for_llm(chunk.text)
         try:
             extraction = self.extraction_agent.extract(
                 chunk_id=chunk.chunk_id,
                 chunk_kind=chunk.kind,
-                code_chunk=chunk.text,
+                code_chunk=sanitized_chunk_text,
                 rag_context=rag_context,
                 object_type=ingestion.object_type,
                 object_name=ingestion.object_name,
@@ -909,6 +934,15 @@ class LogicRulesExtractorPipeline:
                 parse_error=str(exc),
                 guardrail_warnings=[f"Chunk extraction failed: {exc}"],
             )
+        if inactive_snippets:
+            # Verification-report-only note - see the matching comment in
+            # _extract_full_source. Deterministic, not prompted: this
+            # chunk's commented-out DML never reached the extraction
+            # prompt as candidate logic.
+            extraction.guardrail_warnings = list(extraction.guardrail_warnings or []) + [
+                f"Commented-out logic found in source ({len(inactive_snippets)} block(s)) and excluded "
+                "from extraction - not included in the business rules."
+            ]
         timings["extraction"] = time.perf_counter() - extraction_start
         setattr(extraction, "_timings", timings)
         if exact_extraction_cache is not None and cache_key is not None:

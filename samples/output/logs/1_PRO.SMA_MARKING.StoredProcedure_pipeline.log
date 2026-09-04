@@ -1,0 +1,213 @@
+2026-09-04 09:44:13,143 | INFO | __main__ | Run started for PRO.SMA_MARKING.StoredProcedure.sql
+2026-09-04 09:44:13,145 | INFO | logic_rules_extractor.pipeline | Stage 1/6: Running input guardrails
+2026-09-04 09:44:13,151 | INFO | logic_rules_extractor.pipeline | Stage 1/6 completed in 0.00s (input guardrails)
+2026-09-04 09:44:13,152 | INFO | logic_rules_extractor.pipeline | Stage 2/6: Detecting dialect
+2026-09-04 09:44:13,167 | INFO | logic_rules_extractor.pipeline | Detected TSQL dialect (confidence: high)
+2026-09-04 09:44:13,169 | INFO | logic_rules_extractor.pipeline | Stage 2/6 completed in 0.02s (dialect detection)
+2026-09-04 09:44:13,171 | INFO | logic_rules_extractor.pipeline | Stage 3/6: Preprocessing, parsing, and chunking /tmp/tmpwsedn6gv.sql
+2026-09-04 09:44:13,715 | INFO | logic_rules_extractor.pipeline | Detected TSQL PROCEDURE 'SMA_MARKING' with 11 chunk(s)
+2026-09-04 09:44:13,717 | INFO | logic_rules_extractor.pipeline | Stage 3/6 completed in 0.54s (preprocessing/parsing/chunking)
+2026-09-04 09:44:13,718 | INFO | logic_rules_extractor.pipeline | Stage 4/6: Retrieving dependencies / pattern context and extracting logic per chunk (model: amazon.nova-lite-v1:0)
+2026-09-04 09:44:13,993 | INFO | logic_rules_extractor.pipeline | Persistent knowledge base ready in 0.27s
+2026-09-04 09:44:14,024 | INFO | logic_rules_extractor.pipeline | Stage 4 extraction selection: estimated_tokens=13973 budget=297000 path=single-pass extraction_calls=1 merge_ran=False
+2026-09-04 09:45:00,366 | INFO | logic_rules_extractor.pipeline | Stage 4/6 completed in 46.65s total (kb_ready=0.27s, retrieval/KB sum=0.00s, LLM extraction sum=46.34s, workers=8, chunks=1)
+2026-09-04 09:45:00,368 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
+2026-09-04 09:45:41,929 | INFO | src.validation.coverage_check | Coverage block lines=19-19 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 09:45:41,931 | INFO | src.validation.coverage_check | Coverage block lines=24-24 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 09:45:41,935 | INFO | src.validation.coverage_check | Coverage block lines=36-37 overlap_ratio=0.405 matched_rule=0 uncovered=False
+2026-09-04 09:45:41,937 | INFO | src.validation.coverage_check | Coverage block lines=48-49 overlap_ratio=0.405 matched_rule=0 uncovered=False
+2026-09-04 09:45:41,939 | INFO | src.validation.coverage_check | Coverage block lines=72-72 overlap_ratio=0.333 matched_rule=0 uncovered=False
+2026-09-04 09:45:41,942 | INFO | src.validation.coverage_check | Coverage block lines=106-111 overlap_ratio=1.000 matched_rule=0 uncovered=False
+2026-09-04 09:45:41,944 | INFO | src.validation.coverage_check | Coverage block lines=117-117 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,947 | INFO | src.validation.coverage_check | Coverage block lines=121-126 overlap_ratio=0.401 matched_rule=0 uncovered=False
+2026-09-04 09:45:41,949 | INFO | src.validation.coverage_check | Coverage block lines=142-142 overlap_ratio=1.000 matched_rule=2 uncovered=False
+2026-09-04 09:45:41,952 | INFO | src.validation.coverage_check | Coverage block lines=149-153 overlap_ratio=1.000 matched_rule=3 uncovered=False
+2026-09-04 09:45:41,954 | INFO | src.validation.coverage_check | Coverage block lines=160-163 overlap_ratio=1.000 matched_rule=4 uncovered=False
+2026-09-04 09:45:41,956 | INFO | src.validation.coverage_check | Coverage block lines=169-172 overlap_ratio=1.000 matched_rule=2 uncovered=False
+2026-09-04 09:45:41,960 | INFO | src.validation.coverage_check | Coverage block lines=175-181 overlap_ratio=1.000 matched_rule=3 uncovered=False
+2026-09-04 09:45:41,962 | INFO | src.validation.coverage_check | Coverage block lines=185-186 overlap_ratio=1.000 matched_rule=4 uncovered=False
+2026-09-04 09:45:41,964 | INFO | src.validation.coverage_check | Coverage block lines=311-313 overlap_ratio=1.000 matched_rule=4 uncovered=False
+2026-09-04 09:45:41,965 | INFO | src.validation.coverage_check | Coverage block lines=321-321 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,968 | INFO | src.validation.coverage_check | Coverage block lines=324-327 overlap_ratio=1.000 matched_rule=4 uncovered=False
+2026-09-04 09:45:41,969 | INFO | src.validation.coverage_check | Coverage block lines=334-334 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,971 | INFO | src.validation.coverage_check | Coverage block lines=345-345 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,974 | INFO | src.validation.coverage_check | Coverage block lines=348-351 overlap_ratio=1.000 matched_rule=4 uncovered=False
+2026-09-04 09:45:41,975 | INFO | src.validation.coverage_check | Coverage block lines=358-358 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,977 | INFO | src.validation.coverage_check | Coverage block lines=364-366 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,978 | INFO | src.validation.coverage_check | Coverage block lines=370-370 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,980 | INFO | src.validation.coverage_check | Coverage block lines=378-382 overlap_ratio=1.000 matched_rule=4 uncovered=False
+2026-09-04 09:45:41,981 | INFO | src.validation.coverage_check | Coverage block lines=390-390 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,986 | INFO | src.validation.coverage_check | Coverage block lines=400-415 overlap_ratio=0.194 matched_rule=2 uncovered=True
+2026-09-04 09:45:41,987 | INFO | src.validation.coverage_check | Coverage block lines=450-450 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,989 | INFO | src.validation.coverage_check | Coverage block lines=456-456 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,989 | INFO | src.validation.coverage_check | Coverage block lines=477-477 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,991 | INFO | src.validation.coverage_check | Coverage block lines=511-511 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,993 | INFO | src.validation.coverage_check | Coverage block lines=549-555 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,994 | INFO | src.validation.coverage_check | Coverage block lines=562-565 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,996 | INFO | src.validation.coverage_check | Coverage block lines=587-587 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,997 | INFO | src.validation.coverage_check | Coverage block lines=593-593 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,998 | INFO | src.validation.coverage_check | Coverage block lines=615-615 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:41,999 | INFO | src.validation.coverage_check | Coverage block lines=650-650 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:42,001 | INFO | src.validation.coverage_check | Coverage block lines=690-696 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:42,002 | INFO | src.validation.coverage_check | Coverage block lines=703-706 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:42,003 | INFO | src.validation.coverage_check | Coverage block lines=731-732 overlap_ratio=0.405 matched_rule=0 uncovered=False
+2026-09-04 09:45:42,005 | INFO | src.validation.coverage_check | Coverage block lines=751-752 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:42,007 | INFO | src.validation.coverage_check | Coverage block lines=768-769 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 09:45:42,009 | INFO | logic_rules_extractor.pipeline | Coverage check found 3 unreviewed decision point(s); asking the model to review (attempt 1)
+2026-09-04 09:46:23,614 | INFO | logic_rules_extractor.pipeline | Stage 5/6 completed in 83.24s (business reasoning)
+2026-09-04 09:46:23,617 | INFO | logic_rules_extractor.pipeline | Stage 6/6: Reconciling deterministic evidence against synthesized output
+2026-09-04 09:46:23,707 | INFO | logic_rules_extractor.pipeline | Stage 6/6 completed in 0.09s (deterministic reconciliation)
+2026-09-04 09:46:23,711 | INFO | logic_rules_extractor.pipeline | Stage 7/7: Applying output guardrails and formatting final report
+2026-09-04 09:46:23,799 | INFO | logic_rules_extractor.pipeline | Verification/traceability diagnostics for PRO.SMA_MARKING.StoredProcedure_report.md:
+# SMA Marking — Verification & Traceability
+
+> Companion artifact to `PRO.SMA_MARKING.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
+
+| Item | Value |
+|---|---|
+| Object ID | `obj_6ed9993261c9` |
+| Raw technical object name (from source) | `SMA_MARKING` |
+
+## Run Metadata
+
+| Item | Value |
+|---|---|
+| Pipeline Version | `2026-08-26-phase1` |
+| Prompt Version | `1c8e103a89db04c2` |
+| Knowledge Base Version | `2e6fc62902751973` |
+| Model | `amazon.nova-lite-v1:0` |
+| Provider | `bedrock` |
+| Dialect | `T-SQL` |
+| Dialect Confidence | `High` |
+| Source Hash | `fff7585a03cb147d56cb99cc3fa108a5a08556179ba637f7356954000e362a12` |
+| Configuration Version | `646dbbaf5be7f3a0` |
+| Run Timestamp | `2026-09-04T09:44:13.715376+00:00` |
+| Object ID | `obj_6ed9993261c9` |
+
+## LLM Telemetry
+
+| Item | Value |
+|---|---|
+| Run ID | `telemetry_36bd1113e76b` |
+| Total LLM Calls | `3` |
+| Successful Calls | `3` |
+| Failed Calls | `0` |
+| Prompt Tokens | `109140` |
+| Completion Tokens | `15000` |
+| Total Tokens | `124140` |
+| Telemetry Availability | `available` |
+
+| Stage | Calls | Success | Failure | Tokens | Availability |
+|---|---:|---:|---:|---:|---|
+| extraction | 1 | 1 | 0 | 28174 | available |
+| synthesis | 1 | 1 | 0 | 45471 | available |
+| synthesis_revision | 1 | 1 | 0 | 50495 | available |
+
+## Business Rule Summary
+
+| Priority | Rule | Output | Business Purpose |
+|---|---|---|---|
+| 🔴 1 | Reset negative DPD to zero [CONFLICT] (`rule_01`) | `DPD_IntService, DPD_NoCredit, DPD_Overdrawn, DPD_Overdue, DPD_Renewal, DPD_StockStmt` | Ensures that any negative overdue days are reset to zero for all types of overdue days. |
+| 🔴 2 | Calculate maximum overdue days [CONFLICT] (`rule_02`) | `DPD_Max` | Determines the maximum overdue days for each account by comparing different types of overdue days. |
+| 🔴 3 | Assign SMA class based on maximum overdue days [CONFLICT] (`rule_03`) | `SMA_CLASS` | Classifies accounts into SMA categories based on the maximum overdue days. |
+| 🔴 4 | Assign SMA reason based on facility type and maximum overdue days [CONFLICT] (`rule_04`) | `SMA_REASON` | Determines the reason for SMA classification based on the facility type and the type of overdue days that matches the maximum overdue days. |
+| 🔴 5 | Update SMA class key and SMA date [CONFLICT] (`rule_05`) | `SMA_CLASS_KEY` | Updates the SMA class key and SMA date for accounts and customers based on the maximum SMA class. |
+| 🟠 6 | Record account movement history [LLM_ONLY] (`rule_06`) | `Not specified` | Records movement history for accounts if there is a change in SMA status. |
+
+## Source Traceability
+
+<details>
+<summary><strong>Show rule-to-source mapping</strong></summary>
+
+| # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |
+|---|---|---|---|---|---|---|
+| 1 | Reset negative DPD to zero (rule_01) | isnull(DPD_IntService,0)<0; isnull(DPD_NoCredit,0)<0; isnull(DPD_Overdrawn,0)<0; isnull(DPD_Overdue,0)<0; isnull(DPD_Renewal,0)<0; isnull(DPD_StockStmt,0)<0 | Not cited | full_source | full_source | Needs Review |
+| 2 | Calculate maximum overdue days (rule_02) | (isnull(A.DPD_IntService,0)>=isnull(A.DPD_NoCredit,0) AND isnull(A.DPD_IntService,0)>=isnull(A.DPD_Overdrawn,0) AND isnull(A.DPD_IntService,0)>=isnull(A.DPD_Overdue,0) AND isnull(A.DPD_IntService,0)>=isnull(A.DPD_Renewal,0) AND isnull(A.DPD_IntService,0)>=isn… | Not cited | full_source | full_source | Needs Review |
+| 3 | Assign SMA class based on maximum overdue days (rule_03) | dpd.DPD_Max BETWEEN 1 AND 30; dpd.DPD_Max BETWEEN 31 AND 60; dpd.DPD_Max BETWEEN 61 AND 90; dpd.DPD_Max > 90 | Not cited | full_source | full_source | Needs Review |
+| 4 | Assign SMA reason based on facility type and maximum overdue days (rule_04) | A.FACILITYTYPE IN ('CC','OD') AND ISNULL(DPD.DPD_INTSERVICE,0)=ISNULL(dpd.DPD_MAX,0); A.FACILITYTYPE IN ('CC','OD') AND ISNULL(DPD.DPD_NOCREDIT,0)=ISNULL(dpd.DPD_MAX,0); A.FACILITYTYPE IN ('TL','DL','BP','BD','PC') AND ISNULL(dpd.DPD_OVERDUE,0)=ISNULL(dpd.DPD… | Not cited | full_source | full_source | Needs Review |
+| 5 | Update SMA class key and SMA date (rule_05) | SMA_CLASS='SMA_0'; SMA_CLASS='SMA_1'; SMA_CLASS='SMA_2' | Not cited | full_source | full_source | Needs Review |
+| 6 | Record account movement history (rule_06) | B.SMA_CLASS IS NOT NULL AND ISNULL(A.SMA_CLASS,'')<>ISNULL(B.SMA_CLASS,'') | Not cited | full_source | full_source | Needs Review |
+
+_Source evidence is the literal technical text carried through the pipeline; Source Location is derived deterministically from chunk and statement provenance when available; SQL Statements / Chunks and Technical References point back to the extracted chunk ids and statement references used by the guardrails. Technical references that repeat the same table/operation/target-columns are shown once._
+</details>
+
+## Rule Provenance Summary
+
+- **Total business rules:** 6
+- **By rule type:** explicit = 6
+- **By validation status:** unverified = 6
+
+_This count reflects every individually traceable rule (one per source statement/field, for full auditability). The business report may show a smaller number, because closely related rules that apply the same pattern to several fields (e.g. "reset each of these six DPD fields to zero if negative") are presented there as one combined rule for readability. Every rule counted here is still individually traceable in the Source Traceability table below - none are dropped, only grouped for display._
+
+_Rules marked **unverified** could not be matched back to the technical extraction or source code and should be prioritized for human review before being treated as confirmed._
+
+## Reconciliation Summary
+
+- **Matched facts:** 0
+- **Deterministic-only facts:** 93
+- **LLM-only claims:** 1
+- **Conflicts:** 5
+- **Unresolved items:** 0
+- **Review required:** Yes
+
+### Review Items
+
+- `CONFLICT` rule (`recon_8a908954edd3`): full_source, 01_nested_block:chunk_text_13;01_nested_block:embedded_05_18;01_nested_block:embedded_06_19;01_nested_block:embedded_07_20;01_nested_block:embedded_08_21;01_nested_block:embedded_09_22 - Deterministic evidence conflicts with the synthesized claim.
+- `CONFLICT` rule (`recon_58a76e0a7692`): full_source - Deterministic evidence conflicts with the synthesized claim.
+- `CONFLICT` rule (`recon_40015d420743`): full_source - Deterministic evidence conflicts with the synthesized claim.
+- `CONFLICT` rule (`recon_9bb4db6e373b`): full_source - Deterministic evidence conflicts with the synthesized claim.
+- `CONFLICT` rule (`recon_26fc32b2ea67`): full_source - Deterministic evidence conflicts with the synthesized claim.
+
+## Quality Summary
+
+- **Overall status:** REVIEW_REQUIRED
+- **Quality score:** 15/100
+- **Statement coverage:** 100 / 129 (77.5%)
+- **Rule grounding coverage:** 5 / 6 (83.3%)
+- **Conflicts:** 5
+- **Contradictions:** 11
+- **Review required items:** 17
+- **Review required:** Yes
+
+### Contradictions
+
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Outcome Conflict on `source`: Synthesized outcome/assignment conflicts with deterministic evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Outcome Conflict on `source`: Synthesized outcome/assignment conflicts with deterministic evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+
+_Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._
+
+## Pipeline Diagnostics
+
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): Update         A
+SET            A.ReviewDueDt=NULL,A.DPD_Renewal=0
+FROM           ##ACCOUNTCAL A 
+INNER JOIN     #DPD...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE #DPD SET DPD_StockStmt=0 WHERE isnull(DPD_StockStmt,0)<0  
+  
+  
+  
+----/* CALCULATE MAX DPD */  
+  
+  IF O...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE A SET A.FLGSMA='Y'  
+FROM ##CUSTOMERCAL A INNER JOIN ##AccountCal B ON A.CustomerEntityID =B.CustomerEntityID...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE A SET A.FLGSMA='Y'  
+FROM ##CUSTOMERCAL A INNER JOIN ##AccountCal B ON A.UCIF_ID =B.UCIF_ID  
+WHERE B.FLGSMA='Y...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE A SET A.SMA_CLASS_KEY=B.MAXSMA_CLASS,A.SMA_DT=B.SMA_Dt  
+FROM ##CUSTOMERCAL A  INNER JOIN  #TEMPTABLE_SMACLASSUc...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): SELECT @TIMEKEY,B.CustomerAcID,A.SMA_CLASS,B.SMA_CLASS   
+FROM PRO.PREVSMASTATUS A  RIGHT OUTER JOIN  #SMACLASS B  
+ON...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE  ##AccountCal SET SMA_CLASS='LOS' WHERE FinalAssetClassAlt_Key=6 AND  SMA_CLASS is NULL  
+    
+  
+  
+ --IF OB...
+- Technical extraction response reached the output limit; recovered facts may be incomplete.
+- Commented-out logic found in source (19 block(s)) and excluded from extraction - not included in the business rules.
+- Synthesis response reached the output limit; recovered rules may be incomplete.
+2026-09-04 09:46:23,801 | INFO | logic_rules_extractor.pipeline | Stage 7/7 completed in 0.09s (final report generation)

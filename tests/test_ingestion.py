@@ -18,6 +18,7 @@ from src.ingestion.ingestion import build_object_identity_stem
 from src.output.report_formatter import ReportFormatterAgent
 from src.ingestion.guardrails import run_input_guardrails
 from src.ingestion.guardrails import ground_extraction_against_source
+from src.ingestion.guardrails import find_inactive_code_blocks, strip_inactive_code_for_llm
 from src.dialect.detector import DialectDetectionResult, detect_dialect
 import src.parsing.technical_sql_ops as sql_ops
 from src.parsing.technical_sql_ops import extract_table_operations_from_chunks, split_table_operations
@@ -1090,3 +1091,177 @@ def test_sma_stage_marking_style_statements_structurally_parse_end_to_end(agent)
     stmts = agent._extract_and_validate_sql(body, warnings, dialect="tsql")
     assert len(stmts) == 2
     assert not any("Could not fully structurally parse" in w for w in warnings)
+
+def test_header_param_with_as_keyword_and_output_direction_is_extracted():
+    # Regression test for the client-corpus finding: "@Date as Varchar(20)"
+    # (an "AS" between parameter name and datatype - unusual but valid
+    # T-SQL, seen throughout the corpus, e.g. ACLMainRunProcessForDummy)
+    # previously made the "AS"-detection logic treat the very first "AS"
+    # found after the object name as the body-opening keyword, truncating
+    # the parameter list to a single word. It also lost the OUTPUT
+    # direction entirely once the default-value literal was masked.
+    agent = CodeIngestionAgent()
+    sql = (
+        "CREATE PROC [PRO].[ACLMainRunProcessForDummy]\n"
+        "@Date as Varchar(20)\n"
+        ",@Result as Int = 0 OutPut\n"
+        "As\n"
+        "BEGIN\n"
+        "SELECT 1\n"
+        "END"
+    )
+    masked = agent._mask_strings_and_comments(sql, mask_brackets=False)
+    params, complete, saw_candidate = agent._extract_parameters_tsql_detailed(sql, masked)
+    assert complete
+    assert saw_candidate
+    assert [p.name for p in params] == ["@Date", "@Result"]
+    assert [p.datatype for p in params] == ["VARCHAR(20)", "INT"]
+    assert [p.direction for p in params] == ["IN", "OUT"]
+
+
+def test_header_trailing_inline_comment_does_not_swallow_first_parameter():
+    # Regression test: "CREATE PROCEDURE ... --26857" (a trailing inline
+    # comment on the header line, seen in the client corpus, e.g.
+    # Final_AssetClass_Npadate) has no comma before it, so splitting the
+    # RAW parameter block glued the comment text onto the front of the
+    # first parameter ("--26857\n@TIMEKEY INT"), which then failed the
+    # "starts with @" check and silently dropped a real parameter. A
+    # masked default-value literal ('N') immediately followed by "with
+    # recompile" must also not be lost.
+    agent = CodeIngestionAgent()
+    sql = (
+        "CREATE PROCEDURE [PRO].[Final_AssetClass_Npadate] --26857\n"
+        "@TIMEKEY INT ,\n"
+        "@FlgPreErosion char(1)='N'\n"
+        "with recompile\n"
+        "AS\n"
+        "BEGIN\n"
+        "SELECT 1\n"
+        "END"
+    )
+    masked = agent._mask_strings_and_comments(sql, mask_brackets=False)
+    params, complete, saw_candidate = agent._extract_parameters_tsql_detailed(sql, masked)
+    assert complete
+    assert [p.name for p in params] == ["@TIMEKEY", "@FlgPreErosion"]
+    assert [p.datatype for p in params] == ["INT", "CHAR(1)"]
+
+
+def test_genuinely_empty_default_value_still_reports_failure():
+    # Companion safety check for the two regression tests above: a
+    # genuinely malformed default (nothing at all follows "=", not even a
+    # masked literal) must still be reported as unparseable, not silently
+    # accepted just because the fix above learned to recover masked
+    # defaults elsewhere.
+    agent = CodeIngestionAgent()
+    sql = "CREATE PROCEDURE dbo.bad_params\n(\n    @status VARCHAR(20) = \n)\nAS\nBEGIN\n    SELECT 1;\nEND"
+    masked = agent._mask_strings_and_comments(sql, mask_brackets=False)
+    params, complete, saw_candidate = agent._extract_parameters_tsql_detailed(sql, masked)
+    assert not complete
+    assert params == []
+
+
+def test_commented_out_dml_is_stripped_before_reaching_the_llm():
+    # Regression test for the client-corpus finding: 2,417 commented-out
+    # DML lines across 80/91 files were passed to the extraction prompt as
+    # if they were ordinary code content (extraction's injection-defense
+    # instruction to "extract [comment content] the same way you would any
+    # other code" made no distinction between prose and dead SQL). A
+    # commented-out UPDATE/INSERT/DELETE/MERGE must never reach the model
+    # as candidate active logic; ordinary business commentary must be left
+    # completely untouched.
+    source = (
+        "-- Rule 1: classify the SMA stage by overdue days\n"
+        "UPDATE A SET A.SmaStage = 'X' FROM PRO.AccountCal A\n"
+        "\n"
+        "-- Old logic, replaced 2020-12-31:\n"
+        "-- UPDATE A SET A.SmaStage = DATEADD(DAY, -A.OverdueDays, @ProcessDate)\n"
+        "-- FROM PRO.AccountCal A WHERE A.OverdueDays > 30\n"
+        "\n"
+        "-- TODO: consider adding an UPDATE trigger here for auditing\n"
+    )
+    sanitized, snippets = strip_inactive_code_for_llm(source)
+
+    # Length/line structure must be preserved exactly - downstream char/line
+    # offset tracking depends on it.
+    assert len(sanitized) == len(source)
+    assert sanitized.count("\n") == source.count("\n")
+
+    # The real business comment and the prose TODO (which only *mentions*
+    # UPDATE, isn't one) must survive completely untouched.
+    assert "-- Rule 1: classify the SMA stage by overdue days" in sanitized
+    assert "UPDATE A SET A.SmaStage = 'X' FROM PRO.AccountCal A" in sanitized
+    assert "-- TODO: consider adding an UPDATE trigger here for auditing" in sanitized
+
+    # The commented-out UPDATE must be gone from what the LLM sees...
+    assert "DATEADD(DAY, -A.OverdueDays" not in sanitized
+    assert "INACTIVE CODE REMOVED" in sanitized
+    # ...but preserved separately for verification-report-only surfacing.
+    assert len(snippets) == 1
+    assert "DATEADD(DAY, -A.OverdueDays" in snippets[0]
+
+
+def test_inactive_code_detection_requires_both_dml_keyword_and_code_shape():
+    # A comment that merely mentions a DML keyword in prose (no
+    # assignment, no qualified identifier, no bind variable, no
+    # terminator) must not be flagged - only text that actually looks like
+    # commented-out code should be.
+    prose_only = "-- We should probably UPDATE the documentation for this someday\n"
+    assert find_inactive_code_blocks(prose_only) == []
+
+
+def test_find_called_procedures_orders_and_excludes_dynamic_sql():
+    # Regression test built from the real client-corpus finding: one
+    # orchestrator procedure makes 23 EXEC calls and contains almost no
+    # business logic of its own - its entire business meaning IS the call
+    # sequence, which the report had no way to show before this. Also
+    # verifies commented-out EXEC calls and dynamic-SQL EXEC forms
+    # (EXEC(...), EXEC @var, sp_executesql) are correctly excluded.
+    agent = CodeIngestionAgent()
+    sql = (
+        "CREATE PROCEDURE PRO.Orchestrator\n"
+        "AS\n"
+        "BEGIN\n"
+        "EXEC PRO.StepOne @TimeKey=@TimeKey\n"
+        "EXEC [PRO].[StepTwo] @TimeKey=@TimeKey\n"
+        "EXEC  PRO.[StepThree] @TimeKey=@TimeKey\n"
+        "--EXEC PRO.DisabledStep @TimeKey=@TimeKey\n"
+        "EXEC @rc = dbo.StepFour @account_id\n"
+        "EXEC (@dynamic_sql)\n"
+        "EXEC sp_executesql @sql\n"
+        "END\n"
+    )
+    calls = agent.find_called_procedures(sql, dialect="tsql")
+    assert [c["name"] for c in calls] == [
+        "PRO.StepOne",
+        "[PRO].[StepTwo]",
+        "PRO.[StepThree]",
+        "dbo.StepFour",
+    ]
+    assert calls[0]["arguments"] == "@TimeKey=@TimeKey"
+    assert calls[3]["return_variable"] == "@rc"
+    # Order must be preserved (source order, not alphabetical or grouped).
+    assert [int(c["line"]) for c in calls] == sorted(int(c["line"]) for c in calls)
+
+
+def test_find_hardcoded_dates_excludes_commented_out_literals():
+    # Regression test built from the real client-corpus finding: 293
+    # hardcoded date literals in live code across 28/91 files - usually a
+    # deliberate cutover boundary or a forgotten test value, and typically
+    # the first thing an audit reviewer asks about. A date-shaped literal
+    # that only appears inside a commented-out statement must not be
+    # reported as if it were live.
+    agent = CodeIngestionAgent()
+    sql = (
+        "UPDATE A SET A.ContiExcessDt = '1900-01-01' WHERE A.Flag = 'Y'\n"
+        "\n"
+        "-- Old cutover logic, no longer used:\n"
+        "-- UPDATE A SET A.ContiExcessDt = '2020-12-31' WHERE A.Flag = 'N'\n"
+        "\n"
+        "UPDATE A SET A.NextReviewDt = '01/01/1900'\n"
+    )
+    dates = agent.find_hardcoded_dates(sql)
+    values = [d["value"] for d in dates]
+    assert "1900-01-01" in values
+    assert "01/01/1900" in values
+    assert "2020-12-31" not in values
+    assert len(dates) == 2

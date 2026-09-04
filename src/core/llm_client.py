@@ -26,10 +26,46 @@ from urllib.request import Request, urlopen
 from openai import OpenAI
 
 
-# Amazon Nova Lite rejects Converse requests whose requested output limit is
-# 10,000 or higher. Keep this constraint local to the Bedrock transport so
-# other providers and the pipeline's existing configuration are unchanged.
+# Fallback ceiling used only when a model isn't in _BEDROCK_MODEL_OUTPUT_CAPS
+# below. Kept for backward compatibility with any code still importing this
+# name directly.
 BEDROCK_MAX_OUTPUT_TOKENS = 9999
+
+# Real per-model maximum COMPLETION tokens on Bedrock. These are hard ceilings
+# imposed by the model itself, not configuration - requesting more than a
+# model's true max silently gets clamped or rejected server-side, and (before
+# the stopReason fix above) a clamp-induced truncation was invisible to the
+# pipeline. Match on a substring of the normalized (post "bedrock/") model id
+# so version-qualified ids (e.g. "amazon.nova-lite-v1:0") still resolve.
+# Extend this map as new models are onboarded rather than trusting a single
+# global constant to be correct for every model.
+_BEDROCK_MODEL_OUTPUT_CAPS = {
+    "amazon.nova-micro": 5000,
+    "amazon.nova-lite": 5000,
+    "amazon.nova-pro": 5000,
+    "amazon.nova-2-lite": 65536,
+    "amazon.nova-2-pro": 65536,
+    "anthropic.claude-3-haiku": 4096,
+    "anthropic.claude-3-5-sonnet": 8192,
+    "anthropic.claude-3-7-sonnet": 8192,
+}
+
+
+def _max_output_tokens_for_model(model_id: str) -> int:
+    normalized = str(model_id or "").strip().lower()
+    for prefix, cap in _BEDROCK_MODEL_OUTPUT_CAPS.items():
+        if prefix in normalized:
+            return cap
+    return BEDROCK_MAX_OUTPUT_TOKENS
+
+
+# Nova models: sending temperature=0 alone does NOT guarantee deterministic,
+# run-to-run-stable output on Bedrock - topP and topK keep their (non-greedy)
+# model defaults unless explicitly pinned. The synthesis prompt spends ~20
+# lines demanding run-to-run stability, so this must be set on every Nova
+# request, not left to the model default.
+_NOVA_DETERMINISTIC_TOP_P = 1.0
+_NOVA_DETERMINISTIC_TOP_K = 1
 
 try:  # pragma: no cover - optional dependency in developer environments
     import boto3  # type: ignore
@@ -69,7 +105,6 @@ def load_llm_config() -> LLMConfig:
     aws_secret_access_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
     aws_session_token = os.environ.get("AWS_SESSION_TOKEN", "").strip()
     aws_region = os.environ.get("AWS_DEFAULT_REGION", "").strip() or os.environ.get("AWS_REGION", "").strip()
-    context_window = _configured_context_window()
 
     if not model_name and legacy_model_name and provider in {"", "bedrock"}:
         model_name = legacy_model_name
@@ -85,6 +120,10 @@ def load_llm_config() -> LLMConfig:
         provider = "openai"
 
     provider = provider.lower()
+    # Computed after model_name is fully resolved (bedrock/ prefix stripped)
+    # so the per-model default in _configured_context_window can actually
+    # match on the real model id.
+    context_window = _configured_context_window(model_name)
 
     if provider == "groq":
         # Groq exposes an OpenAI-compatible chat-completions API. Keep its
@@ -181,14 +220,44 @@ def load_llm_config() -> LLMConfig:
     )
 
 
-def _configured_context_window() -> int:
-    """Return the configured model context window, with a conservative default."""
-    raw = os.environ.get("LLM_CONTEXT_WINDOW", "32768").strip()
-    try:
-        value = int(raw)
-    except ValueError:
-        value = 32768
-    return max(value, 4096)
+# Real context-window ceilings for Bedrock models, used as the DEFAULT when
+# LLM_CONTEXT_WINDOW is not explicitly set. The previous flat 32768 default
+# starved nova-lite (300K context) down to a ~30K effective budget after the
+# prompt-schema reserve, which - combined with the pessimistic token
+# estimator above - routed most objects in a 91-procedure corpus through the
+# chunked extraction path even though they would fit in a single pass.
+_BEDROCK_MODEL_CONTEXT_WINDOWS = {
+    "amazon.nova-micro": 128000,
+    "amazon.nova-lite": 300000,
+    "amazon.nova-pro": 300000,
+    "amazon.nova-2-lite": 1000000,
+    "amazon.nova-2-pro": 1000000,
+    "anthropic.claude-3-haiku": 200000,
+    "anthropic.claude-3-5-sonnet": 200000,
+    "anthropic.claude-3-7-sonnet": 200000,
+}
+
+
+def _configured_context_window(model_name: str = "") -> int:
+    """Return the configured model context window.
+
+    `LLM_CONTEXT_WINDOW` always wins when explicitly set (an operator
+    override should never be silently ignored). Otherwise the default is
+    looked up per-model from `_BEDROCK_MODEL_CONTEXT_WINDOWS` rather than a
+    single flat constant, since a Bedrock model's real context window varies
+    by an order of magnitude or more across the catalog.
+    """
+    raw = os.environ.get("LLM_CONTEXT_WINDOW", "").strip()
+    if raw:
+        try:
+            return max(int(raw), 4096)
+        except ValueError:
+            pass
+    normalized = str(model_name or "").strip().lower()
+    for prefix, window in _BEDROCK_MODEL_CONTEXT_WINDOWS.items():
+        if prefix in normalized:
+            return window
+    return 32768
 
 
 def create_llm_client(config: LLMConfig):
@@ -287,7 +356,9 @@ class _BedrockRuntimeTransport:
 
     def invoke(self, *, model: str, messages, temperature: float = 0.0, max_tokens: int = 1024):
         model_id = self._normalize_model_name(model)
-        payload = self._build_payload(messages, temperature=temperature, max_tokens=max_tokens)
+        payload = self._build_payload(
+            messages, temperature=temperature, max_tokens=max_tokens, model_id=model_id
+        )
         boto3_client = self._build_boto3_client()
         if boto3_client is not None:
             return self._invoke_via_boto3(client=boto3_client, model_id=model_id, payload=payload)
@@ -337,8 +408,14 @@ class _BedrockRuntimeTransport:
         if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
             total_tokens = prompt_tokens + completion_tokens
 
+        finish_reason = self._map_stop_reason(decoded.get("stopReason") if isinstance(decoded, dict) else None)
         return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=content),
+                    finish_reason=finish_reason,
+                )
+            ],
             usage=SimpleNamespace(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
@@ -374,6 +451,9 @@ class _BedrockRuntimeTransport:
                 system = payload.get("system") or []
                 if system:
                     converse_kwargs["system"] = system
+                additional_fields = payload.get("additionalModelRequestFields")
+                if additional_fields:
+                    converse_kwargs["additionalModelRequestFields"] = additional_fields
                 response = client.converse(**converse_kwargs)
                 decoded = response if isinstance(response, dict) else {}
             elif hasattr(client, "invoke_model"):
@@ -401,14 +481,38 @@ class _BedrockRuntimeTransport:
         total_tokens = self._coerce_int(usage.get("totalTokens"))
         if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
             total_tokens = prompt_tokens + completion_tokens
+        finish_reason = self._map_stop_reason(decoded.get("stopReason") if isinstance(decoded, dict) else None)
         return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=content),
+                    finish_reason=finish_reason,
+                )
+            ],
             usage=SimpleNamespace(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
             ),
         )
+
+    @staticmethod
+    def _map_stop_reason(stop_reason: Optional[str]) -> str:
+        """Map Bedrock Converse's `stopReason` to the OpenAI-style
+        `finish_reason` the pipeline's truncation-detection code already
+        reads (`logic_extractor.py`, `rule_synthesizer.py`). Without this,
+        `finish_reason` was never set on the Bedrock response object, so
+        `truncated = finish_reason == "length"` was always False - an
+        existing safety net that silently never fired.
+        """
+        normalized = str(stop_reason or "").strip().lower()
+        return {
+            "max_tokens": "length",
+            "end_turn": "stop",
+            "stop_sequence": "stop",
+            "tool_use": "tool_calls",
+            "content_filtered": "content_filter",
+        }.get(normalized, normalized or "stop")
 
     @staticmethod
     def _normalize_model_name(model: str) -> str:
@@ -418,7 +522,9 @@ class _BedrockRuntimeTransport:
         return text
 
     @staticmethod
-    def _build_payload(messages, temperature: float = 0.0, max_tokens: int = 1024) -> dict:
+    def _build_payload(
+        messages, temperature: float = 0.0, max_tokens: int = 1024, model_id: str = ""
+    ) -> dict:
         system_parts = []
         user_parts = []
         for message in messages or []:
@@ -433,7 +539,7 @@ class _BedrockRuntimeTransport:
             else:
                 if text:
                     user_parts.append(text)
-        safe_max_tokens = min(max_tokens, BEDROCK_MAX_OUTPUT_TOKENS)
+        safe_max_tokens = min(max_tokens, _max_output_tokens_for_model(model_id))
         payload: dict[str, Any] = {
             "messages": [
                 {
@@ -444,8 +550,18 @@ class _BedrockRuntimeTransport:
             "inferenceConfig": {
                 "temperature": temperature,
                 "maxTokens": safe_max_tokens,
+                # Pin nucleus sampling so temperature=0 actually delivers
+                # deterministic, diffable output (see _NOVA_DETERMINISTIC_TOP_P
+                # above) instead of relying on undocumented model defaults.
+                "topP": _NOVA_DETERMINISTIC_TOP_P,
             },
         }
+        if "nova" in str(model_id or "").lower():
+            # topK isn't part of Converse's common inferenceConfig - Nova
+            # exposes it only via additionalModelRequestFields.
+            payload["additionalModelRequestFields"] = {
+                "inferenceConfig": {"topK": _NOVA_DETERMINISTIC_TOP_K}
+            }
         if system_parts:
             payload["system"] = [{"text": "\n\n".join(system_parts)}]
         return payload

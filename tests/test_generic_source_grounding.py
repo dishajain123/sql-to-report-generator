@@ -163,7 +163,11 @@ def test_business_rule_labels_have_markdown_boundaries_and_no_redundant_prose():
         "business_meaning": "Sets the state to READY when input_code is 1.",
         "decision_logic_rows": [{"condition": "input_code = 1", "outcome": "READY"}],
     }])
-    assert "**Affected Field:** `state_code`\n\n**Summary:**" in report
+    assert "**Affected Field:** `state_code`" in report
+    # No "eligibility" was supplied, so the report must say so explicitly
+    # rather than silently omitting the line - "unconditional" is itself a
+    # material fact, not an absence of one.
+    assert "**Applies to:** all rows (no additional conditions found in the source)\n\n**Summary:**" in report
     assert "**Condition:**" not in report
     assert "**Then:**" not in report
     assert "| input_code = 1 | READY |" in report
@@ -500,10 +504,23 @@ def test_grouped_renderer_keeps_all_assignments_in_each_branch_result():
     assert "**Then:**" not in report
 
 
-def test_reconciliation_review_banner_is_internal_only():
-    assert ReportFormatterAgent._reconciliation_notice({
-        "quality": {"status": "REVIEW_REQUIRED"}
-    }).startswith("## Review Required")
-    # The notice remains available to verification callers, but format() no
-    # longer includes it in the business-facing document.
-    assert "_reconciliation_notice" not in ReportFormatterAgent.format.__code__.co_names
+def test_reconciliation_review_banner_reaches_the_business_report():
+    # A report scoring near-zero on the pipeline's own validator must not
+    # look identical to a clean report. The banner is now part of format()
+    # itself (right after At a Glance), not internal-only - a business
+    # reader who never opens the verification report still needs to see it.
+    from types import SimpleNamespace
+
+    notice = ReportFormatterAgent._reconciliation_notice(
+        {"quality": {"status": "REVIEW_REQUIRED", "review_required": True, "coverage": {}}},
+        SimpleNamespace(data={}),
+    )
+    assert notice.startswith("**Automated verification:** REVIEW REQUIRED")
+    assert "_reconciliation_notice" in ReportFormatterAgent.format.__code__.co_names
+
+    # A clean/passing report must not show the banner at all.
+    clean_notice = ReportFormatterAgent._reconciliation_notice(
+        {"quality": {"status": "PASS", "review_required": False, "coverage": {}}},
+        SimpleNamespace(data={}),
+    )
+    assert clean_notice == ""

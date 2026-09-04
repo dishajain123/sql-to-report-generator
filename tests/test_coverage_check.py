@@ -372,3 +372,87 @@ def test_format_gap_for_ambiguity_never_fabricates_business_meaning():
     assert "review" in text.lower()
     # Must not assert what the logic *means* - only that it needs review.
     assert "business rule" not in text.lower() or "confirm" in text.lower()
+
+
+def test_where_gated_blocks_get_real_per_line_scoring_not_blanket_coverage(caplog):
+    # Regression test built from the real client-corpus finding: the
+    # pipeline's own logs on samples/02_SMA_Stage_Marking_Simple.sql showed
+    # EVERY coverage block logging `overlap_ratio=0.000 matched_rule=none
+    # uncovered=False` - a fabricated "no match" that actually meant "the
+    # whole block was blanket-covered before any real per-line scoring ran".
+    # Confirmed by A/B testing with the fix's exclusion line removed: with
+    # the exact rule set below, EVERY block - including two
+    # `UPDATE PRO.RunStatus` statements that no rule mentions at all -
+    # logged as blanket-"covered", which is a structural no-op: the gate
+    # cannot distinguish a genuinely-cited block from a genuinely-uncited
+    # one. With the fix, WHERE-gated blocks get real per-line scoring
+    # (a specific matched_rule index and a real overlap_ratio) instead.
+    source = Path("samples/02_SMA_Stage_Marking_Simple.sql").read_text(encoding="utf-8")
+    rules = [
+        {
+            "rule_name": "Classify SMA stage by overdue days",
+            "source_evidence": ["A.OverdueDays BETWEEN 1 AND 30"],
+            "output_field": "SmaStage",
+            "fields_affected": ["SmaStage"],
+            "condition": "OverdueDays BETWEEN 1 AND 30",
+            "action": "Sets SmaStage",
+        },
+        {
+            "rule_name": "Flag SMA status",
+            "source_evidence": ["A.SmaStage IS NOT NULL"],
+            "output_field": "FlagSma",
+            "fields_affected": ["FlagSma"],
+            "condition": "SmaStage IS NOT NULL",
+            "action": "Sets FlagSma",
+        },
+        {
+            "rule_name": "Attribute overdue reason by facility type",
+            "source_evidence": ["A.FacilityType IN ('CC', 'OD')"],
+            "output_field": "SmaReason",
+            "fields_affected": ["SmaReason"],
+            "condition": "FacilityType IN ('CC','OD')",
+            "action": "Sets SmaReason",
+        },
+        {
+            "rule_name": "Calculate SMA stage start date",
+            "source_evidence": ["A.FlagSma = 'Y'"],
+            "output_field": "SmaStageDate",
+            "fields_affected": ["SmaStageDate"],
+            "condition": "FlagSma='Y'",
+            "action": "Sets SmaStageDate",
+        },
+        {
+            "rule_name": "Clear SMA status for non-overdue accounts",
+            "source_evidence": ["A.OverdueDays = 0"],
+            "output_field": "SmaStage",
+            "fields_affected": ["SmaStage", "FlagSma", "SmaReason"],
+            "condition": "OverdueDays=0",
+            "action": "Clears SMA fields",
+        },
+    ]
+    with caplog.at_level("INFO", logger="src.validation.coverage_check"):
+        find_coverage_gaps(source, rules)
+
+    block_logs = [r.message for r in caplog.records if r.message.startswith("Coverage block")]
+    assert block_logs, "Expected coverage-check to log per-block results."
+
+    # The two blocks tied to a real, cited rule condition (lines 25-30 for
+    # rule 1, 38-41 for rule 2) must show a specific matched rule and a
+    # nonzero ratio now - not the fabricated "matched_rule=none" the
+    # original logs showed for every single block in this file.
+    rule1_block = next(msg for msg in block_logs if "lines=25-30" in msg)
+    rule2_block = next(msg for msg in block_logs if "lines=38-41" in msg)
+    assert "matched_rule=none" not in rule1_block, rule1_block
+    assert "matched_rule=none" not in rule2_block, rule2_block
+
+    # The two RunStatus updates (lines 75-76, 82-83) are not described by
+    # ANY of the five rules above - a working gate must be able to say so
+    # via real per-line scoring, rather than blanket-covering them as a
+    # side effect of an unrelated rule's evidence matching elsewhere in the
+    # region text.
+    runstatus_blocks = [msg for msg in block_logs if "lines=75-76" in msg or "lines=82-83" in msg]
+    assert runstatus_blocks
+    for msg in runstatus_blocks:
+        assert "region_covered=True" not in msg, (
+            f"RunStatus block should not be blanket-covered by an unrelated rule's evidence: {msg}"
+        )
