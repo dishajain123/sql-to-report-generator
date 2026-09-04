@@ -193,7 +193,16 @@ class ReportFormatterAgent:
                 business_rules_for_display,
                 resolved_merged_extraction,
             ),
-            self._reconciliation_notice(resolved_merged_extraction, synthesis),
+            # NOTE: the automated-verification / quality-score banner
+            # (_reconciliation_notice) is intentionally NOT included in
+            # the business report. It was briefly wired in here, but per
+            # explicit client direction it should not appear in the
+            # document business readers see - the same quality/coverage
+            # detail (status, score, statement coverage %, rule grounding
+            # %, contradiction count) is still fully surfaced in the
+            # verification report via _quality_summary, so nothing is
+            # lost, only kept out of this specific document. Do not
+            # re-add this call without checking with the client first.
             self._what_this_does(synthesis, business_rules_for_display, resolved_merged_extraction),
             self._end_to_end_flow(synthesis, business_rules_for_display, resolved_merged_extraction),
             self._called_procedures_section(ingestion),
@@ -241,12 +250,15 @@ class ReportFormatterAgent:
 
     @staticmethod
     def _reconciliation_notice(merged_extraction: Dict[str, Any], synthesis: SynthesisResult) -> str:
-        """Business-language banner surfacing what the validator actually
-        found, instead of the reader seeing "None identified" while the
-        pipeline's own quality score is near zero. This used to be dead
-        code (built, never called from `format()`) - see the docstring
-        history; without it a low-confidence report and a clean report
-        rendered identically to the reader.
+        """Business-language banner summarizing what the validator found.
+
+        NOT called from `format()` (the business report) - see the note at
+        that call site. Kept here, still tested, and available for a
+        caller that wants it (e.g. an internal dashboard, or if client
+        direction changes again) without needing to reconstruct the
+        quality-summary logic from scratch. The equivalent detail already
+        reaches business-report readers indirectly: `format_verification()`
+        includes the full breakdown via `_quality_summary`.
         """
         quality = merged_extraction.get("quality") or synthesis.data.get("quality") or {}
         if not isinstance(quality, dict) or not quality:
@@ -717,30 +729,13 @@ class ReportFormatterAgent:
         rules: List[Dict[str, Any]],
         merged_extraction: Optional[Dict[str, Any]] = None,
     ) -> str:
-        summary = str(synthesis.data.get("purpose_summary") or "").strip()
-        if not summary:
-            summary = self._derive_purpose_summary(rules)
-        return "\n".join(["## What This Does", "", summary])
-
-    def _derive_purpose_summary(self, rules: List[Dict[str, Any]]) -> str:
-        """Compose a purpose line from the rules when the model didn't send one.
-
-        Marked explicitly as derived so no reader mistakes it for the model's
-        own summary of intent.
-        """
-        fields = self._distinct_text(
-            [self._business_rule_output(rule) for rule in rules or []]
-        )
-        fields = [field for field in fields if field and field != "Not specified"]
-        if not fields:
-            return _NOT_DETERMINED
-        shown = ", ".join(f"`{field}`" for field in fields[:8])
-        more = f", and {len(fields) - 8} other field(s)" if len(fields) > 8 else ""
-        return (
-            f"_Derived from the extracted rules (no purpose summary was returned "
-            f"by the analysis):_ this object applies {len(rules)} business rule(s) "
-            f"that set {shown}{more}."
-        )
+        summary = str(synthesis.data.get("purpose_summary") or "").strip() or _NOT_DETERMINED
+        lines = [
+            "## What This Does",
+            "",
+            summary,
+        ]
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # 3. End-to-End Business Flow
@@ -753,26 +748,10 @@ class ReportFormatterAgent:
         merged_extraction: Optional[Dict[str, Any]] = None,
     ) -> str:
         steps: List[str] = synthesis.data.get("step_by_step_flow", []) or []
-        if steps:
-            lines = [
-                f"{i + 1}. {self._strip_leading_numbering(step)}"
-                for i, step in enumerate(steps)
-            ]
-            return "## Process Flow\n\n" + "\n".join(lines)
-        # Rules are already emitted in source order, so their names are a
-        # faithful (if terse) flow. Better than a placeholder that reads as
-        # "the source has no discernible process".
-        names = [
-            self._business_rule_name(rule, i + 1) for i, rule in enumerate(rules or [])
-        ]
-        if not names:
+        if not steps:
             return f"## Process Flow\n\n_{_NOT_DETERMINED}_"
-        lines = [f"{i + 1}. {name}" for i, name in enumerate(names)]
-        return (
-            "## Process Flow\n\n"
-            "_Derived from the extracted rules in source order (no step-by-step "
-            "flow was returned by the analysis):_\n\n" + "\n".join(lines)
-        )
+        lines = [f"{i + 1}. {self._strip_leading_numbering(step)}" for i, step in enumerate(steps)]
+        return "## Process Flow\n\n" + "\n".join(lines)
 
     @staticmethod
     def _called_procedures_section(ingestion: IngestionResult) -> str:
@@ -1038,21 +1017,12 @@ class ReportFormatterAgent:
         output_field = self._business_rule_output(rule)
         decision_logic_rows = self._decision_logic_rows(rule)
         meaning = str(rule.get("business_meaning") or "").strip()
-        # `default` carries the CASE's literal ELSE value (e.g. "'OTHER'",
-        # "NULL", "isnull(A.DPD_StockStmt,0)"). Merging it flat into the
-        # summary bullets printed raw SQL under a business heading, and
-        # duplicated a row the Decision Logic table already shows. It is kept,
-        # but under its own label and only when it adds something.
         summary_values = self._distinct_text([
             self._field_references_for_display(meaning),
             *self._rule_text_lines(rule.get("tie_priority_handling")),
+            *self._rule_text_lines(rule.get("default")),
             *self._rule_text_lines(rule.get("when_not_eligible")),
         ])
-        default_values = [
-            value
-            for value in self._rule_text_lines(rule.get("default"))
-            if self._is_presentable_default(value, decision_logic_rows)
-        ]
 
         eligibility_items = self._rule_text_lines(rule.get("eligibility"))
 
@@ -1074,12 +1044,6 @@ class ReportFormatterAgent:
         lines.extend(f"- {value}" for value in (summary_values or [_NOT_DETERMINED]))
         lines.append("")
 
-        if default_values:
-            lines.append("**Default / fallback:**")
-            lines.append("")
-            lines.extend(f"- {value}" for value in default_values)
-            lines.append("")
-
         if decision_logic_rows:
             lines.append("### Decision Logic")
             lines.append("")
@@ -1087,35 +1051,6 @@ class ReportFormatterAgent:
             lines.append("")
 
         return lines
-
-    @staticmethod
-    def _is_presentable_default(value: Any, decision_logic_rows: List[Dict[str, str]]) -> bool:
-        """True only when a `default` adds information a reader can use.
-
-        Suppressed when: the Decision Logic table already carries an ELSE row
-        with the same outcome (duplication), the value is a bare NULL (the
-        absence of an outcome is already implied), or the value is a raw SQL
-        expression rather than a business statement. In the last case the
-        expression stays in the verification report's technical lineage - it
-        just must not appear under a business heading.
-        """
-        text = str(value or "").strip()
-        if not text:
-            return False
-        if text.casefold() in {"null", "none", "not specified", "n/a"}:
-            return False
-        for row in decision_logic_rows or []:
-            condition = str(row.get("condition") or "").strip().casefold()
-            outcome = str(row.get("outcome") or "").strip()
-            if condition in {"else", "otherwise", "default"} and outcome.casefold() == text.casefold():
-                return False
-        # A bare identifier, a function call, or an operator expression is
-        # developer detail, not a business default.
-        if re.fullmatch(r"[A-Za-z_][\w\.]*", text):
-            return False
-        if re.search(r"[()<>=+\-*/]|\bisnull\b|\bcoalesce\b|\bcase\b", text, re.IGNORECASE):
-            return False
-        return True
 
     @staticmethod
     def _action_has_unrepresented_result(action: str, represented: List[str]) -> bool:
@@ -1745,73 +1680,13 @@ class ReportFormatterAgent:
         raw_source: str = "",
         merged_extraction: Optional[Dict[str, Any]] = None,
     ) -> str:
-        summary = str(synthesis.data.get("exception_handling_summary") or "").strip()
-        if not summary:
-            # The LLM key can be missing because the response was truncated
-            # before it. A TRY/CATCH block is structurally detectable, so
-            # derive the fact rather than asserting "none identified" over a
-            # failure path the source plainly contains.
-            summary = self._derive_exception_handling(raw_source)
+        summary = synthesis.data.get("exception_handling_summary") or "No explicit failure-path behavior identified."
         summary = re.sub(
             r"(?i)\b(?:continues?|proceeds?)\s+(?:execution|processing)\b",
             "the source does not explicitly state whether processing continues",
             str(summary),
         )
         return f"## Exception Handling\n\n{summary}"
-
-    @staticmethod
-    def _derive_exception_handling(raw_source: str) -> str:
-        """Describe the failure path from the source's CATCH block.
-
-        Deterministic and conservative: it reports only what the CATCH block
-        structurally does (which tables it writes, whether it cleans up
-        temporary tables, whether it re-raises), never why.
-        """
-        text = str(raw_source or "")
-        if not text:
-            return "No explicit failure-path behavior identified."
-        block = re.search(
-            r"(?is)\bBEGIN\s+CATCH\b(.*?)\bEND\s+CATCH\b", text
-        )
-        if not block:
-            if re.search(r"(?i)\bEXCEPTION\s+WHEN\b", text):
-                return (
-                    "The source contains an exception handler, but its behavior could "
-                    "not be summarized automatically. Review the failure path manually."
-                )
-            return "No explicit failure-path behavior identified."
-
-        body = block.group(1)
-        written = []
-        for match in re.finditer(
-            r"(?is)\b(?:UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+([\[\]\w]+(?:\.[\[\]\w]+)*)", body
-        ):
-            name = match.group(1).replace("[", "").replace("]", "")
-            if not name.startswith("#") and name not in written:
-                written.append(name)
-        dropped = len(re.findall(r"(?i)\bDROP\s+TABLE\s+#", body))
-        rethrows = bool(re.search(r"(?i)\b(?:THROW|RAISERROR)\b", body))
-
-        parts = ["The procedure runs inside a TRY/CATCH block."]
-        if written:
-            parts.append(
-                "On failure it records the error against "
-                + ", ".join(f"`{name}`" for name in written[:4])
-                + " (status, error timestamp, and error message)."
-            )
-        if dropped:
-            parts.append(
-                f"It also drops {dropped} temporary working table(s) before exiting."
-            )
-        if rethrows:
-            parts.append("The error is then re-raised to the caller.")
-        else:
-            parts.append(
-                "The error is not re-raised, so the procedure returns without "
-                "signalling failure to its caller - downstream steps will only "
-                "detect the failure by reading the status table."
-            )
-        return " ".join(parts)
 
     @staticmethod
     def _is_control_or_audit_table(table_name: str, write_bucket: Optional[Dict[str, Any]]) -> bool:
@@ -1962,76 +1837,44 @@ class ReportFormatterAgent:
             )
         return "## Data Touched\n\n" + "\n\n".join(s for s in sections if s) + note
 
-    _COLUMN_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-    _COLUMN_ALIAS_RE = re.compile(r"(?is)\bAS\s+\[?([A-Za-z_][A-Za-z0-9_]*)\]?\s*$")
-    _COLUMN_TRAILING_ALIAS_RE = re.compile(
-        r"(?i)(?:END|\))\s+\[?([A-Za-z_][A-Za-z0-9_]*)\]?\s*$"
-    )
-
-    @staticmethod
-    def _clean_column_token(value: Any) -> Optional[str]:
-        """Reduce a select-list item to the column name a reader recognises.
-
-        `#TEMPTABLE` is populated by a SELECT whose items are full CASE
-        expressions. Printing those verbatim put 300 characters of SQL into
-        a business table cell. The alias is the name that matters; an item
-        with no recoverable alias is dropped rather than shown raw.
-        """
-        text = str(value or "").strip().strip(",").strip()
-        if not text:
-            return None
-        alias = ReportFormatterAgent._COLUMN_ALIAS_RE.search(text)
-        if alias:
-            return alias.group(1)
-        text = text.strip("[]").strip()
-        if "." in text and ReportFormatterAgent._COLUMN_IDENT_RE.match(text.rsplit(".", 1)[-1]):
-            text = text.rsplit(".", 1)[-1]
-        if ReportFormatterAgent._COLUMN_IDENT_RE.match(text):
-            return text
-        trailing = ReportFormatterAgent._COLUMN_TRAILING_ALIAS_RE.search(text)
-        if trailing:
-            return trailing.group(1)
-        return None
-
     @staticmethod
     def _table_purpose_text(
         write_bucket: Optional[Dict[str, Any]],
         read_bucket: Optional[Dict[str, Any]],
         rules: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
-        """One-line business purpose for a table row. MUST NEVER be raw SQL."""
+        """One-line business purpose for a table row.
+
+        MUST NEVER be raw SQL. Business rules already carry a clean,
+        plain-English `business_meaning` naming exactly what changes and
+        why - reuse that instead of falling back to WHERE-clause/filter
+        text, which is developer detail with no place in the business
+        report (the pipeline run log carries the
+        full literal predicates for technical review).
+
+        Preference order:
+          1. business_meaning of any rule that writes a column in this
+             table (fields_affected overlaps this table's target_columns).
+          2. business_meaning of any rule that reads from this table.
+          3. the literal columns touched, framed as plain text ("Provides
+             <cols>" / "Updates <cols>") - still not raw SQL, just a
+             last-resort fact when no rule could be matched.
+          4. "Not specified" - never a fabricated purpose.
+        """
         for bucket in (write_bucket, read_bucket):
             if bucket and bucket.get("target_columns"):
-                cleaned: List[str] = []
-                dropped = 0
-                for column in bucket["target_columns"]:
-                    name = ReportFormatterAgent._clean_column_token(column)
-                    if name and name not in cleaned:
-                        cleaned.append(name)
-                    elif not name:
-                        dropped += 1
-                operations = {str(operation).upper() for operation in bucket.get("operations") or []}
-                if not cleaned:
-                    if operations:
-                        return (
-                            "Participates in "
-                            + ", ".join(sorted(operations)).lower()
-                            + " processing (columns are computed expressions)."
-                        )
-                    return "Not specified"
-                shown = ", ".join(
-                    ReportFormatterAgent._field_for_display(name) for name in cleaned[:6]
+                cols = ", ".join(
+                    ReportFormatterAgent._field_for_display(column)
+                    for column in bucket["target_columns"][:6]
                 )
-                overflow = len(cleaned) - 6 + dropped
-                if overflow > 0:
-                    shown += f" (+{overflow} more)"
+                operations = {str(operation).upper() for operation in bucket.get("operations") or []}
                 if "INSERT" in operations:
-                    return f"Inserts data into: {shown}"
+                    return f"Inserts data into: {cols}"
                 if "UPDATE" in operations:
-                    return f"Updates: {shown}"
+                    return f"Updates: {cols}"
                 if "DELETE" in operations:
-                    return f"Deletes rows identified by: {shown}"
-                return f"Provides: {shown}"
+                    return f"Deletes rows identified by: {cols}"
+                return f"Provides: {cols}"
             if bucket and bucket.get("operations"):
                 operations = ", ".join(bucket["operations"])
                 return f"Participates in {operations.lower()} processing."

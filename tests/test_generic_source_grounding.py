@@ -504,11 +504,15 @@ def test_grouped_renderer_keeps_all_assignments_in_each_branch_result():
     assert "**Then:**" not in report
 
 
-def test_reconciliation_review_banner_reaches_the_business_report():
-    # A report scoring near-zero on the pipeline's own validator must not
-    # look identical to a clean report. The banner is now part of format()
-    # itself (right after At a Glance), not internal-only - a business
-    # reader who never opens the verification report still needs to see it.
+def test_reconciliation_banner_is_available_but_kept_out_of_the_business_report():
+    # Per explicit client direction, the automated-verification/quality-
+    # score banner must NOT appear in the business report - business
+    # readers found it too prominent/noisy in that document. The function
+    # itself is still correct and still tested (it's used elsewhere / kept
+    # available), but format() must not call it. The equivalent detail
+    # (status, score, coverage %, contradictions) still reaches a reviewer
+    # through format_verification()'s _quality_summary, so nothing is
+    # silently lost - it is just kept out of this specific document.
     from types import SimpleNamespace
 
     notice = ReportFormatterAgent._reconciliation_notice(
@@ -516,9 +520,15 @@ def test_reconciliation_review_banner_reaches_the_business_report():
         SimpleNamespace(data={}),
     )
     assert notice.startswith("**Automated verification:** REVIEW REQUIRED")
-    assert "_reconciliation_notice" in ReportFormatterAgent.format.__code__.co_names
 
-    # A clean/passing report must not show the banner at all.
+    # format() must never call it.
+    assert "_reconciliation_notice" not in ReportFormatterAgent.format.__code__.co_names
+
+    # format_verification() still surfaces the same underlying quality
+    # data via _quality_summary, so a reviewer isn't losing the signal.
+    assert "_quality_summary" in ReportFormatterAgent.format_verification.__code__.co_names
+
+    # A clean/passing report must not show the banner at all either way.
     clean_notice = ReportFormatterAgent._reconciliation_notice(
         {"quality": {"status": "PASS", "review_required": False, "coverage": {}}},
         SimpleNamespace(data={}),
