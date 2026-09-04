@@ -31,13 +31,14 @@ class _FakeMessage:
 
 
 class _FakeChoice:
-    def __init__(self, content: str):
+    def __init__(self, content: str, finish_reason: str = "stop"):
         self.message = _FakeMessage(content)
+        self.finish_reason = finish_reason
 
 
 class _FakeCompletionResponse:
-    def __init__(self, content: str):
-        self.choices = [_FakeChoice(content)]
+    def __init__(self, content: str, finish_reason: str = "stop"):
+        self.choices = [_FakeChoice(content, finish_reason)]
 
 
 class _FakeCompletions:
@@ -46,25 +47,28 @@ class _FakeCompletions:
     isolation from any real Groq API call.
     """
 
-    def __init__(self, canned_response: str):
+    def __init__(self, canned_response: str, finish_reason: str = "stop"):
         self.canned_response = canned_response
+        self.finish_reason = finish_reason
         self.last_call_kwargs = None
+        self.calls = []
 
     def create(self, **kwargs):
         self.last_call_kwargs = kwargs
-        return _FakeCompletionResponse(self.canned_response)
+        self.calls.append(kwargs)
+        return _FakeCompletionResponse(self.canned_response, self.finish_reason)
 
 
 class _FakeChat:
-    def __init__(self, canned_response: str):
-        self.completions = _FakeCompletions(canned_response)
+    def __init__(self, canned_response: str, finish_reason: str = "stop"):
+        self.completions = _FakeCompletions(canned_response, finish_reason)
 
 
 class _FakeGroqClient:
     """Minimal stand-in for a `groq.Groq` client instance."""
 
-    def __init__(self, canned_response: str = ""):
-        self.chat = _FakeChat(canned_response)
+    def __init__(self, canned_response: str = "", finish_reason: str = "stop"):
+        self.chat = _FakeChat(canned_response, finish_reason)
 
     def set_response(self, canned_response: str):
         self.chat.completions.canned_response = canned_response
@@ -341,6 +345,66 @@ def test_synthesize_recovers_json_wrapped_in_prose():
     assert result.parse_error == ""
     assert len(result.data["business_rules"]) == 1
     assert result.data["business_rules"][0]["action"].startswith("Classified as Standard")
+
+
+def test_truncated_synthesis_response_is_detected_via_finish_reason():
+    client = _FakeGroqClient('{"business_rules":[{"condition":"x"', finish_reason="length")
+    agent = RuleSynthesizerAgent(client=client, model="m", temperature=0.1)
+
+    result = agent.synthesize(
+        object_name="obj",
+        object_type="PROCEDURE",
+        parameter_summary="none",
+        merged_extraction={},
+    )
+
+    assert result.truncated is True
+    assert result.parse_error != ""
+    assert len(client.chat.completions.calls) == 2  # one bounded ceiling retry
+
+
+def test_truncated_response_recovers_partial_valid_rules_instead_of_discarding_all():
+    response = (
+        '{"business_rules":['
+        '{"condition":"first condition","action":"first result",'
+        '"fields_affected":["target_value"]},'
+        '{"condition":"second condition"'
+    )
+    client = _FakeGroqClient(response, finish_reason="length")
+    agent = RuleSynthesizerAgent(client=client, model="m", temperature=0.1)
+
+    result = agent.synthesize(
+        object_name="obj",
+        object_type="PROCEDURE",
+        parameter_summary="none",
+        merged_extraction={},
+    )
+
+    assert result.truncated is True
+    assert result.parse_error == ""
+    assert [rule["condition"] for rule in result.data["business_rules"]] == [
+        "first condition"
+    ]
+    assert any("output limit" in warning for warning in result.guardrail_warnings)
+
+
+def test_max_tokens_scales_with_decision_point_count():
+    client = _FakeGroqClient(VALID_SYNTHESIS_JSON)
+    agent = RuleSynthesizerAgent(client=client, model="m", temperature=0.1)
+    source = "BEGIN " + " ".join(
+        f"IF flag_{idx} = 1 BEGIN SET value_{idx} = 1; END;" for idx in range(20)
+    ) + " END;"
+
+    agent.synthesize(
+        object_name="obj",
+        object_type="PROCEDURE",
+        parameter_summary="none",
+        merged_extraction={},
+        dialect="tsql",
+        raw_source=source,
+    )
+
+    assert client.chat.completions.last_call_kwargs["max_tokens"] > agent.max_tokens
 
 
 def test_synthesize_parse_failure_short_circuits_without_normalization(monkeypatch):
@@ -976,9 +1040,10 @@ def test_formatter_preserves_llm_rule_fields_in_report():
     }
     report = ReportFormatterAgent()._business_rules_section([rule])
     for value in (
-        "LLM supplied label", "A.CUSTOM_CONDITION >= 7", "CUSTOM_FIELD", "LLM_VALUE",
+        "LLM supplied label", "CUSTOM_CONDITION >= 7", "CUSTOM_FIELD", "LLM_VALUE",
     ):
         assert value in report
+    assert "A.CUSTOM_CONDITION >= 7" not in report
     assert "LLM supplied meaning." not in report
     assert "LLM supplied eligibility" not in report
     assert "LLM supplied action for CUSTOM_FIELD" not in report

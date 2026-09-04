@@ -1,0 +1,169 @@
+2026-09-04 05:47:03,767 | INFO | logic_rules_extractor.pipeline | Stage 1/6: Running input guardrails
+2026-09-04 05:47:03,769 | INFO | logic_rules_extractor.pipeline | Stage 1/6 completed in 0.00s (input guardrails)
+2026-09-04 05:47:03,769 | INFO | logic_rules_extractor.pipeline | Stage 2/6: Detecting dialect
+2026-09-04 05:47:03,783 | INFO | logic_rules_extractor.pipeline | Detected TSQL dialect (confidence: high)
+2026-09-04 05:47:03,783 | INFO | logic_rules_extractor.pipeline | Stage 2/6 completed in 0.01s (dialect detection)
+2026-09-04 05:47:03,783 | INFO | logic_rules_extractor.pipeline | Stage 3/6: Preprocessing, parsing, and chunking /Users/dishajain/Downloads/PRO_SPs/PRO.SMA_MARKING.StoredProcedure.sql
+2026-09-04 05:47:04,046 | INFO | logic_rules_extractor.pipeline | Detected TSQL PROCEDURE 'SMA_MARKING' with 11 chunk(s)
+2026-09-04 05:47:04,046 | INFO | logic_rules_extractor.pipeline | Stage 3/6 completed in 0.26s (preprocessing/parsing/chunking)
+2026-09-04 05:47:04,046 | INFO | logic_rules_extractor.pipeline | Stage 4/6: Retrieving dependencies / pattern context and extracting logic per chunk (model: amazon.nova-lite-v1:0)
+2026-09-04 05:47:04,050 | INFO | logic_rules_extractor.pipeline | Persistent knowledge base ready in 0.00s
+2026-09-04 05:47:04,051 | INFO | logic_rules_extractor.pipeline | Stage 4 extraction selection: estimated_tokens=28601 budget=23768 path=chunked extraction_calls=11 merge_ran=True
+2026-09-04 05:47:16,712 | INFO | logic_rules_extractor.pipeline | Stage 4/6 completed in 12.67s total (kb_ready=0.00s, retrieval/KB sum=0.29s, LLM extraction sum=74.62s, workers=8, chunks=11)
+2026-09-04 05:47:16,712 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
+2026-09-04 05:51:17,765 | INFO | logic_rules_extractor.pipeline | Stage 5/6 completed in 241.05s (business reasoning)
+2026-09-04 05:51:17,767 | INFO | logic_rules_extractor.pipeline | Stage 6/6: Reconciling deterministic evidence against synthesized output
+2026-09-04 05:51:17,893 | INFO | logic_rules_extractor.pipeline | Stage 6/6 completed in 0.13s (deterministic reconciliation)
+2026-09-04 05:51:17,893 | INFO | logic_rules_extractor.pipeline | Stage 7/7: Applying output guardrails and formatting final report
+2026-09-04 05:51:18,070 | INFO | logic_rules_extractor.pipeline | Verification/traceability diagnostics for PRO.SMA_MARKING.StoredProcedure_report.md:
+# SMA Marking — Verification & Traceability
+
+> Companion artifact to `PRO.SMA_MARKING.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
+
+| Item | Value |
+|---|---|
+| Object ID | `obj_6ed9993261c9` |
+| Raw technical object name (from source) | `SMA_MARKING` |
+
+## Run Metadata
+
+| Item | Value |
+|---|---|
+| Pipeline Version | `2026-08-26-phase1` |
+| Prompt Version | `5a4d0a2976fd37b3` |
+| Knowledge Base Version | `2e6fc62902751973` |
+| Model | `amazon.nova-lite-v1:0` |
+| Provider | `bedrock` |
+| Dialect | `T-SQL` |
+| Dialect Confidence | `High` |
+| Source Hash | `fff7585a03cb147d56cb99cc3fa108a5a08556179ba637f7356954000e362a12` |
+| Configuration Version | `ea64375ebb056aec` |
+| Run Timestamp | `2026-09-04T00:17:04.046245+00:00` |
+| Object ID | `obj_6ed9993261c9` |
+
+## LLM Telemetry
+
+| Item | Value |
+|---|---|
+| Run ID | `telemetry_0210706bf7b5` |
+| Total LLM Calls | `12` |
+| Successful Calls | `12` |
+| Failed Calls | `0` |
+| Prompt Tokens | `98467` |
+| Completion Tokens | `21377` |
+| Total Tokens | `119844` |
+| Telemetry Availability | `available` |
+
+| Stage | Calls | Success | Failure | Tokens | Availability |
+|---|---:|---:|---:|---:|---|
+| extraction | 11 | 11 | 0 | 66957 | available |
+| synthesis | 1 | 1 | 0 | 52887 | available |
+
+## Business Rule Summary
+
+| Priority | Rule | Output | Business Purpose |
+|---|---|---|---|
+| 🔴 1 | Reset negative DPD to zero [CONFLICT] (`rule_01`) | `DPD_IntService, DPD_NoCredit, DPD_Overdrawn, DPD_Overdue, DPD_Renewal, DPD_StockStmt` | Ensures that negative overdue days are reset to zero. |
+| 🔴 2 | Determine maximum overdue days [CONFLICT] (`rule_02`) | `DPD_Max` | Calculates the maximum overdue days for accounts based on various overdue criteria. |
+| 🔴 3 | Assign SMA class from days overdue [CONFLICT] (`rule_03`) | `SMA_CLASS` | Classifies accounts into SMA classes based on the maximum overdue days. |
+| 🔴 4 | Assign SMA reason from facility type [CONFLICT] (`rule_04`) | `SMA_REASON` | Determines the reason for SMA classification based on facility type and overdue days. |
+| 🔴 5 | Update SMA class and reason for accounts [CONFLICT] (`rule_05`) | `SMA_CLASS, SMA_REASON` | Updates the SMA class and reason for accounts based on the maximum overdue days and facility type. |
+| 🔴 6 | Update SMA class and reason for customers [CONFLICT] (`rule_06`) | `SMA_CLASS, SMA_REASON` | Updates the SMA class and reason for customers based on the maximum overdue days and facility type. |
+| 🔴 7 | Update SMA movement history [CONFLICT] (`rule_07`) | `EffectiveToTimeKey, MovementToDate` | Updates the SMA movement history for accounts and customers. |
+
+## Source Traceability
+
+<details>
+<summary><strong>Show rule-to-source mapping</strong></summary>
+
+| # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |
+|---|---|---|---|---|---|---|
+| 1 | Reset negative DPD to zero (rule_01) | isnull(DPD_IntService, 0) < 0; isnull(DPD_NoCredit, 0) < 0; isnull(DPD_Overdrawn, 0) < 0; isnull(DPD_Overdue, 0) < 0; isnull(DPD_Renewal, 0) < 0; isnull(DPD_StockStmt,0)<0 | Not cited | 01_nested_block | 01_nested_block_1 | Needs Review |
+| 2 | Determine maximum overdue days (rule_02) | isnull(A.DPD_IntService,0)>=isnull(A.RefPeriodIntService,0); isnull(A.DPD_NoCredit,0)>=isnull(A.DPD_IntService,0); isnull(A.DPD_Overdrawn,0)>=isnull(A.DPD_NoCredit,0); isnull(A.DPD_Renewal,0)>=isnull(A.DPD_NoCredit,0); isnull(A.DPD_Overdue,0)>=isnull(A.DPD_No… | Not cited | 01_nested_block_1 | 01_nested_block_1 | Needs Review |
+| 3 | Assign SMA class from days overdue (rule_03) | dpd.DPD_Max BETWEEN 1 AND 30; dpd.DPD_Max BETWEEN 31 AND 60; dpd.DPD_Max BETWEEN 61 AND 90; dpd.DPD_Max > 90 | Not cited | 01_nested_block_2 | 01_nested_block_2 | Needs Review |
+| 4 | Assign SMA reason from facility type (rule_04) | A.FACILITYTYPE IN ('CC','OD') AND ISNULL(DPD.DPD_INTSERVICE,0)=ISNULL(dpd.DPD_MAX,0); A.FACILITYTYPE IN ('CC','OD') AND ISNULL(DPD.DPD_NOCREDIT,0)=ISNULL(dpd.DPD_MAX,0); A.FACILITYTYPE IN ('TL','DL','BP','BD','PC') AND ISNULL(dpd.DPD_OVERDUE,0)=ISNULL(dpd.DPD… | Not cited | 01_nested_block_2 | 01_nested_block_2 | Needs Review |
+| 5 | Update SMA class and reason for accounts (rule_05) | COALESCE(B.FLGPROCESSING, 'N') = 'N' AND COALESCE(FINALASSETCLASSALT_KEY, 1) = 1 AND COALESCE(A.BALANCE, 0) > 0 AND A.ASSET_NORM <> 'ALWYS_STD' AND (COALESCE(dpd.DPD_Overdrawn, 0) >= 0 OR COALESCE(dpd.DPD_Overdue, 0) >= 0) AND COALESCE(DPD.DPD_MAX, 0) > 0 | Not cited | 01_nested_block_2 | 01_nested_block_2 | Needs Review |
+| 6 | Update SMA class and reason for customers (rule_06) | B.FLGSMA='Y' | Not cited | 01_nested_block_3 | 01_nested_block_3 | Needs Review |
+| 7 | Update SMA movement history (rule_07) | AA.EffectiveToTimeKey = 49999 AND AA.EffectiveFROMTimeKey<@TIMEKEY AND EXISTS (SELECT 1 FROM #ACCOUNT_MOVEMENT_HISTORY BB WHERE AA.CustomerAcID=BB.CustomerAcID AND BB.EffectiveToTimeKey =49999 AND AA.MOVEMENTTOSTATUS<>BB.MOVEMENTTOSTATUS) | Not cited | 01_nested_block_7 | 01_nested_block_7 | Needs Review |
+
+_Source evidence is the literal technical text carried through the pipeline; Source Location is derived deterministically from chunk and statement provenance when available; SQL Statements / Chunks and Technical References point back to the extracted chunk ids and statement references used by the guardrails. Technical references that repeat the same table/operation/target-columns are shown once._
+</details>
+
+## Rule Provenance Summary
+
+- **Total business rules:** 7
+- **By rule type:** explicit = 7
+- **By validation status:** unverified = 7
+
+_This count reflects every individually traceable rule (one per source statement/field, for full auditability). The business report may show a smaller number, because closely related rules that apply the same pattern to several fields (e.g. "reset each of these six DPD fields to zero if negative") are presented there as one combined rule for readability. Every rule counted here is still individually traceable in the Source Traceability table below - none are dropped, only grouped for display._
+
+_Rules marked **unverified** could not be matched back to the technical extraction or source code and should be prioritized for human review before being treated as confirmed._
+
+## Reconciliation Summary
+
+- **Matched facts:** 44
+- **Deterministic-only facts:** 60
+- **LLM-only claims:** 6
+- **Conflicts:** 40
+- **Unresolved items:** 0
+- **Review required:** Yes
+
+### Review Items
+
+- `LLM_ONLY` tables_read (`recon_218c585105d1`): 01_nested_block
+- `CONFLICT` tables_read (`recon_b6d400697f52`): 01_nested_block
+- `CONFLICT` tables_read (`recon_03b970cb1cb6`): 01_nested_block_2
+- `CONFLICT` tables_read (`recon_03b970cb1cb6`): 01_nested_block_2
+- `LLM_ONLY` tables_read (`recon_7d107c53f732`): 01_nested_block_3
+
+## Quality Summary
+
+- **Overall status:** REVIEW_REQUIRED
+- **Quality score:** 5/100
+- **Statement coverage:** 89 / 128 (69.5%)
+- **Rule grounding coverage:** 7 / 7 (100.0%)
+- **Conflicts:** 40
+- **Contradictions:** 53
+- **Review required items:** 99
+- **Review required:** Yes
+
+Statement parse success is below the preferred threshold.
+
+### Contradictions
+
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+
+_Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._
+
+## Pipeline Diagnostics
+
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): SELECT         A.CustomerAcID,A.AccountEntityID,A.DPD_Overdrawn,ContiExcessDt,DPD_Renewal,ReviewDueDt 
+into           #...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): SELECT A.CustomerAcID  
+   ,CASE WHEN  isnull(A.DPD_IntService,0)>=isnull(A.RefPeriodIntService,0)  THEN A.DPD_IntServi...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE A SET A.FLGSMA=NULL  
+             ,A.SMA_CLASS_KEY=NULL  
+       ,A.SMA_DT=NULL  
+     FROM ##CUSTOMERCAL A...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE  ##AccountCal SET SMA_CLASS='LOS' WHERE FinalAssetClassAlt_Key=6 AND  SMA_CLASS is NULL  
+    
+  
+  
+ --IF OB...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE AA  
+ SET   
+   EffectiveToTimeKey = @vEffectiveto  
+    ,MovementToDate=DATEADD(DD,-1,@ProcessDate) -- ADDED...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE AA  
+SET   
+ EffectiveToTimeKey = @vEffectiveto  
+,MovementToDate=DATEADD(DD,-1,@ProcessDate) -- ADDED BY AMAR...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE PRO.ACLRUNNINGPROCESSSTATUS   
+SET COMPLETED='N',ERRORDATE=GETDATE(),ERRORDESCRIPTION=ERROR_MESSAGE(),COUNT=ISNU...
+- The supporting technical evidence was low-confidence and should not be presented as fully verified: B.FLGSMA='Y'
+- Automated style check flagged possible leftover technical jargon in the synthesized output: update statement, insert statement.
+2026-09-04 05:51:18,070 | INFO | logic_rules_extractor.pipeline | Stage 7/7 completed in 0.18s (final report generation)

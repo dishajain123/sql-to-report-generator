@@ -1,0 +1,154 @@
+2026-09-04 07:01:47,768 | INFO | __main__ | Run started for 02_SMA_Stage_Marking_Simple.sql
+2026-09-04 07:01:47,768 | INFO | logic_rules_extractor.pipeline | Stage 1/6: Running input guardrails
+2026-09-04 07:01:47,769 | INFO | logic_rules_extractor.pipeline | Stage 1/6 completed in 0.00s (input guardrails)
+2026-09-04 07:01:47,769 | INFO | logic_rules_extractor.pipeline | Stage 2/6: Detecting dialect
+2026-09-04 07:01:47,770 | INFO | logic_rules_extractor.pipeline | Detected TSQL dialect (confidence: high)
+2026-09-04 07:01:47,770 | INFO | logic_rules_extractor.pipeline | Stage 2/6 completed in 0.00s (dialect detection)
+2026-09-04 07:01:47,770 | INFO | logic_rules_extractor.pipeline | Stage 3/6: Preprocessing, parsing, and chunking /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpvq6b6sm6.sql
+2026-09-04 07:01:47,789 | INFO | logic_rules_extractor.pipeline | Detected TSQL PROCEDURE 'SMA_Stage_Marking_Simple' with 7 chunk(s)
+2026-09-04 07:01:47,790 | INFO | logic_rules_extractor.pipeline | Stage 3/6 completed in 0.02s (preprocessing/parsing/chunking)
+2026-09-04 07:01:47,790 | INFO | logic_rules_extractor.pipeline | Stage 4/6: Retrieving dependencies / pattern context and extracting logic per chunk (model: amazon.nova-lite-v1:0)
+2026-09-04 07:01:47,802 | INFO | logic_rules_extractor.pipeline | Persistent knowledge base ready in 0.01s
+2026-09-04 07:01:47,803 | INFO | logic_rules_extractor.pipeline | Stage 4 extraction selection: estimated_tokens=6924 budget=29768 path=single-pass extraction_calls=1 merge_ran=False
+2026-09-04 07:01:56,386 | INFO | logic_rules_extractor.pipeline | Stage 4/6 completed in 8.60s total (kb_ready=0.01s, retrieval/KB sum=0.00s, LLM extraction sum=8.58s, workers=8, chunks=1)
+2026-09-04 07:01:56,389 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
+2026-09-04 07:02:05,374 | INFO | src.validation.coverage_check | Coverage block lines=25-30 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 07:02:05,375 | INFO | src.validation.coverage_check | Coverage block lines=38-41 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 07:02:05,375 | INFO | src.validation.coverage_check | Coverage block lines=48-52 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 07:02:05,375 | INFO | src.validation.coverage_check | Coverage block lines=62-63 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 07:02:05,375 | INFO | src.validation.coverage_check | Coverage block lines=68-71 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 07:02:05,375 | INFO | src.validation.coverage_check | Coverage block lines=75-76 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 07:02:05,375 | INFO | src.validation.coverage_check | Coverage block lines=82-83 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 07:02:05,375 | INFO | logic_rules_extractor.pipeline | Stage 5/6 completed in 8.98s (business reasoning)
+2026-09-04 07:02:05,376 | INFO | logic_rules_extractor.pipeline | Stage 6/6: Reconciling deterministic evidence against synthesized output
+2026-09-04 07:02:05,395 | INFO | logic_rules_extractor.pipeline | Stage 6/6 completed in 0.01s (deterministic reconciliation)
+2026-09-04 07:02:05,395 | INFO | logic_rules_extractor.pipeline | Stage 7/7: Applying output guardrails and formatting final report
+2026-09-04 07:02:05,415 | INFO | logic_rules_extractor.pipeline | Verification/traceability diagnostics for PRO.SMA_Stage_Marking_Simple.StoredProcedure_report.md:
+# SMA Stage Marking Simple — Verification & Traceability
+
+> Companion artifact to `PRO.SMA_Stage_Marking_Simple.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
+
+| Item | Value |
+|---|---|
+| Object ID | `obj_f88fd9f08d12` |
+| Raw technical object name (from source) | `SMA_Stage_Marking_Simple` |
+
+## Run Metadata
+
+| Item | Value |
+|---|---|
+| Pipeline Version | `2026-08-26-phase1` |
+| Prompt Version | `5a4d0a2976fd37b3` |
+| Knowledge Base Version | `2e6fc62902751973` |
+| Model | `amazon.nova-lite-v1:0` |
+| Provider | `bedrock` |
+| Dialect | `T-SQL` |
+| Dialect Confidence | `High` |
+| Source Hash | `3673da81736b9d16643f497b5db0f9bedb14d4d26e65256490c25d2d77d0c0c2` |
+| Configuration Version | `ea64375ebb056aec` |
+| Run Timestamp | `2026-09-04T01:31:47.789778+00:00` |
+| Object ID | `obj_f88fd9f08d12` |
+
+## LLM Telemetry
+
+| Item | Value |
+|---|---|
+| Run ID | `telemetry_b7d11ef6bd4b` |
+| Total LLM Calls | `2` |
+| Successful Calls | `2` |
+| Failed Calls | `0` |
+| Prompt Tokens | `14379` |
+| Completion Tokens | `3003` |
+| Total Tokens | `17382` |
+| Telemetry Availability | `available` |
+
+| Stage | Calls | Success | Failure | Tokens | Availability |
+|---|---:|---:|---:|---:|---|
+| extraction | 1 | 1 | 0 | 5771 | available |
+| synthesis | 1 | 1 | 0 | 11611 | available |
+
+## Business Rule Summary
+
+| Priority | Rule | Output | Business Purpose |
+|---|---|---|---|
+| 🟠 1 | Classify SMA stage by overdue days [LLM_ONLY] (`rule_01`) | `SmaStage` | Classifies the SMA stage based on the number of overdue days. |
+| 🟠 2 | Flag SMA status [LLM_ONLY] (`rule_02`) | `FlagSma` | Flags the account as currently in SMA status. |
+| 🟠 3 | Attribute overdue reason by facility type [LLM_ONLY] (`rule_03`) | `SmaReason` | Attributes the overdue reason by facility type for SMA accounts. |
+| 🔴 4 | Calculate SMA stage start date [CONFLICT] (`rule_04`) | `SmaStageDate` | Calculates the date the current SMA stage began. |
+| 🔴 5 | Clear SMA status for non-overdue accounts [CONFLICT] (`rule_05`) | `SmaStage, FlagSma, SmaReason` | Clears SMA status for accounts that are no longer overdue. |
+
+## Source Traceability
+
+<details>
+<summary><strong>Show rule-to-source mapping</strong></summary>
+
+| # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |
+|---|---|---|---|---|---|---|
+| 1 | Classify SMA stage by overdue days (rule_01) | A.OverdueDays BETWEEN 1 AND 30; A.OverdueDays BETWEEN 31 AND 60; A.OverdueDays BETWEEN 61 AND 90; ELSE | Not cited | Not cited | Not cited | Needs Review |
+| 2 | Flag SMA status (rule_02) | A.SmaStage IS NOT NULL; ELSE | Not cited | Not cited | Not cited | Needs Review |
+| 3 | Attribute overdue reason by facility type (rule_03) | A.FacilityType IN ('CC', 'OD'); A.FacilityType IN ('TL', 'DL'); ELSE | Not cited | Not cited | Not cited | Needs Review |
+| 4 | Calculate SMA stage start date (rule_04) | A.FlagSma = 'Y' | Not cited | Not cited | Not cited | Needs Review |
+| 5 | Clear SMA status for non-overdue accounts (rule_05) | A.OverdueDays = 0 | Not cited | Not cited | Not cited | Needs Review |
+
+_Source evidence is the literal technical text carried through the pipeline; Source Location is derived deterministically from chunk and statement provenance when available; SQL Statements / Chunks and Technical References point back to the extracted chunk ids and statement references used by the guardrails. Technical references that repeat the same table/operation/target-columns are shown once._
+</details>
+
+## Rule Provenance Summary
+
+- **Total business rules:** 5
+- **By rule type:** explicit = 5
+- **By validation status:** unverified = 5
+
+_This count reflects every individually traceable rule (one per source statement/field, for full auditability). The business report may show a smaller number, because closely related rules that apply the same pattern to several fields (e.g. "reset each of these six DPD fields to zero if negative") are presented there as one combined rule for readability. Every rule counted here is still individually traceable in the Source Traceability table below - none are dropped, only grouped for display._
+
+_Rules marked **unverified** could not be matched back to the technical extraction or source code and should be prioritized for human review before being treated as confirmed._
+
+## Reconciliation Summary
+
+- **Matched facts:** 7
+- **Deterministic-only facts:** 12
+- **LLM-only claims:** 5
+- **Conflicts:** 7
+- **Unresolved items:** 0
+- **Review required:** Yes
+
+### Review Items
+
+- `CONFLICT` tables_written (`recon_9c011e847efb`): full_source
+- `CONFLICT` tables_written (`recon_9c011e847efb`): full_source
+- `CONFLICT` tables_written (`recon_9c011e847efb`): full_source
+- `CONFLICT` tables_written (`recon_9c011e847efb`): full_source
+- `CONFLICT` tables_written (`recon_9c011e847efb`): full_source
+
+## Quality Summary
+
+- **Overall status:** REVIEW_REQUIRED
+- **Quality score:** 0/100
+- **Statement coverage:** 15 / 27 (55.6%)
+- **Rule grounding coverage:** 2 / 5 (40.0%)
+- **Conflicts:** 7
+- **Contradictions:** 10
+- **Review required items:** 22
+- **Review required:** Yes
+
+Statement parse success is below the preferred threshold.; Rule grounding coverage is below the preferred threshold.
+
+### Contradictions
+
+- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+
+_Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._
+
+## Pipeline Diagnostics
+
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE A
+        SET A.SmaStage = (
+                CASE
+                    WHEN A.OverdueDays BETWEEN 1 AND 30 THEN 'S...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE PRO.RunStatus
+        SET COMPLETED = 'N', ErrorDate = GETDATE(), ErrorDescription = ERROR_MESSAGE(), RunCount =...
+2026-09-04 07:02:05,415 | INFO | logic_rules_extractor.pipeline | Stage 7/7 completed in 0.02s (final report generation)

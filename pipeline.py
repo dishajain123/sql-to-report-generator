@@ -87,9 +87,11 @@ DEFAULT_EXTRACTION_MAX_TOKENS = int(os.environ.get("LLM_EXTRACTION_MAX_TOKENS", 
 DEFAULT_SYNTHESIS_MAX_TOKENS = int(os.environ.get("LLM_SYNTHESIS_MAX_TOKENS", "16000"))
 
 # The single-pass selector is intentionally based on the configured context
-# window, not equal to it. Input must leave room for the extraction response
-# and prompt/schema text. SINGLE_PASS_TOKEN_BUDGET can be lowered for a model
-# whose practical limit is below its advertised context window.
+# window, not equal to it. The selector reserves prompt/schema space, but does
+# not reserve the entire worst-case completion ceiling: the extraction call
+# already sizes its output adaptively and detects/retries truncation. This
+# keeps input-sized objects from being routed to chunking solely because a
+# theoretical maximum completion was reserved up front.
 _DEFAULT_PROMPT_SCHEMA_RESERVE = 3000
 _DEFAULT_MODEL_CONTEXT_WINDOW = int(os.environ.get("LLM_CONTEXT_WINDOW", "32768"))
 SINGLE_PASS_TOKEN_BUDGET = int(
@@ -98,9 +100,7 @@ SINGLE_PASS_TOKEN_BUDGET = int(
         str(
             max(
                 4096,
-                _DEFAULT_MODEL_CONTEXT_WINDOW
-                - DEFAULT_EXTRACTION_MAX_TOKENS
-                - _DEFAULT_PROMPT_SCHEMA_RESERVE,
+                _DEFAULT_MODEL_CONTEXT_WINDOW - _DEFAULT_PROMPT_SCHEMA_RESERVE,
             )
         ),
     )
@@ -194,7 +194,7 @@ class LogicRulesExtractorPipeline:
             else (
                 single_pass_token_budget
                 if single_pass_token_budget is not None
-                else max(4096, model_context_window - extraction_max_tokens - _DEFAULT_PROMPT_SCHEMA_RESERVE)
+                else max(4096, model_context_window - _DEFAULT_PROMPT_SCHEMA_RESERVE)
             )
         )
         self.model_name = self.llm_config.model_name
@@ -370,6 +370,28 @@ class LogicRulesExtractorPipeline:
                     telemetry_tracker=telemetry_tracker,
                 )
             ]
+            # A malformed full-source response is not partial evidence. Use
+            # the established chunk/merge path instead of allowing an empty
+            # technical payload to bias synthesis or its coverage audit.
+            if chunk_extractions[0].parse_error:
+                logger.warning(
+                    "Full-source extraction was unusable; falling back to the existing chunked extraction path"
+                )
+                single_pass = False
+                chunk_extractions = self._extract_all_chunks(
+                    ingestion,
+                    run_metadata=run_metadata,
+                    analysis_dialect=analysis_dialect,
+                    telemetry_tracker=telemetry_tracker,
+                )
+                extraction_execution.update(
+                    {
+                        "selected_path": "chunked",
+                        "extraction_calls": len(chunk_extractions),
+                        "merge_ran": True,
+                        "fallback_reason": "full_source_extraction_parse_error",
+                    }
+                )
         else:
             chunk_extractions = self._extract_all_chunks(
                 ingestion,
@@ -610,7 +632,12 @@ class LogicRulesExtractorPipeline:
     @staticmethod
     def _estimate_text_tokens(value: str) -> int:
         """Conservatively estimate tokens without coupling the app to a tokenizer."""
-        return max(1, math.ceil(len(value or "") / 3))
+        # SQL is unusually token-expensive: long identifiers, punctuation,
+        # operators, and quoted literals generally produce fewer characters
+        # per token than ordinary prose. A conservative estimate is safer
+        # than selecting full-source mode and discovering at the provider
+        # boundary that the prompt was truncated.
+        return max(1, math.ceil(len(value or "") / 1.5))
 
     def _estimate_single_pass_tokens(self, raw_code: str, rag_context: str) -> int:
         """Estimate the extraction prompt input plus a safety reserve."""

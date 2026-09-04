@@ -158,6 +158,41 @@ WHERE SplCatg1Alt_Key = 870 OR SplCatg2Alt_Key = 870
     assert any("SplCatg1Alt_Key" in gap.snippet for gap in gaps)
 
 
+def test_linked_calculation_evidence_covers_insert_values_anchor():
+    source = """INSERT INTO NPA_PROVISION (account_id, provision_amount, created_at)
+VALUES (p_account_id, v_outstanding * v_provision_pct / 100, SYSDATE);"""
+    rules = [{
+        "rule_name": "Persist calculated provision",
+        "source_evidence": ["INSERT INTO NPA_PROVISION (account_id, provision_amount, created_at)"],
+        "action": "Persist the calculated provision amount",
+        "fields_affected": ["provision_amount"],
+        "calculations": [{
+            "field": "provision_amount",
+            "formula": "v_outstanding * v_provision_pct / 100",
+            "output_field": "NPA_PROVISION.provision_amount",
+        }],
+    }]
+    assert find_coverage_gaps(source, rules) == []
+
+
+def test_common_tokens_across_rules_do_not_cover_distinct_statement():
+    source = """UPDATE shared_table SET shared_value = first_value WHERE selector = 1;
+UPDATE shared_table SET shared_value = second_value WHERE selector = 2 AND scope_code = 9;"""
+    rules = [
+        {
+            "source_evidence": ["shared_value = first_value WHERE selector = 1"],
+            "fields_affected": ["shared_value"],
+        },
+        {
+            "source_evidence": ["shared_table shared_value selector"],
+            "fields_affected": ["shared_value"],
+        },
+    ]
+    gaps = find_coverage_gaps(source, rules)
+    assert gaps
+    assert any("second_value" in gap.snippet or "scope_code" in gap.snippet for gap in gaps)
+
+
 class _CoverageSynthesizer:
     def __init__(self, revised_rules, fail_revision=False):
         self.revised_rules = revised_rules

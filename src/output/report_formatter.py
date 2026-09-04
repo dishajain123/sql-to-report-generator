@@ -584,7 +584,16 @@ class ReportFormatterAgent:
         rules: List[Dict[str, Any]],
         merged_extraction: Optional[Dict[str, Any]] = None,
     ) -> str:
-        purpose = str(synthesis.data.get("purpose_summary") or "").strip() or _NOT_DETERMINED
+        object_name = self._display_object_name(ingestion)
+        schema = str(getattr(ingestion, "schema", "") or "").strip()
+        technical_name = f"{schema}.{getattr(ingestion, 'object_name', object_name)}" if schema else object_name
+        dialect = self._display_dialect(getattr(ingestion, "dialect", ""))
+        parameters = getattr(ingestion, "parameters", None) or []
+        input_display = (
+            ", ".join(f"`{parameter.name}` ({parameter.datatype})" for parameter in parameters)
+            if parameters
+            else "None"
+        )
         history_tables = [
             str(row.get("table") or "")
             for row in (consolidated_reads or []) + (consolidated_writes or [])
@@ -593,7 +602,9 @@ class ReportFormatterAgent:
         visible_reads = self._visible_table_count(consolidated_reads)
         visible_writes = self._visible_table_count(consolidated_writes)
         rows = [
-            ("Purpose", purpose),
+            ("Procedure", f"`{technical_name}`"),
+            ("Dialect", dialect),
+            ("Input", input_display),
             ("Business rules", str(len(rules))),
             ("Tables read", str(visible_reads)),
             ("Tables written", str(visible_writes)),
@@ -686,6 +697,58 @@ class ReportFormatterAgent:
         if not rules:
             lines.append("_No business rules were identified from the extracted source._")
             return "\n".join(lines)
+        if decision_blocks:
+            rule_by_id = {
+                str(rule.get("rule_id") or ""): rule
+                for rule in rules
+                if str(rule.get("rule_id") or "")
+            }
+            consumed_ids: set[str] = set()
+            rendered_index = 1
+            for block in decision_blocks:
+                if not isinstance(block, dict):
+                    continue
+                block_rules = [
+                    rule_by_id[rule_id]
+                    for rule_id in block.get("rule_ids", []) or []
+                    if rule_id in rule_by_id
+                ]
+                branches = block.get("branches") or []
+                if not block_rules or not isinstance(branches, list):
+                    continue
+                if all(str(rule.get("rule_id") or "") in consumed_ids for rule in block_rules):
+                    continue
+                # Canonical branches are the structural source of truth. The
+                # renderer does not regroup rules by whichever chain happened
+                # to be processed last, which can split multi-output CASEs.
+                block_rule = dict(block_rules[0])
+                block_rule["decision_block_title"] = block.get("name") or block_rule.get("decision_block_title")
+                block_rule["decision_logic_rows"] = [
+                    {
+                        "condition": branch.get("condition", ""),
+                        "outcome": "; ".join(
+                            self._distinct_text(
+                                [self._assignment_text(item) for item in (branch.get("results") or [])]
+                            )
+                        ),
+                    }
+                    for branch in branches
+                    if isinstance(branch, dict)
+                ]
+                lines.extend(self._render_decision_block(rendered_index, [*block_rules, block_rule]))
+                lines.append("")
+                consumed_ids.update(str(rule.get("rule_id") or "") for rule in block_rules)
+                rendered_index += 1
+
+            # Anything not attached to a canonical structural block remains
+            # an independent LLM-authored rule and is rendered unchanged.
+            for rule in rules:
+                if str(rule.get("rule_id") or "") in consumed_ids:
+                    continue
+                lines.extend(self._render_business_rule_block(rendered_index, rule))
+                lines.append("")
+                rendered_index += 1
+            return "\n".join(lines).strip()
         groups: List[List[Dict[str, Any]]] = []
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for rule in rules:
@@ -738,13 +801,19 @@ class ReportFormatterAgent:
                     # result. Preserve that authored content only when it
                     # carries a literal/result not already represented by
                     # the row; paraphrases remain suppressed.
-                    if action and self._action_has_unrepresented_result(action, [outcome, *assignments]):
-                        result_values = [*assignments, action]
-                    elif outcome:
+                    if outcome:
                         result_values = [*assignments, outcome]
                     else:
-                        result_values = assignments
+                        result_values = [*assignments, self._field_references_for_display(action)] if action else assignments
                     table_rows.append((condition, "; ".join(self._distinct_text(result_values))))
+
+                # A rule-level action can contain an additional assignment
+                # shared by the block. Render it once, rather than attaching
+                # it to every branch and repeating the first branch outcome.
+                if action and self._action_has_unrepresented_result(
+                    action, [value for row in table_rows for value in row[1:]]
+                ):
+                    table_rows.append(("", self._field_references_for_display(action)))
             else:
                 condition = str(rule.get("condition") or "").strip()
                 result = str(rule.get("action") or rule.get("business_meaning") or "").strip()
@@ -817,27 +886,47 @@ class ReportFormatterAgent:
             action = rule.get("action") if isinstance(rule.get("action"), str) else ""
             meaning = rule.get("business_meaning") if isinstance(rule.get("business_meaning"), str) else ""
             then_values = self._distinct_text([
-                action or meaning,
+                self._field_references_for_display(action or meaning),
                 *self._rule_text_lines(rule.get("tie_priority_handling")),
                 *self._rule_text_lines(rule.get("default")),
                 *self._rule_text_lines(rule.get("when_not_eligible")),
             ])
         for row in decision_logic_rows:
-            branch_condition = str(row.get("condition") or "").strip()
-            outcome = str(row.get("outcome") or "").strip()
+            branch_condition = self._pretty_condition_for_display(
+                str(row.get("condition") or "").strip()
+            )
+            outcome = self._field_references_for_display(
+                str(row.get("outcome") or "").strip()
+            )
             assignments = row.get("assignments") or []
             if assignments and not isinstance(assignments, list):
                 assignments = [assignments]
             branch_results = [self._assignment_text(item) for item in assignments if str(item).strip()]
             action = str(rule.get("action") or "").strip()
-            if action and self._action_has_unrepresented_result(action, [outcome, *branch_results]):
-                branch_results.append(action)
-            elif outcome:
+            if outcome and not (
+                action
+                and self._action_has_unrepresented_result(action, [outcome, *branch_results])
+                and len(decision_logic_rows) == 1
+            ):
                 branch_results.append(outcome)
+            elif action and len(decision_logic_rows) == 1:
+                branch_results.append(action)
             for result in branch_results:
                 then_values.append(
                     f"{branch_condition}: {result}" if branch_condition and branch_condition != condition else result
                 )
+        action = str(rule.get("action") or "").strip()
+        represented_results = [
+            str(row.get("outcome") or "").strip()
+            for row in decision_logic_rows
+        ]
+        represented_results.extend(
+            self._assignment_text(item)
+            for row in decision_logic_rows
+            for item in (row.get("assignments") or [])
+        )
+        if action and len(decision_logic_rows) > 1 and self._action_has_unrepresented_result(action, represented_results):
+            then_values.append(self._field_references_for_display(action))
         then_values = self._distinct_text(then_values)
 
         lines = [f"### R{idx} — {rule_name}", ""]
@@ -1094,7 +1183,10 @@ class ReportFormatterAgent:
 
     def _render_consolidated_read_row(self, bucket: Dict[str, Any]) -> str:
         columns = bucket["target_columns"] or bucket["source_columns"]
-        business_context = ", ".join(columns) if columns else "Not specified"
+        business_context = (
+            ", ".join(self._field_for_display(column) for column in columns)
+            if columns else "Not specified"
+        )
         filters = "; ".join(bucket["filters"]) if bucket["filters"] else "None"
         filters = self._shorten_text(filters, 200)
         extra = f" _(consolidated from {bucket['count']} raw references)_" if bucket["count"] > 1 else ""
@@ -1105,7 +1197,10 @@ class ReportFormatterAgent:
 
     def _render_consolidated_written_row(self, bucket: Dict[str, Any]) -> str:
         operation = ", ".join(bucket["operations"]) if bucket["operations"] else "operation not specified"
-        columns = ", ".join(bucket["target_columns"]) if bucket["target_columns"] else "Not identified"
+        columns = (
+            ", ".join(self._field_for_display(column) for column in bucket["target_columns"])
+            if bucket["target_columns"] else "Not identified"
+        )
         filters = "; ".join(bucket["filters"]) if bucket["filters"] else "None"
         filters = self._shorten_text(filters, 200)
         extra = f" _(consolidated from {bucket['count']} raw references)_" if bucket["count"] > 1 else ""
@@ -1247,7 +1342,10 @@ class ReportFormatterAgent:
         for group in groups.values():
             if field_budget <= 0:
                 break
-            field_display = ", ".join(f"`{self._escape_table_cell(f)}`" for f in group["fields"])
+            field_display = ", ".join(
+                f"`{self._escape_table_cell(self._field_for_display(f))}`"
+                for f in group["fields"]
+            )
             lines.append(f"| {field_display} | {self._escape_table_cell(group['meaning'])} |")
             field_budget -= len(group["fields"])
         return "\n".join(lines)
@@ -1380,13 +1478,13 @@ class ReportFormatterAgent:
             feeds = self._calculation_output(calculation, merged_extraction)
             used_by = self._calculation_used_by(calculation, merged_extraction, feeds)
             lines.extend([
-                f"### Calculation — {name}",
+                f"### Calculation — {self._field_for_display(name)}",
                 "",
                 "**Expression:**",
-                str(expression),
+                self._field_references_for_display(expression),
                 "",
                 "**Output:**",
-                str(feeds),
+                self._field_for_display(feeds),
                 "",
                 "**Used By:**",
                 str(used_by),
@@ -1550,7 +1648,10 @@ class ReportFormatterAgent:
         """
         for bucket in (write_bucket, read_bucket):
             if bucket and bucket.get("target_columns"):
-                cols = ", ".join(bucket["target_columns"][:6])
+                cols = ", ".join(
+                    ReportFormatterAgent._field_for_display(column)
+                    for column in bucket["target_columns"][:6]
+                )
                 operations = {str(operation).upper() for operation in bucket.get("operations") or []}
                 if "INSERT" in operations:
                     return f"Inserts data into: {cols}"
@@ -2026,8 +2127,53 @@ class ReportFormatterAgent:
             values.extend(str(field).strip() for field in fields if str(field).strip())
         values = list(dict.fromkeys(values))
         if values:
-            return ", ".join(values)
+            display_values: List[str] = []
+            for value in values:
+                display_values.extend(
+                    ReportFormatterAgent._field_for_display(part)
+                    for part in re.split(r"\s*,\s*", value)
+                    if part.strip()
+                )
+            return ", ".join(dict.fromkeys(display_values))
         return "Not specified"
+
+    @staticmethod
+    def _field_for_display(value: Any) -> str:
+        """Remove presentation-only alias segments without mutating source data.
+
+        Two-part values such as ``A.Field`` are alias-qualified fields. For
+        longer qualified names, preserve the first schema/table path and
+        remove only interior one-to-three-letter alias segments, e.g.
+        ``schema.Table.A.Field`` -> ``schema.Table.Field``.
+        """
+        text = str(value or "").strip()
+        if not text or "." not in text:
+            return text
+        parts = text.split(".")
+        if len(parts) == 2 and re.fullmatch(r"[A-Za-z]{1,3}", parts[0]):
+            return parts[1]
+        if len(parts) > 2:
+            parts = [parts[0], *(
+                part for part in parts[1:-1]
+                if not re.fullmatch(r"[A-Za-z]{1,3}", part)
+            ), parts[-1]]
+        return ".".join(parts)
+
+    @staticmethod
+    def _field_references_for_display(value: Any) -> str:
+        """Clean dotted field references only while rendering text.
+
+        The underlying LLM/canonical values remain unchanged. Dotted paths
+        are handled as units so expressions such as ``A.Field`` and
+        ``schema.Table.A.Field`` lose only their alias segment.
+        """
+        text = str(value or "")
+        dotted_path = re.compile(
+            r"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*\.)+[A-Za-z_][A-Za-z0-9_]*"
+        )
+        return dotted_path.sub(
+            lambda match: ReportFormatterAgent._field_for_display(match.group(0)), text
+        )
 
     @staticmethod
     def _business_rule_business_meaning(rule: Dict[str, Any]) -> str:
@@ -2083,7 +2229,9 @@ class ReportFormatterAgent:
         lines = ["| Condition | Result |", "|---|---|"]
         for row in rows:
             condition = self._escape_table_cell(self._pretty_condition_for_display(row["condition"]))
-            outcome = self._escape_table_cell(row.get("outcome") or "")
+            outcome = self._escape_table_cell(
+                self._field_references_for_display(row.get("outcome") or "")
+            )
             lines.append(f"| {condition} | {outcome} |")
         return lines
 
@@ -2109,13 +2257,13 @@ class ReportFormatterAgent:
             field = value.get("field") or value.get("column") or value.get("target")
             result = value.get("value") or value.get("expression") or value.get("result")
             if field and result:
-                return f"{field} := {result}"
-        return str(value).strip()
+                return f"{ReportFormatterAgent._field_for_display(field)} := {result}"
+        return ReportFormatterAgent._field_references_for_display(value).strip()
 
     @staticmethod
     def _pretty_condition_for_display(condition: str) -> str:
         """Return the LLM-authored condition without semantic rewriting."""
-        return str(condition or "")
+        return ReportFormatterAgent._field_references_for_display(condition)
 
     # ------------------------------------------------------------------
     # Review-priority icon / escaping / truncation

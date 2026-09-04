@@ -1,0 +1,173 @@
+2026-09-04 07:04:25,324 | INFO | __main__ | Run started for 04_Asset_Class_Upgrade_Marking.sql
+2026-09-04 07:04:25,325 | INFO | logic_rules_extractor.pipeline | Stage 1/6: Running input guardrails
+2026-09-04 07:04:25,326 | INFO | logic_rules_extractor.pipeline | Stage 1/6 completed in 0.00s (input guardrails)
+2026-09-04 07:04:25,326 | INFO | logic_rules_extractor.pipeline | Stage 2/6: Detecting dialect
+2026-09-04 07:04:25,329 | INFO | logic_rules_extractor.pipeline | Detected TSQL dialect (confidence: high)
+2026-09-04 07:04:25,330 | INFO | logic_rules_extractor.pipeline | Stage 2/6 completed in 0.00s (dialect detection)
+2026-09-04 07:04:25,330 | INFO | logic_rules_extractor.pipeline | Stage 3/6: Preprocessing, parsing, and chunking /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpyavs0foi.sql
+2026-09-04 07:04:25,351 | INFO | logic_rules_extractor.pipeline | Detected TSQL PROCEDURE 'Asset_Class_Upgrade_Marking' with 7 chunk(s)
+2026-09-04 07:04:25,352 | INFO | logic_rules_extractor.pipeline | Stage 3/6 completed in 0.02s (preprocessing/parsing/chunking)
+2026-09-04 07:04:25,352 | INFO | logic_rules_extractor.pipeline | Stage 4/6: Retrieving dependencies / pattern context and extracting logic per chunk (model: amazon.nova-lite-v1:0)
+2026-09-04 07:04:25,352 | INFO | logic_rules_extractor.pipeline | Persistent knowledge base ready in 0.00s
+2026-09-04 07:04:25,353 | INFO | logic_rules_extractor.pipeline | Stage 4 extraction selection: estimated_tokens=7240 budget=29768 path=single-pass extraction_calls=1 merge_ran=False
+2026-09-04 07:04:28,796 | INFO | logic_rules_extractor.pipeline | Stage 4/6 completed in 3.44s total (kb_ready=0.00s, retrieval/KB sum=0.00s, LLM extraction sum=3.44s, workers=8, chunks=1)
+2026-09-04 07:04:28,796 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
+2026-09-04 07:04:37,426 | INFO | src.validation.coverage_check | Coverage block lines=26-29 overlap_ratio=1.000 matched_rule=1 uncovered=False
+2026-09-04 07:04:37,427 | INFO | src.validation.coverage_check | Coverage block lines=38-39 overlap_ratio=1.000 matched_rule=1 uncovered=False
+2026-09-04 07:04:37,427 | INFO | src.validation.coverage_check | Coverage block lines=46-47 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 07:04:37,427 | INFO | src.validation.coverage_check | Coverage block lines=52-55 overlap_ratio=1.000 matched_rule=0 uncovered=True
+2026-09-04 07:04:37,427 | INFO | src.validation.coverage_check | Coverage block lines=60-61 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 07:04:37,428 | INFO | src.validation.coverage_check | Coverage block lines=65-66 overlap_ratio=0.228 matched_rule=4 uncovered=False
+2026-09-04 07:04:37,428 | INFO | src.validation.coverage_check | Coverage block lines=72-73 overlap_ratio=0.143 matched_rule=4 uncovered=False
+2026-09-04 07:04:37,428 | INFO | logic_rules_extractor.pipeline | Coverage check found 2 unreviewed decision point(s); asking the model to review (attempt 1)
+2026-09-04 07:04:48,624 | INFO | src.validation.coverage_check | Coverage block lines=26-29 overlap_ratio=1.000 matched_rule=1 uncovered=False
+2026-09-04 07:04:48,624 | INFO | src.validation.coverage_check | Coverage block lines=38-39 overlap_ratio=1.000 matched_rule=1 uncovered=False
+2026-09-04 07:04:48,624 | INFO | src.validation.coverage_check | Coverage block lines=46-47 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 07:04:48,625 | INFO | src.validation.coverage_check | Coverage block lines=52-55 overlap_ratio=1.000 matched_rule=0 uncovered=True
+2026-09-04 07:04:48,625 | INFO | src.validation.coverage_check | Coverage block lines=60-61 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 07:04:48,625 | INFO | src.validation.coverage_check | Coverage block lines=65-66 overlap_ratio=0.228 matched_rule=4 uncovered=False
+2026-09-04 07:04:48,625 | INFO | src.validation.coverage_check | Coverage block lines=72-73 overlap_ratio=0.143 matched_rule=4 uncovered=False
+2026-09-04 07:04:48,625 | INFO | logic_rules_extractor.pipeline | Coverage check found 2 unreviewed decision point(s); asking the model to review (attempt 2)
+2026-09-04 07:05:00,091 | INFO | src.validation.coverage_check | Coverage block lines=26-29 overlap_ratio=1.000 matched_rule=1 uncovered=False
+2026-09-04 07:05:00,092 | INFO | src.validation.coverage_check | Coverage block lines=38-39 overlap_ratio=1.000 matched_rule=1 uncovered=False
+2026-09-04 07:05:00,092 | INFO | src.validation.coverage_check | Coverage block lines=46-47 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 07:05:00,093 | INFO | src.validation.coverage_check | Coverage block lines=52-55 overlap_ratio=1.000 matched_rule=0 uncovered=True
+2026-09-04 07:05:00,093 | INFO | src.validation.coverage_check | Coverage block lines=60-61 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 07:05:00,093 | INFO | src.validation.coverage_check | Coverage block lines=65-66 overlap_ratio=0.228 matched_rule=4 uncovered=False
+2026-09-04 07:05:00,093 | INFO | src.validation.coverage_check | Coverage block lines=72-73 overlap_ratio=0.143 matched_rule=4 uncovered=False
+2026-09-04 07:05:00,093 | INFO | logic_rules_extractor.pipeline | Stage 5/6 completed in 31.30s (business reasoning)
+2026-09-04 07:05:00,093 | INFO | logic_rules_extractor.pipeline | Stage 6/6: Reconciling deterministic evidence against synthesized output
+2026-09-04 07:05:00,108 | INFO | logic_rules_extractor.pipeline | Stage 6/6 completed in 0.01s (deterministic reconciliation)
+2026-09-04 07:05:00,108 | INFO | logic_rules_extractor.pipeline | Stage 7/7: Applying output guardrails and formatting final report
+2026-09-04 07:05:00,123 | INFO | logic_rules_extractor.pipeline | Verification/traceability diagnostics for PRO.Asset_Class_Upgrade_Marking.StoredProcedure_report.md:
+# Asset Class Upgrade Marking — Verification & Traceability
+
+> Companion artifact to `PRO.Asset_Class_Upgrade_Marking.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
+
+| Item | Value |
+|---|---|
+| Object ID | `obj_510af9b5e9e9` |
+| Raw technical object name (from source) | `Asset_Class_Upgrade_Marking` |
+
+## Run Metadata
+
+| Item | Value |
+|---|---|
+| Pipeline Version | `2026-08-26-phase1` |
+| Prompt Version | `5a4d0a2976fd37b3` |
+| Knowledge Base Version | `2e6fc62902751973` |
+| Model | `amazon.nova-lite-v1:0` |
+| Provider | `bedrock` |
+| Dialect | `T-SQL` |
+| Dialect Confidence | `High` |
+| Source Hash | `560a6822ac7bb45373a4debba9ef544783e3c6ee7f6a69459dfd7cf29352386e` |
+| Configuration Version | `ea64375ebb056aec` |
+| Run Timestamp | `2026-09-04T01:34:25.351853+00:00` |
+| Object ID | `obj_510af9b5e9e9` |
+
+## LLM Telemetry
+
+| Item | Value |
+|---|---|
+| Run ID | `telemetry_ddc72e6e00be` |
+| Total LLM Calls | `4` |
+| Successful Calls | `4` |
+| Failed Calls | `0` |
+| Prompt Tokens | `32895` |
+| Completion Tokens | `6031` |
+| Total Tokens | `38926` |
+| Telemetry Availability | `available` |
+
+| Stage | Calls | Success | Failure | Tokens | Availability |
+|---|---:|---:|---:|---:|---|
+| extraction | 1 | 1 | 0 | 4842 | available |
+| synthesis | 1 | 1 | 0 | 9894 | available |
+| synthesis_revision | 2 | 2 | 0 | 24190 | available |
+
+## Business Rule Summary
+
+| Priority | Rule | Output | Business Purpose |
+|---|---|---|---|
+| 🔴 1 | Mark NPA accounts eligible for upgrade [CONFLICT] (`rule_01`) | `A.UpgradeEligible` | Marks NPA accounts as eligible for upgrade if they have cleared overdue for the full review period. |
+| 🔴 2 | Calculate provision released by upgrade [CONFLICT] (`rule_02`) | `A.ProvisionReleaseAmount` | Calculates the provision released by the upgrade for eligible accounts. |
+| 🔴 3 | Reclassify eligible accounts to Standard [CONFLICT] (`rule_03`) | `A.AssetClass, A.ProvisionPct, A.ProvisionAmount` | Reclassifies eligible accounts back to Standard with base provisioning. |
+| 🔴 4 | Stamp upgrade date for eligible accounts [CONFLICT] (`rule_04`) | `A.UpgradeDate` | Stamps the date the upgrade took effect for eligible accounts. |
+| 🔴 5 | Update run status on success [CONFLICT] (`rule_05`) | `COMPLETED, ErrorDate, ErrorDescription, RunCount` | Updates the run status to indicate successful completion. |
+| 🔴 6 | Update run status on failure [CONFLICT] (`rule_06`) | `COMPLETED, ErrorDate, ErrorDescription, RunCount` | Updates the run status to indicate failure and logs the error details. |
+
+## Source Traceability
+
+<details>
+<summary><strong>Show rule-to-source mapping</strong></summary>
+
+| # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |
+|---|---|---|---|---|---|---|
+| 1 | Mark NPA accounts eligible for upgrade (rule_01) | A.AssetClass <> 'STANDARD' AND A.OverdueDays = 0 AND A.DaysSinceLastOverdue >= @ReviewPeriodDays; ELSE | Not cited | Not cited | Not cited | Needs Review |
+| 2 | Calculate provision released by upgrade (rule_02) | A.UpgradeEligible = 'Y' | Not cited | Not cited | Not cited | Needs Review |
+| 3 | Reclassify eligible accounts to Standard (rule_03) | A.UpgradeEligible = 'Y' | Not cited | Not cited | Not cited | Needs Review |
+| 4 | Stamp upgrade date for eligible accounts (rule_04) | A.UpgradeEligible = 'Y' | Not cited | Not cited | Not cited | Needs Review |
+| 5 | Update run status on success (rule_05) | ProcessName = 'Asset_Class_Upgrade_Marking' | Not cited | Not cited | Not cited | Needs Review |
+| 6 | Update run status on failure (rule_06) | ProcessName = 'Asset_Class_Upgrade_Marking' | Not cited | Not cited | Not cited | Needs Review |
+
+_Source evidence is the literal technical text carried through the pipeline; Source Location is derived deterministically from chunk and statement provenance when available; SQL Statements / Chunks and Technical References point back to the extracted chunk ids and statement references used by the guardrails. Technical references that repeat the same table/operation/target-columns are shown once._
+</details>
+
+## Rule Provenance Summary
+
+- **Total business rules:** 6
+- **By rule type:** explicit = 6
+- **By validation status:** unverified = 6
+
+_This count reflects every individually traceable rule (one per source statement/field, for full auditability). The business report may show a smaller number, because closely related rules that apply the same pattern to several fields (e.g. "reset each of these six DPD fields to zero if negative") are presented there as one combined rule for readability. Every rule counted here is still individually traceable in the Source Traceability table below - none are dropped, only grouped for display._
+
+_Rules marked **unverified** could not be matched back to the technical extraction or source code and should be prioritized for human review before being treated as confirmed._
+
+## Reconciliation Summary
+
+- **Matched facts:** 2
+- **Deterministic-only facts:** 10
+- **LLM-only claims:** 0
+- **Conflicts:** 9
+- **Unresolved items:** 0
+- **Review required:** Yes
+
+### Review Items
+
+- `CONFLICT` tables_read (`recon_9fa17067c14f`): full_source
+- `CONFLICT` tables_read (`recon_9fa17067c14f`): full_source
+- `CONFLICT` tables_written (`recon_8abf8b3a553f`): full_source
+- `CONFLICT` rule (`recon_39c1697dfc84`): 04_batch3_nested_block:chunk_text_04 - Deterministic evidence conflicts with the synthesized claim.
+- `CONFLICT` rule (`recon_9414a21216e2`): 04_batch3_nested_block:chunk_text_07;04_batch3_nested_block:chunk_text_08;04_batch3_nested_block:chunk_text_09;04_batch3_nested_block:embedded_01_14;04_batch3_nested_block:embedded_01_15;04_batch3_nested_block:embedded_01_16 - Deterministic evidence conflicts with the synthesized claim.
+
+## Quality Summary
+
+- **Overall status:** REVIEW_REQUIRED
+- **Quality score:** 17/100
+- **Statement coverage:** 11 / 30 (36.7%)
+- **Rule grounding coverage:** 6 / 6 (100.0%)
+- **Conflicts:** 9
+- **Contradictions:** 10
+- **Review required items:** 19
+- **Review required:** Yes
+
+Statement parse success is below the preferred threshold.
+
+### Contradictions
+
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Outcome Conflict on `source`: Synthesized outcome/assignment conflicts with deterministic evidence.
+
+_Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._
+
+## Pipeline Diagnostics
+
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE A
+            SET A.UpgradeEligible = 'Y'
+            FROM PRO.AccountCal A
+            WHERE A.AssetClass <> 'ST...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE PRO.RunStatus
+        SET COMPLETED = 'N', ErrorDate = GETDATE(), ErrorDescription = ERROR_MESSAGE(), RunCount =...
+2026-09-04 07:05:00,123 | INFO | logic_rules_extractor.pipeline | Stage 7/7 completed in 0.01s (final report generation)

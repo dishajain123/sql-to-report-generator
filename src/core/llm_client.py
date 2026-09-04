@@ -58,6 +58,11 @@ def load_llm_config() -> LLMConfig:
     provider = os.environ.get("LLM_PROVIDER", "").strip().lower()
     api_key = os.environ.get("LLM_API_KEY", "").strip()
     model_name = os.environ.get("LLM_MODEL_NAME", "").strip()
+    groq_api_key = os.environ.get("GROQ_API_KEY", "").strip()
+    groq_model_name = os.environ.get("GROQ_MODEL_NAME", "").strip()
+    groq_base_url = os.environ.get("GROQ_BASE_URL", "").strip() or None
+    ollama_model_name = os.environ.get("OLLAMA_MODEL_NAME", "").strip()
+    ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "").strip() or None
     legacy_model_name = os.environ.get("GPT_MODEL", "").strip()
     base_url = os.environ.get("LLM_BASE_URL", "").strip() or None
     aws_access_key_id = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
@@ -66,18 +71,59 @@ def load_llm_config() -> LLMConfig:
     aws_region = os.environ.get("AWS_DEFAULT_REGION", "").strip() or os.environ.get("AWS_REGION", "").strip()
     context_window = _configured_context_window()
 
-    if not model_name and legacy_model_name:
+    if not model_name and legacy_model_name and provider in {"", "bedrock"}:
         model_name = legacy_model_name
 
     if model_name.lower().startswith("bedrock/"):
-        provider = "bedrock"
-        model_name = model_name.split("/", 1)[1].strip()
+        if not provider:
+            provider = "bedrock"
+        if provider == "bedrock":
+            model_name = model_name.split("/", 1)[1].strip()
     elif not provider and aws_access_key_id and aws_secret_access_key and aws_region:
         provider = "bedrock"
     elif not provider:
         provider = "openai"
 
     provider = provider.lower()
+
+    if provider == "groq":
+        # Groq exposes an OpenAI-compatible chat-completions API. Keep its
+        # credentials/model namespace separate so switching providers cannot
+        # accidentally reuse an AWS model or key from the Bedrock setup.
+        groq_key = groq_api_key or api_key
+        groq_model = groq_model_name or model_name
+        missing = [
+            name
+            for name, value in (
+                ("GROQ_API_KEY / LLM_API_KEY", groq_key),
+                ("GROQ_MODEL_NAME / LLM_MODEL_NAME", groq_model),
+            )
+            if not value
+        ]
+        if missing:
+            raise EnvironmentError(
+                "Missing required Groq environment variable(s): "
+                + ", ".join(missing)
+                + ". Set them in your .env file before running the app."
+            )
+        return LLMConfig(
+            provider=provider,
+            api_key=groq_key,
+            model_name=groq_model,
+            base_url=groq_base_url or base_url or "https://api.groq.com/openai/v1",
+            context_window=context_window,
+        )
+
+    if provider == "ollama":
+        # Ollama is a local server and deliberately needs no API key. The
+        # OpenAI-compatible client still receives a harmless placeholder.
+        return LLMConfig(
+            provider=provider,
+            api_key="ollama",
+            model_name=ollama_model_name or model_name or "llama3.1:8b",
+            base_url=ollama_base_url or "http://localhost:11434/v1",
+            context_window=context_window,
+        )
 
     if provider == "openai":
         missing = [
@@ -131,7 +177,7 @@ def load_llm_config() -> LLMConfig:
 
     raise EnvironmentError(
         f"Unsupported LLM_PROVIDER '{provider}'. "
-        "This codebase currently supports LLM_PROVIDER=openai or LLM_PROVIDER=bedrock."
+        "This codebase currently supports LLM_PROVIDER=openai, groq, ollama, or bedrock."
     )
 
 
@@ -146,7 +192,7 @@ def _configured_context_window() -> int:
 
 
 def create_llm_client(config: LLMConfig):
-    if config.provider == "openai":
+    if config.provider in {"openai", "groq", "ollama"}:
         client_kwargs = {"api_key": config.api_key}
         if config.base_url:
             client_kwargs["base_url"] = config.base_url
@@ -162,7 +208,7 @@ def create_llm_client(config: LLMConfig):
 
     raise EnvironmentError(
         f"Unsupported LLM_PROVIDER '{config.provider}'. "
-        "This codebase currently supports LLM_PROVIDER=openai or LLM_PROVIDER=bedrock."
+        "This codebase currently supports LLM_PROVIDER=openai, groq, ollama, or bedrock."
     )
 
 

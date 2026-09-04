@@ -36,8 +36,13 @@ windowed CTE - without needing a dedicated parser for each one.
 from __future__ import annotations
 
 import re
+import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Sequence, Set
+
+
+logger = logging.getLogger(__name__)
 
 
 # Keywords that mark a source-visible decision point. Deliberately broad
@@ -313,7 +318,12 @@ def _dml_predicate_tokens_by_line(source: str) -> Dict[int, Set[str]]:
                 predicate_start = dml_match.start() + where_match.end()
                 predicate_tokens = _predicate_tokens(statement[predicate_start:])
                 if predicate_tokens:
-                    line_start = text.count("\n", 0, statement_start) + 1
+                    # Use the absolute DML position. The statement slice can
+                    # begin after a semicolon/newline, so using
+                    # `statement_start` would associate every later
+                    # statement's predicate with the first source line.
+                    dml_offset = statement_start + dml_match.start()
+                    line_start = text.count("\n", 0, dml_offset) + 1
                     line_end = text.count("\n", 0, statement_end) + 1
                     for line_number in range(line_start, line_end + 1):
                         result[line_number] = predicate_tokens
@@ -342,6 +352,19 @@ def _rule_evidence_text(rule: Any) -> str:
             parts.append(" ".join(str(item) for item in value))
         else:
             parts.append(str(value))
+    # A linked calculation is part of the rule's explanation. Keeping it in
+    # the same evidence unit avoids treating an expression that explains a
+    # DML result as unrelated merely because it lives in the calculations
+    # array rather than in source_evidence.
+    calculations = rule.get("calculations")
+    if isinstance(calculations, dict):
+        calculations = [calculations]
+    if isinstance(calculations, (list, tuple)):
+        for calculation in calculations:
+            if isinstance(calculation, dict):
+                parts.extend(str(value) for value in calculation.values() if value is not None)
+            elif calculation is not None:
+                parts.append(str(calculation))
     return " ".join(parts)
 
 
@@ -460,12 +483,23 @@ def _rule_covers_dml_behavior(rule: Any, statement: str) -> bool:
     """
     if not isinstance(rule, dict):
         return False
+    # A generic business rule that merely names an affected field is not
+    # enough to claim an entire DML statement, especially when that statement
+    # contains a partially cited CASE/IF ladder. The containing-statement
+    # relationship is established here only when the model explicitly linked
+    # a calculation to the rule; ordinary rules must cite their own statement
+    # or branch evidence through the line-local checks below.
+    calculations = rule.get("calculations")
+    if isinstance(calculations, dict):
+        calculations = [calculations]
+    if not isinstance(calculations, (list, tuple)) or not calculations:
+        return False
     rule_fields = {token.casefold() for token in _tokens(" ".join(
         [str(rule.get("output_field") or ""), *[str(v) for v in (rule.get("fields_affected") or [])]]
     ))}
     if not rule_fields:
         return False
-    evidence = " ".join(_rule_evidence_fragments(rule))
+    evidence = _rule_evidence_text(rule)
     if not evidence:
         return False
     evidence_tokens = _tokens(evidence)
@@ -510,15 +544,38 @@ def find_coverage_gaps(
     if not anchors_by_line:
         return []
     lines = str(source or "").splitlines()
-    rule_tokens: Set[str] = set()
-    evidence_fragments: List[str] = []
-    for rule in rules or []:
-        rule_tokens |= _tokens(_rule_evidence_text(rule))
-        evidence_fragments.extend(_rule_evidence_fragments(rule))
+    # Keep each rule's evidence as an independent unit. A pooled vocabulary
+    # makes an unrelated rule appear to cover this region whenever the two
+    # happen to mention the same output column.
+    rule_evidence = [_rule_evidence_text(rule) for rule in rules or []]
+    rule_tokens = [_tokens(evidence) for evidence in rule_evidence]
+    evidence_fragments = [_rule_evidence_fragments(rule) for rule in rules or []]
 
     groups = _group_lines(list(anchors_by_line))
+    group_tokens = [
+        _tokens(" ".join(lines[line - 1] for line in group if line <= len(lines)))
+        for group in groups
+    ]
+    # Source-local inverse document frequency downweights identifiers shared
+    # by many regions while retaining rare predicate/output vocabulary.
+    documents = [tokens for tokens in [*rule_tokens, *group_tokens] if tokens]
+    document_frequency: Dict[str, int] = {}
+    for tokens in documents:
+        for token in tokens:
+            document_frequency[token] = document_frequency.get(token, 0) + 1
+    document_count = max(1, len(documents))
+
+    def weighted_overlap_ratio(source_tokens: Set[str], candidate_tokens: Set[str]) -> float:
+        if not source_tokens or not candidate_tokens:
+            return 0.0
+        weights = {
+            token: math.log((document_count + 1) / (document_frequency.get(token, 0) + 1)) + 1.0
+            for token in source_tokens
+        }
+        return sum(weights[token] for token in source_tokens & candidate_tokens) / sum(weights.values())
+
     predicate_tokens_by_line = _dml_predicate_tokens_by_line(source)
-    evidence_predicate_tokens = _predicate_tokens(" ".join(evidence_fragments))
+    rule_predicate_tokens = [_predicate_tokens(evidence) for evidence in rule_evidence]
     covered_region_lines: Set[int] = set()
     covered_region_lines.update(_parent_branch_coverage(source, rules))
     for region_lines, region_text in _executable_regions(source):
@@ -532,56 +589,85 @@ def find_coverage_gaps(
             covered_region_lines.update(region_lines)
 
     gaps: List[CoverageGap] = []
-    for group in groups:
+    for group_index, group in enumerate(groups):
         uncovered_lines: List[int] = []
+        group_best_ratio = 0.0
+        group_best_rule = None
         for line_number in group:
             if line_number in covered_region_lines:
                 continue
             line_tokens = _tokens(lines[line_number - 1] if line_number <= len(lines) else "")
             if not line_tokens:
                 continue
-            overlap = line_tokens & rule_tokens
             predicate_tokens = predicate_tokens_by_line.get(line_number, set())
-            predicate_overlap = rule_tokens & predicate_tokens
-            coverage_ratio = len(overlap) / len(line_tokens)
-            fragment_match = any(
-                (
-                    _compact_text(fragment) in _compact_text(lines[line_number - 1])
-                    or (
-                        len(line_tokens & _tokens(fragment)) >= 2
-                        and len(line_tokens & _tokens(fragment)) >= len(_tokens(fragment))
+            line_best_ratio = 0.0
+            line_best_overlap = 0
+            line_best_rule = None
+            fragment_match = False
+            predicate_covered = False
+            for rule_index, tokens in enumerate(rule_tokens):
+                ratio = weighted_overlap_ratio(line_tokens, tokens)
+                overlap_count = len(line_tokens & tokens)
+                if ratio > line_best_ratio:
+                    line_best_ratio = ratio
+                    line_best_overlap = overlap_count
+                    line_best_rule = rule_index
+                fragments = evidence_fragments[rule_index]
+                if any(
+                    (
+                        _compact_text(fragment) in _compact_text(lines[line_number - 1])
+                        or (
+                            # Non-contiguous token matches are useful for a
+                            # branch citation such as `score < 50 -> LOW`,
+                            # but a fragment made only of shared identifiers
+                            # must not claim a different statement. Exact
+                            # normalized substrings above remain sufficient
+                            # for ordinary statement/expression citations.
+                            bool(re.search(r"(?:<=|>=|<>|!=|=|<|>|\\b\\d+(?:\\.\\d+)?\\b)", fragment))
+                            and
+                            len(line_tokens & _tokens(fragment)) >= 2
+                            and len(line_tokens & _tokens(fragment)) >= len(_tokens(fragment))
+                        )
                     )
-                )
-                for fragment in evidence_fragments
-                if _tokens(fragment)
-            )
+                    for fragment in fragments
+                    if _tokens(fragment)
+                ):
+                    fragment_match = True
+                if predicate_tokens:
+                    predicate_overlap = tokens & predicate_tokens
+                    candidate_covered = bool(predicate_overlap) and (
+                        len(predicate_tokens) < 2 or len(predicate_overlap) >= 2
+                    )
+                    predicate_literals = predicate_tokens & {
+                        match.group(0).lower()
+                        for match in _PREDICATE_LITERAL_RE.finditer(lines[line_number - 1])
+                    }
+                    if predicate_literals:
+                        candidate_covered = candidate_covered and bool(
+                            predicate_literals & rule_predicate_tokens[rule_index]
+                        )
+                    predicate_covered = predicate_covered or candidate_covered
+            if line_best_ratio > group_best_ratio:
+                group_best_ratio = line_best_ratio
+                group_best_rule = line_best_rule
             # A single shared field name is not enough to prove that a
             # branch line was reviewed. Requiring two meaningful tokens on
             # multi-token lines catches a rule that cites only one branch of
             # an otherwise similar ladder, while retaining lenient matching
             # for paraphrased single-anchor lines.
             if predicate_tokens:
-                # For DML, shared SET/table vocabulary is not evidence that
-                # this statement's own business predicate was reviewed.
-                predicate_covered = bool(predicate_overlap) and (
-                    len(predicate_tokens) < 2 or len(predicate_overlap) >= 2
-                )
-                predicate_literals = predicate_tokens & {
-                    match.group(0).lower()
-                    for match in _PREDICATE_LITERAL_RE.finditer(
-                        " ".join(lines[line_number - 1 : line_number])
-                    )
-                }
-                if predicate_literals:
-                    predicate_covered = predicate_covered and bool(
-                        predicate_literals & evidence_predicate_tokens
-                    )
                 if not fragment_match and not predicate_covered:
                     uncovered_lines.append(line_number)
-            elif not fragment_match and (coverage_ratio < _COVERAGE_TOKEN_THRESHOLD or (
-                len(line_tokens) >= 2 and len(overlap) < 2
+            elif not fragment_match and (line_best_ratio < _COVERAGE_TOKEN_THRESHOLD or (
+                len(line_tokens) >= 2 and line_best_overlap < 2
             )):
                 uncovered_lines.append(line_number)
+        logger.info(
+            "Coverage block lines=%s-%s overlap_ratio=%.3f matched_rule=%s uncovered=%s",
+            group[0], group[-1], group_best_ratio,
+            group_best_rule if group_best_rule is not None else "none",
+            bool(uncovered_lines),
+        )
         if not uncovered_lines:
             continue
         start, end = uncovered_lines[0], uncovered_lines[-1]

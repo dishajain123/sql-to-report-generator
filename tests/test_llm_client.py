@@ -28,6 +28,60 @@ def test_load_llm_config_infers_bedrock_from_legacy_model_and_aws_env(monkeypatc
     assert config.aws_region == "us-east-1"
 
 
+def test_load_llm_config_supports_groq_without_changing_bedrock_settings(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    monkeypatch.setenv("GROQ_API_KEY", "groq-test-key")
+    monkeypatch.setenv("GROQ_MODEL_NAME", "groq-test-model")
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL_NAME", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+
+    config = load_llm_config()
+
+    assert config.provider == "groq"
+    assert config.api_key == "groq-test-key"
+    assert config.model_name == "groq-test-model"
+    assert config.base_url == "https://api.groq.com/openai/v1"
+
+
+def test_groq_client_uses_openai_compatible_endpoint(monkeypatch):
+    captured = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(llm_client, "OpenAI", FakeOpenAI)
+    config = SimpleNamespace(
+        provider="groq",
+        api_key="groq-test-key",
+        model_name="groq-test-model",
+        base_url="https://api.groq.com/openai/v1",
+    )
+
+    create_llm_client(config)
+
+    assert captured == {
+        "api_key": "groq-test-key",
+        "base_url": "https://api.groq.com/openai/v1",
+    }
+
+
+def test_load_llm_config_supports_local_ollama_without_api_key(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL_NAME", raising=False)
+    monkeypatch.delenv("OLLAMA_MODEL_NAME", raising=False)
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+
+    config = load_llm_config()
+
+    assert config.provider == "ollama"
+    assert config.api_key == "ollama"
+    assert config.model_name == "llama3.1:8b"
+    assert config.base_url == "http://localhost:11434/v1"
+
+
 def test_bedrock_client_exposes_openai_like_chat_api(monkeypatch):
     monkeypatch.setattr(llm_client, "boto3", None)
     monkeypatch.setattr(llm_client, "BotoConfig", None)

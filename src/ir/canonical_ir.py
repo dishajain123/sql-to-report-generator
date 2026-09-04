@@ -6,6 +6,12 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from src.ingestion.ingestion import IngestionResult, Parameter
 from src.core.pipeline_utils import RunMetadata, run_metadata_to_dict
+from src.validation.semantic_validation import (
+    extract_case_assignment_decision_chains,
+    extract_nested_decision_chains,
+    extract_procedural_decision_chains,
+    merge_decision_chains,
+)
 
 DETERMINISTIC_FACT = "DETERMINISTIC_FACT"
 LLM_INTERPRETATION = "LLM_INTERPRETATION"
@@ -806,7 +812,21 @@ class CanonicalBusinessIR:
 
         business_rules = [BusinessRuleIR.from_dict(item) for item in _dict_list(synthesis.data.get("business_rules"))]
         business_rules = _order_business_rules_by_execution_order(business_rules, statements)
-        decision_blocks = _build_decision_blocks(business_rules, merged_extraction.get("decision_chains"))
+        chains = merged_extraction.get("decision_chains")
+        has_structural_chain = any(
+            isinstance(chain, dict)
+            and isinstance(chain.get("branches"), list)
+            and len(chain.get("branches") or []) >= 2
+            for chain in (chains or [])
+        ) if isinstance(chains, list) else False
+        if not has_structural_chain:
+            source_text = getattr(ingestion, "raw_code", "")
+            chains = merge_decision_chains(
+                extract_case_assignment_decision_chains(source_text),
+                extract_nested_decision_chains(source_text),
+                extract_procedural_decision_chains(source_text),
+            )
+        decision_blocks = _build_decision_blocks(business_rules, chains)
         calculations = _attach_calculation_destinations(
             [dict(item) for item in _dict_list(synthesis.data.get("calculations"))],
             table_operations,

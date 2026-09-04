@@ -448,6 +448,31 @@ def test_at_a_glance_lists_all_written_tables_not_just_first_six():
     assert "more" not in small_summary
 
 
+def test_report_title_carries_identity_and_at_a_glance_omits_redundant_purpose_row():
+    fmt = ReportFormatterAgent()
+    ingestion = type("Ingestion", (), {
+        "object_name": "unrelated_process",
+        "canonical_object_name": "unrelated_process",
+        "object_type": "PROCEDURE",
+        "schema": "",
+        "dialect": "oracle",
+        "parameters": [],
+    })()
+    synthesis = type("Synthesis", (), {
+        "data": {"purpose_summary": "A domain-neutral process purpose."},
+    })()
+    title = fmt._title_block(ingestion, synthesis)
+    glance = fmt._at_a_glance(ingestion, synthesis, [], [], [], {})
+    assert "**Procedure:** `Unrelated Process`" in title
+    assert "**Dialect:** Oracle" in title
+    assert "**Input:** None" in title
+    assert "| Purpose |" not in glance
+    assert "| Procedure | `Unrelated Process` |" in glance
+    assert "| Dialect | Oracle |" in glance
+    assert "| Input | None |" in glance
+    assert "| Business rules | 0 |" in glance
+
+
 def test_business_rule_summary_table_includes_priority_column():
     rules = [
         {"condition": "c1", "action": "a1", "rule_type": "explicit", "validation_status": "verified"},

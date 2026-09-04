@@ -124,11 +124,16 @@ pip install -r requirements.txt
 
 ### 3. Add your LLM settings
 
-Set the provider, API key, model, and base URL in `.env`:
+Set the provider, API key, model, and base URL in `.env`. Supported providers
+are `openai`, `groq`, `ollama`, and `bedrock`:
 
 ```bash
 cp config/.env.example .env
-# edit .env and set LLM_PROVIDER, LLM_API_KEY, LLM_MODEL_NAME, and LLM_BASE_URL
+# OpenAI: set LLM_PROVIDER=openai, LLM_API_KEY, LLM_MODEL_NAME, LLM_BASE_URL
+# Groq: set LLM_PROVIDER=groq, GROQ_API_KEY, GROQ_MODEL_NAME
+# Ollama: install Ollama, run `ollama pull llama3.1:8b`, then set
+# LLM_PROVIDER=ollama and OLLAMA_MODEL_NAME=llama3.1:8b (no API key needed)
+# Bedrock: set LLM_PROVIDER=bedrock, AWS credentials/region, and LLM_MODEL_NAME
 ```
 
 `main.py` loads `.env` automatically via `python-dotenv`. **Never commit

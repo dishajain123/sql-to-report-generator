@@ -152,6 +152,90 @@ def test_business_rule_labels_have_markdown_boundaries_and_no_redundant_prose():
     assert "Then / Result" not in report
 
 
+def test_rendering_strips_alias_segments_from_affected_fields_and_outputs():
+    formatter = ReportFormatterAgent()
+    report = formatter._business_rules_section([{
+        "rule_name": "Update eligible state",
+        "output_field": "PRO.AccountCal.A.AddlProvision",
+        "fields_affected": ["A.UpgradeEligible"],
+        "condition": "input_value is present",
+        "action": "Apply the source-defined update.",
+    }])
+    assert "`PRO.AccountCal.AddlProvision, UpgradeEligible`" in report
+    assert "PRO.AccountCal.A.AddlProvision" not in report
+    assert "A.UpgradeEligible" not in report
+
+    condition_report = formatter._business_rules_section([{
+        "rule_name": "Evaluate generic field",
+        "output_field": "ResultField",
+        "condition": "A.InputField = 1 AND ISNULL(A.OtherField, 0) > 0",
+        "action": "A.ResultField := A.InputField",
+    }])
+    assert "A.InputField" not in condition_report
+    assert "A.OtherField" not in condition_report
+    assert "A.ResultField" not in condition_report
+
+    branch_report = formatter._business_rules_section([{
+        "rule_name": "Classify generic input",
+        "output_field": "ResultField",
+        "condition": "A.InputField is evaluated",
+        "action": "Apply the matching result.",
+        "decision_logic_rows": [
+            {"condition": "A.InputField = 1", "outcome": "A.ResultField = 'X'"},
+            {"condition": "ELSE", "outcome": "A.ResultField = 'Y'"},
+        ],
+    }])
+    assert "A.InputField" not in branch_report
+    assert "A.ResultField" not in branch_report
+
+    calculation = SynthesisResult(data={
+        "calculations": [{
+            "field": "derived_value",
+            "formula": "source_value * factor_value",
+            "output_field": "PRO.AccountCal.A.AddlProvision",
+        }]
+    })
+    calc_report = formatter._calculations(calculation)
+    assert "**Output:**\nPRO.AccountCal.AddlProvision" in calc_report
+    assert "PRO.AccountCal.A.AddlProvision" not in calc_report
+
+
+def test_then_bullets_use_each_decision_row_outcome():
+    report = ReportFormatterAgent()._business_rules_section([{
+        "rule_name": "Assign category by range",
+        "output_field": "category_code",
+        "condition": "input_value is evaluated",
+        "action": "Assign the category according to the matching range.",
+        "decision_logic_rows": [
+            {"condition": "input_value <= 10", "outcome": "STANDARD"},
+            {"condition": "input_value <= 20", "outcome": "SUBSTANDARD"},
+            {"condition": "input_value <= 30", "outcome": "DOUBTFUL"},
+            {"condition": "ELSE", "outcome": "LOSS"},
+        ],
+    }])
+    for outcome in ("STANDARD", "SUBSTANDARD", "DOUBTFUL", "LOSS"):
+        assert f": {outcome}" in report
+    then_section = report.split("**Then:**", 1)[1].split("### Decision Logic", 1)[0]
+    assert then_section.count(": STANDARD") == 1
+    assert then_section.count(": SUBSTANDARD") == 1
+    assert then_section.count(": DOUBTFUL") == 1
+    assert then_section.count(": LOSS") == 1
+
+
+def test_each_calculation_renders_its_own_output_field():
+    report = ReportFormatterAgent()._calculations(SynthesisResult(data={
+        "calculations": [
+            {"field": "first_total", "formula": "first_value + first_rate", "output_field": "target.first_total"},
+            {"field": "second_total", "formula": "second_value + second_rate", "output_field": "target.second_total"},
+        ]
+    }))
+    first = report.index("### Calculation — first_total")
+    second = report.index("### Calculation — second_total")
+    assert "**Output:**\ntarget.first_total" in report[first:second]
+    assert "**Output:**\ntarget.second_total" in report[second:]
+    assert "target.second_total" not in report[first:second]
+
+
 def test_decision_block_keeps_authored_secondary_result_in_action():
     report = ReportFormatterAgent()._business_rules_section([{
         "rule_name": "Apply state and score",

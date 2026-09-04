@@ -30,6 +30,7 @@ orchestration framework is involved.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from collections import OrderedDict
@@ -44,6 +45,7 @@ from src.core.llm_response_cache import PersistentLLMResponseCache
 from src.parsing.dedup import dedup_table_operations
 from src.prompts.prompt_loader import get_prompt_set, render_user_prompt
 from src.telemetry.tracker import LLMTelemetryTracker
+from src.validation.coverage_check import find_decision_points
 
 _EMPTY_SYNTHESIS: Dict[str, Any] = {
     "purpose_summary": "",
@@ -71,6 +73,12 @@ class SynthesisResult:
     parse_error: str = ""
     jargon_flags: List[str] = field(default_factory=list)
     guardrail_warnings: List[str] = field(default_factory=list)
+    truncated: bool = False
+
+
+_BASE_SYNTHESIS_TOKENS = int(os.environ.get("BASE_SYNTHESIS_TOKENS", "16000"))
+_PER_DECISION_POINT_TOKENS = int(os.environ.get("PER_DECISION_POINT_TOKENS", "256"))
+_HARD_MAX_OUTPUT_TOKENS = int(os.environ.get("LLM_HARD_MAX_OUTPUT_TOKENS", "32768"))
 
 
 class RuleSynthesizerAgent:
@@ -116,6 +124,11 @@ class RuleSynthesizerAgent:
         self.response_cache = response_cache
         self.max_tokens = max_tokens
 
+    def _output_token_budget(self, raw_source: str, requested: Optional[int] = None) -> int:
+        points = len(find_decision_points(raw_source or ""))
+        base = max(int(requested or self.max_tokens), _BASE_SYNTHESIS_TOKENS)
+        return min(_HARD_MAX_OUTPUT_TOKENS, base + points * _PER_DECISION_POINT_TOKENS)
+
     def synthesize(
         self,
         object_name: str,
@@ -151,6 +164,7 @@ class RuleSynthesizerAgent:
             ),
         )
         effective_seed = self.seed if self.seed is not None and supports_chat_completion_seed(self.client) else None
+        effective_max_tokens = self._output_token_budget(raw_source)
         cache_request = self._build_cache_request(
             stage="synthesis",
             dialect=dialect,
@@ -160,7 +174,7 @@ class RuleSynthesizerAgent:
             user_prompt=user_prompt,
             temperature=self.temperature,
             seed=effective_seed,
-            max_tokens=self.max_tokens,
+            max_tokens=effective_max_tokens,
         )
         tracker = telemetry_tracker
         if self.response_cache is not None:
@@ -214,7 +228,7 @@ class RuleSynthesizerAgent:
         completion_kwargs = {
             "model": model or self.model,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "max_tokens": effective_max_tokens,
             "messages": [
                 {"role": "system", "content": prompt_set["system"]},
                 {"role": "user", "content": user_prompt},
@@ -247,8 +261,25 @@ class RuleSynthesizerAgent:
                 except Exception:
                     pass
         raw_response = response.choices[0].message.content or ""
+        finish_reason = str(getattr(response.choices[0], "finish_reason", "") or "").lower()
+        truncated = finish_reason == "length"
 
         data, error = self._parse_json(raw_response)
+        if truncated and error:
+            recovered = self._recover_partial_json(raw_response)
+            if recovered is not None:
+                data, error = recovered, ""
+            else:
+                retry = self._retry_with_ceiling(completion_kwargs, telemetry_tracker)
+                if retry is not None:
+                    response, raw_response = retry
+                    finish_reason = str(getattr(response.choices[0], "finish_reason", "") or "").lower()
+                    truncated = truncated or finish_reason == "length"
+                    data, error = self._parse_json(raw_response)
+                    if truncated and error:
+                        recovered = self._recover_partial_json(raw_response)
+                        if recovered is not None:
+                            data, error = recovered, ""
         if error:
             jargon_flags = self._scan_for_jargon(data)
             return SynthesisResult(
@@ -257,9 +288,14 @@ class RuleSynthesizerAgent:
                 parse_error=error,
                 jargon_flags=jargon_flags,
                 guardrail_warnings=[],
+                truncated=truncated,
             )
 
         guardrail_warnings: List[str] = []
+        if truncated:
+            guardrail_warnings.append(
+                "Synthesis response reached the output limit; recovered rules may be incomplete."
+            )
         data, shape_warnings = validate_synthesis_shape(data)
         guardrail_warnings.extend(shape_warnings)
         data["business_rules"] = self._normalize_business_rules(
@@ -295,7 +331,63 @@ class RuleSynthesizerAgent:
             parse_error=error,
             jargon_flags=jargon_flags,
             guardrail_warnings=guardrail_warnings,
+            truncated=truncated,
         )
+
+    @staticmethod
+    def _recover_partial_json(raw_response: str) -> Optional[Dict[str, Any]]:
+        """Recover complete business-rule items from a length-truncated object."""
+        marker = re.search(r'"business_rules"\s*:\s*\[', raw_response)
+        if not marker:
+            return None
+        cursor = marker.end()
+        items: List[Any] = []
+        decoder = json.JSONDecoder()
+        while cursor < len(raw_response):
+            while cursor < len(raw_response) and raw_response[cursor].isspace():
+                cursor += 1
+            if cursor >= len(raw_response) or raw_response[cursor] == "]":
+                break
+            try:
+                item, end = decoder.raw_decode(raw_response, cursor)
+            except json.JSONDecodeError:
+                break
+            if isinstance(item, dict):
+                items.append(item)
+            cursor = end
+            while cursor < len(raw_response) and raw_response[cursor].isspace():
+                cursor += 1
+            if cursor < len(raw_response) and raw_response[cursor] == ",":
+                cursor += 1
+                continue
+            break
+        return {"business_rules": items} if items else None
+
+    def _retry_with_ceiling(self, completion_kwargs: Dict[str, Any], tracker) -> Optional[Tuple[Any, str]]:
+        ceiling = max(int(completion_kwargs.get("max_tokens", 0) or 0), _HARD_MAX_OUTPUT_TOKENS)
+        if ceiling <= int(completion_kwargs.get("max_tokens", 0) or 0):
+            return None
+        retry_kwargs = dict(completion_kwargs)
+        retry_kwargs["max_tokens"] = ceiling
+        response = None
+        start = time.perf_counter()
+        try:
+            response = self.client.chat.completions.create(**retry_kwargs)
+            return response, response.choices[0].message.content or ""
+        finally:
+            if tracker is not None:
+                try:
+                    tracker.record_call(
+                        stage="synthesis_retry",
+                        provider=self.provider,
+                        model_name=retry_kwargs.get("model", self.model),
+                        response=response,
+                        latency_seconds=time.perf_counter() - start,
+                        success=response is not None,
+                        error=None,
+                    )
+                except Exception:
+                    pass
 
     def revise(
         self,
@@ -593,9 +685,6 @@ class RuleSynthesizerAgent:
             for row in operations
             if re.search(r"(^#|TEMP|TMP|TEMPORARY)", str(row.get("table") or ""), re.IGNORECASE)
         }
-        if not cleanup_tables:
-            return list(rules or [])
-
         filtered: List[Dict[str, Any]] = []
         for rule in rules or []:
             if not isinstance(rule, dict):
@@ -605,6 +694,19 @@ class RuleSynthesizerAgent:
                 fields = [fields]
             has_business_fields = any(str(field).strip() for field in fields)
             rule_text = json.dumps(rule, sort_keys=True, default=str).lower()
+            evidence_text = " ".join(
+                str(item) for item in (rule.get("source_evidence") or [])
+            )
+            # Parser metadata is preferred, but a valid source citation is
+            # sufficient to classify a technical DROP when the statement
+            # parser could not build an operation record for that dialect or
+            # syntax variant. This remains deletion-only and does not infer
+            # business meaning.
+            cleanup_evidence = bool(re.search(
+                r"\bDROP\s+TABLE\b.*(?:#|TEMP|TMP|TEMPORARY)",
+                evidence_text,
+                re.IGNORECASE | re.DOTALL,
+            ))
             is_cleanup_description = any(
                 marker in rule_text for marker in ("drop", "temporary", "temp table", "cleanup")
             )
@@ -626,7 +728,8 @@ class RuleSynthesizerAgent:
             has_genuine_decision = len(distinct_outcomes) >= 2 or (
                 bool(condition) and not existence_guard
             )
-            if is_cleanup_description and not has_business_fields and not has_genuine_decision:
+            is_cleanup = bool(cleanup_tables) or cleanup_evidence or existence_guard
+            if is_cleanup and is_cleanup_description and not has_business_fields and not has_genuine_decision:
                 continue
             filtered.append(rule)
         return filtered
@@ -776,7 +879,7 @@ class RuleSynthesizerAgent:
                     parsed, _ = decoder.raw_decode(cleaned[start:])
                 except json.JSONDecodeError:
                     continue
-                if isinstance(parsed, dict):
+                if isinstance(parsed, dict) and set(parsed).intersection(_EMPTY_SYNTHESIS):
                     return parsed
             raise
         if not isinstance(parsed, dict):

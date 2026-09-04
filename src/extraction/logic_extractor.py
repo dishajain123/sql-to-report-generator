@@ -45,6 +45,7 @@ Python method calling `client.chat.completions.create(...)`.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -57,6 +58,7 @@ from src.core.pipeline_utils import PIPELINE_VERSION
 from src.core.llm_response_cache import PersistentLLMResponseCache
 from src.prompts.prompt_loader import get_prompt_set, render_user_prompt
 from src.telemetry.tracker import LLMTelemetryTracker
+from src.validation.coverage_check import find_decision_points
 
 _EMPTY_EXTRACTION: Dict[str, Any] = {
     "conditions": [],
@@ -80,6 +82,14 @@ class ChunkExtraction:
     raw_response: str = ""
     parse_error: str = ""
     guardrail_warnings: List[str] = field(default_factory=list)
+    truncated: bool = False
+
+
+_BASE_EXTRACTION_TOKENS = int(os.environ.get("BASE_EXTRACTION_TOKENS", "6000"))
+_PER_DECISION_POINT_EXTRACTION_TOKENS = int(
+    os.environ.get("PER_DECISION_POINT_EXTRACTION_TOKENS", "128")
+)
+_HARD_MAX_OUTPUT_TOKENS = int(os.environ.get("LLM_HARD_MAX_OUTPUT_TOKENS", "32768"))
 
 
 class LogicExtractionAgent:
@@ -119,6 +129,11 @@ class LogicExtractionAgent:
         self.response_cache = response_cache
         self.max_tokens = max_tokens
 
+    def _output_token_budget(self, code_chunk: str, requested: Optional[int] = None) -> int:
+        points = len(find_decision_points(code_chunk or ""))
+        base = max(int(requested or self.max_tokens), _BASE_EXTRACTION_TOKENS)
+        return min(_HARD_MAX_OUTPUT_TOKENS, base + points * _PER_DECISION_POINT_EXTRACTION_TOKENS)
+
     def extract(
         self,
         chunk_id: str,
@@ -154,6 +169,7 @@ class LogicExtractionAgent:
             code_chunk=code_chunk,
         )
         effective_seed = self.seed if self.seed is not None and supports_chat_completion_seed(self.client) else None
+        effective_max_tokens = self._output_token_budget(code_chunk)
         cache_request = self._build_cache_request(
             stage="extraction",
             dialect=dialect,
@@ -163,7 +179,7 @@ class LogicExtractionAgent:
             user_prompt=user_prompt,
             temperature=self.temperature,
             seed=effective_seed,
-            max_tokens=self.max_tokens,
+            max_tokens=effective_max_tokens,
         )
         tracker = telemetry_tracker or self.telemetry_tracker
         if self.response_cache is not None:
@@ -197,7 +213,7 @@ class LogicExtractionAgent:
         completion_kwargs = {
             "model": model or self.model,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "max_tokens": effective_max_tokens,
             "messages": [
                 {"role": "system", "content": prompt_set["system"]},
                 {"role": "user", "content": user_prompt},
@@ -230,13 +246,37 @@ class LogicExtractionAgent:
                 except Exception:
                     pass
         raw_response = response.choices[0].message.content or ""
+        finish_reason = str(getattr(response.choices[0], "finish_reason", "") or "").lower()
+        truncated = finish_reason == "length"
 
         data, error = self._parse_json(raw_response)
+        if truncated and error:
+            recovered = self._recover_partial_json(raw_response)
+            if recovered is not None:
+                data, error = recovered, ""
+            elif effective_max_tokens < _HARD_MAX_OUTPUT_TOKENS:
+                retry_kwargs = dict(completion_kwargs)
+                retry_kwargs["max_tokens"] = _HARD_MAX_OUTPUT_TOKENS
+                retry_response = self.client.chat.completions.create(**retry_kwargs)
+                retry_reason = str(
+                    getattr(retry_response.choices[0], "finish_reason", "") or ""
+                ).lower()
+                truncated = retry_reason == "length"
+                raw_response = retry_response.choices[0].message.content or ""
+                data, error = self._parse_json(raw_response)
+                if truncated and error:
+                    recovered = self._recover_partial_json(raw_response)
+                    if recovered is not None:
+                        data, error = recovered, ""
 
         guardrail_warnings: List[str] = []
         data, shape_warnings = validate_extraction_shape(data)
         guardrail_warnings.extend(shape_warnings)
         guardrail_warnings.extend(ground_extraction_against_source(data, code_chunk))
+        if truncated:
+            guardrail_warnings.append(
+                "Technical extraction response reached the output limit; recovered facts may be incomplete."
+            )
         if self.response_cache is not None and not error:
             self.response_cache.store(cache_request, raw_response)
 
@@ -249,7 +289,41 @@ class LogicExtractionAgent:
             raw_response=raw_response,
             parse_error=error,
             guardrail_warnings=guardrail_warnings,
+            truncated=truncated,
         )
+
+    @staticmethod
+    def _recover_partial_json(raw_response: str) -> Optional[Dict[str, Any]]:
+        """Recover complete top-level array items from a length-truncated object."""
+        for key in _EMPTY_EXTRACTION:
+            marker = re.search(r'"' + re.escape(key) + r'"\s*:\s*\[', raw_response)
+            if not marker:
+                continue
+            cursor = marker.end()
+            items: List[Any] = []
+            decoder = json.JSONDecoder()
+            while cursor < len(raw_response):
+                while cursor < len(raw_response) and raw_response[cursor].isspace():
+                    cursor += 1
+                if cursor >= len(raw_response) or raw_response[cursor] == "]":
+                    break
+                try:
+                    item, end = decoder.raw_decode(raw_response, cursor)
+                except json.JSONDecodeError:
+                    break
+                items.append(item)
+                cursor = end
+                while cursor < len(raw_response) and raw_response[cursor].isspace():
+                    cursor += 1
+                if cursor < len(raw_response) and raw_response[cursor] == ",":
+                    cursor += 1
+                    continue
+                break
+            if items:
+                recovered = dict(_EMPTY_EXTRACTION)
+                recovered[key] = items
+                return recovered
+        return None
 
     @staticmethod
     def _build_cache_request(
