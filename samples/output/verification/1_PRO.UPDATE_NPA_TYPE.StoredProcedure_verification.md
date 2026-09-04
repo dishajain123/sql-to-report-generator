@@ -1,0 +1,119 @@
+# Update NPA TYPE — Verification & Traceability
+
+> Companion artifact to `PRO.UPDATE_NPA_TYPE.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
+
+| Item | Value |
+|---|---|
+| Object ID | `obj_3f7537a6dbbe` |
+| Raw technical object name (from source) | `UPDATE_NPA_TYPE` |
+
+## Run Metadata
+
+| Item | Value |
+|---|---|
+| Pipeline Version | `2026-08-26-phase1` |
+| Prompt Version | `1c8e103a89db04c2` |
+| Knowledge Base Version | `2e6fc62902751973` |
+| Model | `amazon.nova-lite-v1:0` |
+| Provider | `bedrock` |
+| Dialect | `T-SQL` |
+| Dialect Confidence | `High` |
+| Source Hash | `97dea616cd672e4bfec6e25bf4352a1a18c092d074c9e55982cf183ceb1257a3` |
+| Configuration Version | `646dbbaf5be7f3a0` |
+| Run Timestamp | `2026-09-04T10:47:26.049206+00:00` |
+| Object ID | `obj_3f7537a6dbbe` |
+
+## LLM Telemetry
+
+| Item | Value |
+|---|---|
+| Run ID | `telemetry_01906b825fd6` |
+| Total LLM Calls | `4` |
+| Successful Calls | `4` |
+| Failed Calls | `0` |
+| Prompt Tokens | `61272` |
+| Completion Tokens | `16794` |
+| Total Tokens | `78066` |
+| Telemetry Availability | `available` |
+
+| Stage | Calls | Success | Failure | Tokens | Availability |
+|---|---:|---:|---:|---:|---|
+| extraction | 1 | 1 | 0 | 9861 | available |
+| synthesis | 1 | 1 | 0 | 19551 | available |
+| synthesis_revision | 2 | 2 | 0 | 48654 | available |
+
+## Business Rule Summary
+
+| Priority | Rule | Output | Business Purpose |
+|---|---|---|---|
+| 🔴 1 | Set NpaType to REGULAR [CONFLICT] (`rule_01`) | `NpaType` | If the account's DPD_MAX is between 90 and 119, 120 and 149, 150 and 179, 180 and 209, or greater than or equal to 210, and the asset class… |
+| 🔴 2 | Set NpaType to STICKY [CONFLICT] (`rule_02`) | `NpaType` | If the account's DPD_MAX is between 1 and 29, 30 and 59, or 60 and 89, and the asset class short name is SUB, DB1, DB2, or DB3, the NpaType… |
+| 🔴 3 | Set NpaType to MULTIPLE [CONFLICT] (`rule_03`) | `NpaType` | If the account's DPD_MAX is 0, and the asset class short name is SUB, DB1, DB2, or DB3, the NpaType is set to MULTIPLE. |
+
+## Source Traceability
+
+<details>
+<summary><strong>Show rule-to-source mapping</strong></summary>
+
+| # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |
+|---|---|---|---|---|---|---|
+| 1 | Set NpaType to REGULAR (rule_01) | CD=5 AND DA.ASSETCLASSSHORTNAME='SUB' AND DPD_MAX BETWEEN 90 AND 119; CD=5 AND DA.ASSETCLASSSHORTNAME='DB1' AND DPD_MAX BETWEEN 90 AND 119; CD=5 AND DA.ASSETCLASSSHORTNAME='DB2' AND DPD_MAX BETWEEN 90 AND 119; CD=5 AND DA.ASSETCLASSSHORTNAME='DB3' AND DPD_MAX… | Not cited | Not cited | Not cited | Needs Review |
+| 2 | Set NpaType to STICKY (rule_02) | CD=2 AND DA.ASSETCLASSSHORTNAME='SUB' AND DPD_MAX BETWEEN 1 AND 29; CD=2 AND DA.ASSETCLASSSHORTNAME='DB1' AND DPD_MAX BETWEEN 1 AND 29; CD=2 AND DA.ASSETCLASSSHORTNAME='DB2' AND DPD_MAX BETWEEN 1 AND 29; CD=2 AND DA.ASSETCLASSSHORTNAME='DB3' AND DPD_MAX BETWE… | Not cited | Not cited | Not cited | Needs Review |
+| 3 | Set NpaType to MULTIPLE (rule_03) | CD=0 AND DA.ASSETCLASSSHORTNAME='SUB' AND DPD_MAX = 0; CD=0 AND DA.ASSETCLASSSHORTNAME='DB1' AND DPD_MAX = 0; CD=0 AND DA.ASSETCLASSSHORTNAME='DB2' AND DPD_MAX = 0; CD=0 AND DA.ASSETCLASSSHORTNAME='DB3' AND DPD_MAX = 0; CD=1 AND DA.ASSETCLASSSHORTNAME='SUB' A… | Not cited | Not cited | Not cited | Needs Review |
+
+_Source evidence is the literal technical text carried through the pipeline; Source Location is derived deterministically from chunk and statement provenance when available; SQL Statements / Chunks and Technical References point back to the extracted chunk ids and statement references used by the guardrails. Technical references that repeat the same table/operation/target-columns are shown once._
+</details>
+
+## Rule Provenance Summary
+
+- **Total business rules:** 3
+- **By rule type:** explicit = 3
+- **By validation status:** unverified = 3
+
+_This count reflects every individually traceable rule (one per source statement/field, for full auditability). The business report may show a smaller number, because closely related rules that apply the same pattern to several fields (e.g. "reset each of these six DPD fields to zero if negative") are presented there as one combined rule for readability. Every rule counted here is still individually traceable in the Source Traceability table below - none are dropped, only grouped for display._
+
+_Rules marked **unverified** could not be matched back to the technical extraction or source code and should be prioritized for human review before being treated as confirmed._
+
+## Reconciliation Summary
+
+- **Matched facts:** 1
+- **Deterministic-only facts:** 2
+- **LLM-only claims:** 0
+- **Conflicts:** 6
+- **Unresolved items:** 0
+- **Review required:** Yes
+
+### Review Items
+
+- `CONFLICT` tables_read (`recon_65e3c8fd5db7`): full_source
+- `CONFLICT` tables_read (`recon_65e3c8fd5db7`): full_source
+- `CONFLICT` tables_written (`recon_4a660717fa9b`): full_source
+- `CONFLICT` rule (`recon_848ed60e3aed`): no direct provenance - Deterministic evidence conflicts with the synthesized claim.
+- `CONFLICT` rule (`recon_df6ad430a3e0`): no direct provenance - Deterministic evidence conflicts with the synthesized claim.
+
+## Quality Summary
+
+- **Overall status:** REVIEW_REQUIRED
+- **Quality score:** 34/100
+- **Statement coverage:** 1 / 4 (25.0%)
+- **Rule grounding coverage:** 3 / 3 (100.0%)
+- **Conflicts:** 6
+- **Contradictions:** 8
+- **Review required items:** 14
+- **Review required:** Yes
+
+Statement parse success is below the preferred threshold.
+
+### Contradictions
+
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Outcome Conflict on `source`: Synthesized outcome/assignment conflicts with deterministic evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+
+_Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._
+
+## Pipeline Diagnostics
+
+- Commented-out logic found in source (2 block(s)) and excluded from extraction - not included in the business rules.

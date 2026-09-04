@@ -296,6 +296,18 @@ class RuleSynthesizerAgent:
             guardrail_warnings.append(
                 "Synthesis response reached the output limit; recovered rules may be incomplete."
             )
+            # Also surface this to the reader. A truncated synthesis is the
+            # single most likely cause of a missing purpose summary, missing
+            # process flow, missing calculations, or a short rule list - the
+            # report must say so rather than printing a placeholder that reads
+            # like "the source contained nothing here".
+            existing = data.get("ambiguities")
+            data["ambiguities"] = list(existing or []) + [
+                "The automated analysis of this procedure exceeded the model's maximum "
+                "response length and was cut short. Sections of this report may be "
+                "incomplete or missing entirely. Re-run with a larger model before "
+                "treating this document as a complete record of the procedure's logic."
+            ]
         data, shape_warnings = validate_synthesis_shape(data)
         guardrail_warnings.extend(shape_warnings)
         data["business_rules"] = self._normalize_business_rules(
@@ -334,34 +346,113 @@ class RuleSynthesizerAgent:
             truncated=truncated,
         )
 
+    # Keys whose value is a JSON array of independently-useful items. If the
+    # truncation lands *inside* one of these arrays, the complete items before
+    # the cut are still recoverable.
+    _RECOVERABLE_LIST_KEYS = (
+        "business_rules",
+        "calculations",
+        "ambiguities",
+        "step_by_step_flow",
+    )
+
     @staticmethod
     def _recover_partial_json(raw_response: str) -> Optional[Dict[str, Any]]:
-        """Recover complete business-rule items from a length-truncated object."""
-        marker = re.search(r'"business_rules"\s*:\s*\[', raw_response)
-        if not marker:
+        """Recover every complete top-level key from a length-truncated object.
+
+        A truncated synthesis response is not empty - it is a valid JSON
+        prefix. Everything emitted before the cut is intact, and because the
+        schema orders `purpose_summary` and `step_by_step_flow` *before*
+        `business_rules`, those keys are almost always complete even when the
+        rule array is not.
+
+        The previous implementation searched only for `"business_rules"` and
+        returned `{"business_rules": items}`, silently discarding
+        `purpose_summary`, `step_by_step_flow`, `calculations`, and
+        `exception_handling_summary`. That is why a truncated run produced a
+        report with four dead placeholder sections while the model had
+        actually returned all four.
+
+        This walks the object key-by-key with `raw_decode`, keeping every key
+        that decodes cleanly, and falls back to per-item salvage for the one
+        array the cut landed inside.
+        """
+        text = str(raw_response or "").strip()
+        if not text:
             return None
-        cursor = marker.end()
-        items: List[Any] = []
+        fence = re.match(r"^```(?:json)?\s*(.*)$", text, re.DOTALL)
+        if fence:
+            text = fence.group(1)
+        start = text.find("{")
+        if start == -1:
+            return None
+
         decoder = json.JSONDecoder()
-        while cursor < len(raw_response):
-            while cursor < len(raw_response) and raw_response[cursor].isspace():
-                cursor += 1
-            if cursor >= len(raw_response) or raw_response[cursor] == "]":
+        recovered: Dict[str, Any] = {}
+        cursor = start + 1
+
+        def _skip_ws(index: int) -> int:
+            while index < len(text) and text[index].isspace():
+                index += 1
+            return index
+
+        while True:
+            cursor = _skip_ws(cursor)
+            if cursor >= len(text) or text[cursor] == "}":
+                break
+            if text[cursor] != '"':
                 break
             try:
-                item, end = decoder.raw_decode(raw_response, cursor)
+                key, cursor = decoder.raw_decode(text, cursor)
             except json.JSONDecodeError:
                 break
-            if isinstance(item, dict):
-                items.append(item)
-            cursor = end
-            while cursor < len(raw_response) and raw_response[cursor].isspace():
-                cursor += 1
-            if cursor < len(raw_response) and raw_response[cursor] == ",":
+            cursor = _skip_ws(cursor)
+            if cursor >= len(text) or text[cursor] != ":":
+                break
+            cursor = _skip_ws(cursor + 1)
+            if cursor >= len(text):
+                break
+            try:
+                value, end = decoder.raw_decode(text, cursor)
+            except json.JSONDecodeError:
+                # The cut landed inside this value. If it is one of the
+                # recoverable arrays, keep the complete items before the cut.
+                if text[cursor] == "[" and str(key) in RuleSynthesizerAgent._RECOVERABLE_LIST_KEYS:
+                    items = RuleSynthesizerAgent._recover_list_items(text, cursor + 1, decoder)
+                    if items:
+                        recovered[str(key)] = items
+                break
+            recovered[str(key)] = value
+            cursor = _skip_ws(end)
+            if cursor < len(text) and text[cursor] == ",":
                 cursor += 1
                 continue
             break
-        return {"business_rules": items} if items else None
+
+        return recovered or None
+
+    @staticmethod
+    def _recover_list_items(text: str, cursor: int, decoder: json.JSONDecoder) -> List[Any]:
+        """Return the complete items of a truncated JSON array."""
+        items: List[Any] = []
+        while cursor < len(text):
+            while cursor < len(text) and text[cursor].isspace():
+                cursor += 1
+            if cursor >= len(text) or text[cursor] == "]":
+                break
+            try:
+                item, end = decoder.raw_decode(text, cursor)
+            except json.JSONDecodeError:
+                break
+            items.append(item)
+            cursor = end
+            while cursor < len(text) and text[cursor].isspace():
+                cursor += 1
+            if cursor < len(text) and text[cursor] == ",":
+                cursor += 1
+                continue
+            break
+        return items
 
     def _retry_with_ceiling(self, completion_kwargs: Dict[str, Any], tracker) -> Optional[Tuple[Any, str]]:
         ceiling = max(int(completion_kwargs.get("max_tokens", 0) or 0), _HARD_MAX_OUTPUT_TOKENS)
