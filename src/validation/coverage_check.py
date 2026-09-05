@@ -38,8 +38,10 @@ from __future__ import annotations
 import re
 import logging
 import math
+
+from src.parsing.statement_boundaries import split_top_level_statement_spans
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Sequence, Set
+from typing import Any, Dict, List, Sequence, Set, Tuple
 
 
 logger = logging.getLogger(__name__)
@@ -297,39 +299,75 @@ def _predicate_tokens(text: str) -> Set[str]:
     return _tokens(text) | {match.group(0).lower() for match in _PREDICATE_LITERAL_RE.finditer(text)}
 
 
-def _dml_predicate_tokens_by_line(source: str) -> Dict[int, Set[str]]:
-    """Map each line in a DML statement to that statement's predicate tokens.
+def _dml_predicate_tokens_by_line(source: str) -> Dict[int, Tuple[int, Set[str]]]:
+    """Map each line in a DML statement to that statement's (identity,
+    predicate tokens).
 
     This is intentionally a lexical statement/clause scan, not SQL parsing.
     Keeping predicate vocabulary separate from SET/table vocabulary prevents
     one UPDATE of a shared column from falsely covering another UPDATE whose
     WHERE condition was never cited.
+
+    Statement boundaries come from `split_top_level_statement_spans` (the
+    same keyword-/paren-depth-aware splitter `ingestion.py` uses for
+    chunking), NOT from splitting on ';'. A large share of this codebase's
+    real T-SQL has few or no semicolon terminators at all - splitting on
+    ';' alone made `re.finditer(r";|$", text)` treat an entire
+    semicolon-free procedure body as ONE "statement", which in turn made
+    the first WHERE clause found "swallow" every line of source all the
+    way to the end of the file as its predicate. Observed in production:
+    a report's "possible unreviewed decision logic" finding spanning
+    nearly an entire 776-line procedure (lines 36-776) - not because nine
+    unrelated statements shared a predicate (that was a real but smaller
+    contributing bug, since fixed by comparing statement identity instead
+    of token-set equality below), but because the statement boundary
+    detector itself never advanced past the first UPDATE in a file with no
+    semicolons.
+
+    The `int` statement identity (the statement span's start offset -
+    unique per statement, never reused) exists specifically so two
+    DIFFERENT statements that happen to share the exact same WHERE
+    predicate (e.g. two unrelated UPDATEs both gated by
+    `WHERE FlgSma = 'Y'`, a common repeated guard in this codebase) are
+    never treated as "the same statement" by a caller comparing token-set
+    content.
     """
     text = _strip_comments_and_strings_for_scan(source)
-    result: Dict[int, Set[str]] = {}
-    statement_start = 0
-    for match in re.finditer(r";|$", text):
-        statement_end = match.start()
+    result: Dict[int, Tuple[int, Set[str]]] = {}
+    spans = split_top_level_statement_spans(source, text)
+    for statement_start, statement_end in spans:
         statement = text[statement_start:statement_end]
         dml_match = re.search(r"\b(?:UPDATE|INSERT|DELETE|MERGE)\b", statement, re.IGNORECASE)
-        if dml_match:
-            where_match = re.search(r"\bWHERE\b", statement[dml_match.start():], re.IGNORECASE)
-            if where_match:
-                predicate_start = dml_match.start() + where_match.end()
-                predicate_tokens = _predicate_tokens(statement[predicate_start:])
-                if predicate_tokens:
-                    # Use the absolute DML position. The statement slice can
-                    # begin after a semicolon/newline, so using
-                    # `statement_start` would associate every later
-                    # statement's predicate with the first source line.
-                    dml_offset = statement_start + dml_match.start()
-                    line_start = text.count("\n", 0, dml_offset) + 1
-                    line_end = text.count("\n", 0, statement_end) + 1
-                    for line_number in range(line_start, line_end + 1):
-                        result[line_number] = predicate_tokens
-        statement_start = match.end()
-        if match.start() == len(text):
-            break
+        if not dml_match:
+            continue
+        where_match = re.search(r"\bWHERE\b", statement[dml_match.start():], re.IGNORECASE)
+        if not where_match:
+            continue
+        predicate_start = dml_match.start() + where_match.end()
+        predicate_tokens = _predicate_tokens(statement[predicate_start:])
+        if not predicate_tokens:
+            continue
+        dml_offset = statement_start + dml_match.start()
+        line_start = text.count("\n", 0, dml_offset) + 1
+        # `statement_end` is an EXCLUSIVE boundary (see
+        # split_top_level_statement_spans' "boundary-list" design note),
+        # and the span's own trailing text is typically blank lines and/or
+        # a comment leading into the NEXT statement (not part of this
+        # statement's real content at all). Using `statement_end` itself,
+        # or even `statement_end - 1`, is fragile: either can land on a
+        # trailing blank line or the newline that starts the next
+        # statement's own line, which off-by-one attributes that line's
+        # predicate to the WRONG statement (observed directly: it put the
+        # next statement's own "UPDATE" anchor line under the PREVIOUS
+        # statement's predicate tokens). Trim trailing whitespace from the
+        # statement's own text first, so the line count is always anchored
+        # to this statement's actual last content character.
+        statement_content = text[statement_start:statement_end]
+        trimmed_len = len(statement_content.rstrip())
+        content_end = statement_start + max(trimmed_len, 1) - 1
+        line_end = text.count("\n", 0, max(dml_offset, content_end)) + 1
+        for line_number in range(line_start, line_end + 1):
+            result[line_number] = (dml_offset, predicate_tokens)
     return result
 
 
@@ -615,7 +653,7 @@ def find_coverage_gaps(
             line_tokens = _tokens(lines[line_number - 1] if line_number <= len(lines) else "")
             if not line_tokens:
                 continue
-            predicate_tokens = predicate_tokens_by_line.get(line_number, set())
+            predicate_tokens = predicate_tokens_by_line.get(line_number, (None, set()))[1]
             line_best_ratio = 0.0
             line_best_overlap = 0
             line_best_rule = None
@@ -703,13 +741,15 @@ def find_coverage_gaps(
         # When a DML assignment anchor is uncovered, report the complete
         # statement span so the revision prompt contains the predicate that
         # distinguishes this statement from other writes to the same field.
+        uncovered_statement_ids = {
+            predicate_tokens_by_line[uncovered][0]
+            for uncovered in uncovered_lines
+            if uncovered in predicate_tokens_by_line
+        }
         predicate_lines = [
             line_number
-            for line_number in predicate_tokens_by_line
-            if any(
-                predicate_tokens_by_line.get(line_number) == predicate_tokens_by_line.get(uncovered)
-                for uncovered in uncovered_lines
-            )
+            for line_number, (statement_id, _tokens) in predicate_tokens_by_line.items()
+            if statement_id in uncovered_statement_ids
         ]
         if predicate_lines:
             start = min(start, min(predicate_lines))

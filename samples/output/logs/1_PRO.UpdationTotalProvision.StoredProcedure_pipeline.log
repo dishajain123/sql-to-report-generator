@@ -1,0 +1,210 @@
+2026-09-04 12:27:09,766 | INFO | __main__ | Run started for PRO.UpdationTotalProvision.StoredProcedure.sql
+2026-09-04 12:27:09,767 | INFO | logic_rules_extractor.pipeline | Stage 1/6: Running input guardrails
+2026-09-04 12:27:09,770 | INFO | logic_rules_extractor.pipeline | Stage 1/6 completed in 0.00s (input guardrails)
+2026-09-04 12:27:09,771 | INFO | logic_rules_extractor.pipeline | Stage 2/6: Detecting dialect
+2026-09-04 12:27:09,777 | INFO | logic_rules_extractor.pipeline | Detected TSQL dialect (confidence: high)
+2026-09-04 12:27:09,779 | INFO | logic_rules_extractor.pipeline | Stage 2/6 completed in 0.01s (dialect detection)
+2026-09-04 12:27:09,780 | INFO | logic_rules_extractor.pipeline | Stage 3/6: Preprocessing, parsing, and chunking /tmp/tmpj_7g7s19.sql
+2026-09-04 12:27:09,951 | INFO | logic_rules_extractor.pipeline | Detected TSQL PROCEDURE 'UpdationTotalProvision' with 7 chunk(s)
+2026-09-04 12:27:09,953 | INFO | logic_rules_extractor.pipeline | Stage 3/6 completed in 0.17s (preprocessing/parsing/chunking)
+2026-09-04 12:27:09,954 | INFO | logic_rules_extractor.pipeline | Stage 4/6: Retrieving dependencies / pattern context and extracting logic per chunk (model: amazon.nova-lite-v1:0)
+2026-09-04 12:27:09,955 | INFO | logic_rules_extractor.pipeline | Persistent knowledge base ready in 0.00s
+2026-09-04 12:27:09,969 | INFO | logic_rules_extractor.pipeline | Stage 4 extraction selection: estimated_tokens=9340 budget=297000 path=single-pass extraction_calls=1 merge_ran=False
+2026-09-04 12:27:41,364 | INFO | logic_rules_extractor.pipeline | Stage 4/6 completed in 31.41s total (kb_ready=0.00s, retrieval/KB sum=0.00s, LLM extraction sum=31.39s, workers=8, chunks=1)
+2026-09-04 12:27:41,365 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
+2026-09-04 12:28:20,325 | INFO | src.validation.coverage_check | Coverage block lines=29-30 overlap_ratio=0.185 matched_rule=7 uncovered=True
+2026-09-04 12:28:20,329 | INFO | src.validation.coverage_check | Coverage block lines=33-34 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,331 | INFO | src.validation.coverage_check | Coverage block lines=37-38 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,334 | INFO | src.validation.coverage_check | Coverage block lines=45-49 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,337 | INFO | src.validation.coverage_check | Coverage block lines=52-54 overlap_ratio=0.467 matched_rule=1 uncovered=False
+2026-09-04 12:28:20,340 | INFO | src.validation.coverage_check | Coverage block lines=62-66 overlap_ratio=0.671 matched_rule=6 uncovered=False
+2026-09-04 12:28:20,344 | INFO | src.validation.coverage_check | Coverage block lines=75-85 overlap_ratio=1.000 matched_rule=7 uncovered=False
+2026-09-04 12:28:20,347 | INFO | src.validation.coverage_check | Coverage block lines=89-90 overlap_ratio=0.476 matched_rule=7 uncovered=False
+2026-09-04 12:28:20,349 | INFO | src.validation.coverage_check | Coverage block lines=101-102 overlap_ratio=1.000 matched_rule=8 uncovered=False
+2026-09-04 12:28:20,351 | INFO | src.validation.coverage_check | Coverage block lines=106-107 overlap_ratio=1.000 matched_rule=8 uncovered=False
+2026-09-04 12:28:20,353 | INFO | src.validation.coverage_check | Coverage block lines=114-115 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 12:28:20,357 | INFO | src.validation.coverage_check | Coverage block lines=128-131 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 12:28:20,359 | INFO | src.validation.coverage_check | Coverage block lines=137-137 overlap_ratio=0.314 matched_rule=6 uncovered=True
+2026-09-04 12:28:20,361 | INFO | src.validation.coverage_check | Coverage block lines=140-140 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 12:28:20,363 | INFO | src.validation.coverage_check | Coverage block lines=161-167 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,365 | INFO | src.validation.coverage_check | Coverage block lines=175-176 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,368 | INFO | src.validation.coverage_check | Coverage block lines=203-204 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 12:28:20,370 | INFO | src.validation.coverage_check | Coverage block lines=223-224 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 12:28:20,372 | INFO | src.validation.coverage_check | Coverage block lines=233-234 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 12:28:20,374 | INFO | src.validation.coverage_check | Coverage block lines=243-244 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 12:28:20,376 | INFO | src.validation.coverage_check | Coverage block lines=254-255 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 12:28:20,378 | INFO | src.validation.coverage_check | Coverage block lines=271-272 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,380 | INFO | src.validation.coverage_check | Coverage block lines=285-285 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 12:28:20,382 | INFO | src.validation.coverage_check | Coverage block lines=288-288 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 12:28:20,383 | INFO | src.validation.coverage_check | Coverage block lines=293-294 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,385 | INFO | src.validation.coverage_check | Coverage block lines=304-305 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,387 | INFO | src.validation.coverage_check | Coverage block lines=314-314 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,389 | INFO | src.validation.coverage_check | Coverage block lines=318-318 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,391 | INFO | src.validation.coverage_check | Coverage block lines=328-329 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,394 | INFO | src.validation.coverage_check | Coverage block lines=334-334 overlap_ratio=0.632 matched_rule=3 uncovered=False
+2026-09-04 12:28:20,396 | INFO | src.validation.coverage_check | Coverage block lines=339-340 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 12:28:20,398 | INFO | src.validation.coverage_check | Coverage block lines=351-352 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,400 | INFO | src.validation.coverage_check | Coverage block lines=357-358 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 12:28:20,402 | INFO | src.validation.coverage_check | Coverage block lines=370-372 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 12:28:20,404 | INFO | src.validation.coverage_check | Coverage block lines=378-379 overlap_ratio=0.265 matched_rule=0 uncovered=True
+2026-09-04 12:28:20,406 | INFO | src.validation.coverage_check | Coverage block lines=385-385 overlap_ratio=0.632 matched_rule=3 uncovered=False
+2026-09-04 12:28:20,407 | INFO | src.validation.coverage_check | Coverage block lines=389-389 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 12:28:20,409 | INFO | src.validation.coverage_check | Coverage block lines=393-395 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,412 | INFO | src.validation.coverage_check | Coverage block lines=401-401 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,414 | INFO | src.validation.coverage_check | Coverage block lines=409-409 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,415 | INFO | src.validation.coverage_check | Coverage block lines=420-420 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,417 | INFO | src.validation.coverage_check | Coverage block lines=423-423 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,418 | INFO | src.validation.coverage_check | Coverage block lines=429-431 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-04 12:28:20,420 | INFO | src.validation.coverage_check | Coverage block lines=438-438 overlap_ratio=0.000 matched_rule=none uncovered=False
+2026-09-04 12:28:20,422 | INFO | src.validation.coverage_check | Coverage block lines=449-450 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 12:28:20,424 | INFO | src.validation.coverage_check | Coverage block lines=459-460 overlap_ratio=0.000 matched_rule=none uncovered=True
+2026-09-04 12:28:20,425 | INFO | logic_rules_extractor.pipeline | Coverage check found 15 unreviewed decision point(s); asking the model to review (attempt 1)
+2026-09-04 12:28:59,894 | INFO | logic_rules_extractor.pipeline | Stage 5/6 completed in 78.53s (business reasoning)
+2026-09-04 12:28:59,896 | INFO | logic_rules_extractor.pipeline | Stage 6/6: Reconciling deterministic evidence against synthesized output
+2026-09-04 12:28:59,949 | INFO | logic_rules_extractor.pipeline | Stage 6/6 completed in 0.05s (deterministic reconciliation)
+2026-09-04 12:28:59,951 | INFO | logic_rules_extractor.pipeline | Stage 7/7: Applying output guardrails and formatting final report
+2026-09-04 12:29:00,035 | INFO | logic_rules_extractor.pipeline | Verification/traceability diagnostics for PRO.UpdationTotalProvision.StoredProcedure_report.md:
+# UpdationTotalProvision — Verification & Traceability
+
+> Companion artifact to `PRO.UpdationTotalProvision.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
+
+| Item | Value |
+|---|---|
+| Object ID | `obj_be4d0d7c6278` |
+
+## Run Metadata
+
+| Item | Value |
+|---|---|
+| Pipeline Version | `2026-08-26-phase1` |
+| Prompt Version | `1c8e103a89db04c2` |
+| Knowledge Base Version | `2e6fc62902751973` |
+| Model | `amazon.nova-lite-v1:0` |
+| Provider | `bedrock` |
+| Dialect | `T-SQL` |
+| Dialect Confidence | `High` |
+| Source Hash | `f1607db425260204915f4c601cdf33dc40a9651555505006688f0b0b4bc51ccd` |
+| Configuration Version | `646dbbaf5be7f3a0` |
+| Run Timestamp | `2026-09-04T12:27:09.951866+00:00` |
+| Object ID | `obj_be4d0d7c6278` |
+
+## LLM Telemetry
+
+| Item | Value |
+|---|---|
+| Run ID | `telemetry_6f26ee71a558` |
+| Total LLM Calls | `3` |
+| Successful Calls | `3` |
+| Failed Calls | `0` |
+| Prompt Tokens | `79040` |
+| Completion Tokens | `15000` |
+| Total Tokens | `94040` |
+| Telemetry Availability | `available` |
+
+| Stage | Calls | Success | Failure | Tokens | Availability |
+|---|---:|---:|---:|---:|---|
+| extraction | 1 | 1 | 0 | 19107 | available |
+| synthesis | 1 | 1 | 0 | 35472 | available |
+| synthesis_revision | 1 | 1 | 0 | 39461 | available |
+
+## Business Rule Summary
+
+| Priority | Rule | Output | Business Purpose |
+|---|---|---|---|
+| 🔴 1 | Reset negative TOTALPROVISION [CONFLICT] (`rule_01`) | `TOTALPROVISION` | If the TOTALPROVISION is negative, it is reset to zero. |
+| 🔴 2 | Reset negative BANKTOTALPROVISION [CONFLICT] (`rule_02`) | `BANKTOTALPROVISION` | If the BANKTOTALPROVISION is negative, it is reset to zero. |
+| 🔴 3 | Reset negative RBITOTALPROVISION [CONFLICT] (`rule_03`) | `RBITOTALPROVISION` | If the RBITOTALPROVISION is negative, it is reset to zero. |
+| 🔴 4 | Set TOTALPROVISION to NetBalance if overdue [CONFLICT] (`rule_04`) | `TOTALPROVISION` | If the TOTALPROVISION is greater than the NetBalance and the NetBalance is positive, the TOTALPROVISION is set to the NetBalance. |
+| 🔴 5 | Set BANKTOTALPROVISION to NetBalance if overdue [CONFLICT] (`rule_05`) | `BANKTOTALPROVISION` | If the BANKTOTALPROVISION is greater than the NetBalance and the NetBalance is positive, the BANKTOTALPROVISION is set to the NetBalance. |
+| 🔴 6 | Set RBITOTALPROVISION to NetBalance if overdue [CONFLICT] (`rule_06`) | `RBITOTALPROVISION` | If the RBITOTALPROVISION is greater than the NetBalance and the NetBalance is positive, the RBITOTALPROVISION is set to the NetBalance. |
+| 🔴 7 | Update RBITOTALPROVISION based on RBI and BANKTOTALPROVISION [CONFLICT] (`rule_07`) | `RBITOTALPROVISION, PROVSECURED, PROVUNSECURED, ADDLPROVISION, PROVCOVERGOVGUR, PROVDFV` | If RBITOTALPROVISION is greater than BANKTOTALPROVISION, update RBITOTALPROVISION to RBITOTALPROVISION and other related fields to RBI valu… |
+| 🔴 8 | Update asset class and restructuring fields [CONFLICT] (`rule_08`) | `FinalAssetClassAlt_Key, InitialAssetClassAlt_Key, AppliedNormalProvPer, FinalNpaDt, RestructureStage, UpgradeDate, SurvPeriodEndDate` | Updates the asset class, restructuring stage, and other related fields based on the effective time key and restructuring details. |
+| 🔴 9 | Update restructuring stage to STD-STD-NPA-STD [CONFLICT] (`rule_09`) | `RestructureStage` | If the restructuring stage is 'STD-STD-NPA-STD-NPA-STD', it is updated to 'STD-STD-NPA-STD'. |
+| 🔴 10 | Update restructuring stage to NPA-STD-NPA-STD [CONFLICT] (`rule_10`) | `RestructureStage` | If the restructuring stage is 'NPA-STD-NPA-STD-NPA-STD', it is updated to 'NPA-STD-NPA-STD'. |
+
+## Source Traceability
+
+<details>
+<summary><strong>Show rule-to-source mapping</strong></summary>
+
+| # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |
+|---|---|---|---|---|---|---|
+| 1 | Reset negative TOTALPROVISION (rule_01) | ISNULL(TOTALPROVISION,0)<0 | Not cited | Not cited | Not cited | Needs Review |
+| 2 | Reset negative BANKTOTALPROVISION (rule_02) | ISNULL(BANKTOTALPROVISION,0)<0 | Not cited | Not cited | Not cited | Needs Review |
+| 3 | Reset negative RBITOTALPROVISION (rule_03) | ISNULL(RBITOTALPROVISION,0)<0 | Not cited | Not cited | Not cited | Needs Review |
+| 4 | Set TOTALPROVISION to NetBalance if overdue (rule_04) | ISNULL(TOTALPROVISION,0)>NetBalance AND ISNULL(NetBalance,0)>0 | Not cited | Not cited | Not cited | Needs Review |
+| 5 | Set BANKTOTALPROVISION to NetBalance if overdue (rule_05) | ISNULL(BANKTOTALPROVISION,0)>NetBalance AND ISNULL(NetBalance,0)>0 | Not cited | Not cited | Not cited | Needs Review |
+| 6 | Set RBITOTALPROVISION to NetBalance if overdue (rule_06) | ISNULL(RBITOTALPROVISION,0)>NetBalance AND ISNULL(NetBalance,0)>0 | Not cited | Not cited | Not cited | Needs Review |
+| 7 | Update RBITOTALPROVISION based on RBI and BANKTOTALPROVISION (rule_07) | ISNULL(A.RBITOTALPROVISION,0)>ISNULL(A.BANKTOTALPROVISION,0) | Not cited | Not cited | Not cited | Needs Review |
+| 8 | Update asset class and restructuring fields (rule_08) | A.EffectiveFromTimeKey<=@TimeKey And A.EffectiveToTimeKey>=@TimeKey | Not cited | Not cited | Not cited | Needs Review |
+| 9 | Update restructuring stage to STD-STD-NPA-STD (rule_09) | RestructureStage='STD-STD-NPA-STD-NPA-STD' | Not cited | Not cited | Not cited | Needs Review |
+| 10 | Update restructuring stage to NPA-STD-NPA-STD (rule_10) | RestructureStage='NPA-STD-NPA-STD-NPA-STD' | Not cited | Not cited | Not cited | Needs Review |
+
+_Source evidence is the literal technical text carried through the pipeline; Source Location is derived deterministically from chunk and statement provenance when available; SQL Statements / Chunks and Technical References point back to the extracted chunk ids and statement references used by the guardrails. Technical references that repeat the same table/operation/target-columns are shown once._
+</details>
+
+## Rule Provenance Summary
+
+- **Total business rules:** 10
+- **By rule type:** explicit = 10
+- **By validation status:** unverified = 10
+
+_This count reflects every individually traceable rule (one per source statement/field, for full auditability). The business report may show a smaller number, because closely related rules that apply the same pattern to several fields (e.g. "reset each of these six DPD fields to zero if negative") are presented there as one combined rule for readability. Every rule counted here is still individually traceable in the Source Traceability table below - none are dropped, only grouped for display._
+
+_Rules marked **unverified** could not be matched back to the technical extraction or source code and should be prioritized for human review before being treated as confirmed._
+
+## Reconciliation Summary
+
+- **Matched facts:** 0
+- **Deterministic-only facts:** 80
+- **LLM-only claims:** 0
+- **Conflicts:** 10
+- **Unresolved items:** 0
+- **Review required:** Yes
+
+### Review Items
+
+- `CONFLICT` rule (`recon_9beec5fc6d57`): 01_nested_block:embedded_04_22 - Deterministic evidence conflicts with the synthesized claim.
+- `CONFLICT` rule (`recon_bb9570d45d58`): 01_nested_block:embedded_05_23 - Deterministic evidence conflicts with the synthesized claim.
+- `CONFLICT` rule (`recon_aa20263517ff`): 01_nested_block:embedded_06_24 - Deterministic evidence conflicts with the synthesized claim.
+- `CONFLICT` rule (`recon_959188a8b940`): 01_nested_block:embedded_07_25;01_nested_block_2:chunk_text_16;01_nested_block_2:embedded_10_27 - Deterministic evidence conflicts with the synthesized claim.
+- `CONFLICT` rule (`recon_8551beaa6fbd`): 01_nested_block:embedded_08_26 - Deterministic evidence conflicts with the synthesized claim.
+
+## Quality Summary
+
+- **Overall status:** REVIEW_REQUIRED
+- **Quality score:** 17/100
+- **Statement coverage:** 83 / 101 (82.2%)
+- **Rule grounding coverage:** 10 / 10 (100.0%)
+- **Conflicts:** 10
+- **Contradictions:** 21
+- **Review required items:** 31
+- **Review required:** Yes
+
+### Contradictions
+
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Outcome Conflict on `source`: Synthesized outcome/assignment conflicts with deterministic evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Outcome Conflict on `source`: Synthesized outcome/assignment conflicts with deterministic evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+
+_Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._
+
+## Pipeline Diagnostics
+
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE ##ACCOUNTCAL SET TOTALPROVISION=NetBalance WHERE ISNULL(TOTALPROVISION,0)>NetBalance AND ISNULL(NetBalance,0)>0...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE A SET A.TOTPROVISION=B.TOTALPROVISION,A.BANKTOTPROVISION=B.BANKTOTPROVISION,A.RBITOTPROVISION=B.RBITOTPROVISION...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): select Distinct a.CustomerEntityID
+into          #tempACCOUNTCAL_1
+from          ##ACCOUNTCAL a
+inner join    Excepti...
+- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): Delete        A
+from          ##ACCOUNTCAL a
+inner join    ExceptionFinalStatusType b
+on            a.CustomerAcID=b....
+- Technical extraction response reached the output limit; recovered facts may be incomplete.
+- Commented-out logic found in source (7 block(s)) and excluded from extraction - not included in the business rules.
+- Informational uncertainty: Calculation uncertainty: `AddlProvPer` uses a fractional numeric value in an expression that divides by a constant; the intended unit or scale cannot be established from SQL text alone.
+- Synthesis response reached the output limit; recovered rules may be incomplete.
+2026-09-04 12:29:00,038 | INFO | logic_rules_extractor.pipeline | Stage 7/7 completed in 0.08s (final report generation)

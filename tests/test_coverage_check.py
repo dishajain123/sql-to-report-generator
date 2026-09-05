@@ -456,3 +456,54 @@ def test_where_gated_blocks_get_real_per_line_scoring_not_blanket_coverage(caplo
         assert "region_covered=True" not in msg, (
             f"RunStatus block should not be blanket-covered by an unrelated rule's evidence: {msg}"
         )
+
+
+def test_semicolon_free_statements_do_not_balloon_into_one_giant_gap():
+    # Regression test for a real production bug: a report showed a single
+    # "possible unreviewed decision logic" finding spanning lines 36-776 of
+    # a 776-line procedure. Root cause was two-fold, both in
+    # _dml_predicate_tokens_by_line: (1) statement boundaries were found by
+    # splitting on ';', and this codebase's T-SQL mostly has NO semicolons
+    # at all, so a whole semicolon-free procedure body was treated as ONE
+    # statement, and the first WHERE clause found "swallowed" everything
+    # after it as its own predicate; (2) even after using real
+    # (keyword-based) statement boundaries, an off-by-one attributed a
+    # statement's own trailing blank/comment lines - and the NEXT
+    # statement's first line - to the wrong statement. Ten independent,
+    # unrelated UPDATEs sharing one repeated WHERE guard (a common pattern
+    # in this codebase, e.g. "WHERE FlgSma = 'Y'") must each be reported
+    # as their own small gap, never merged into one file-spanning one.
+    blocks = [
+        f"\nUPDATE A\nSET A.Field{i} = CASE WHEN A.X{i} > 0 THEN 1 ELSE 0 END\n"
+        f"FROM PRO.AccountCal A\nWHERE A.FlgSma = 'Y' "
+        for i in range(10)
+    ]
+    source = "\n".join(blocks)
+    gaps = find_coverage_gaps(source, [])
+    assert len(gaps) == 10
+    for gap in gaps:
+        assert gap.line_end - gap.line_start < 10, (
+            f"Gap {gap.line_start}-{gap.line_end} spans too many lines - "
+            "statement boundaries have likely collapsed into one again."
+        )
+
+
+def test_dml_predicate_tokens_attribute_the_next_statements_own_line_correctly():
+    # Narrower regression test isolating just the off-by-one: the sample
+    # corpus file's Rule 2 (no WHERE clause of its own) must never have its
+    # own "UPDATE A" anchor line attributed to Rule 1's (WHERE-gated)
+    # predicate tokens just because Rule 1's statement span's trailing
+    # blank/comment padding extends up to that boundary.
+    from src.validation.coverage_check import _dml_predicate_tokens_by_line
+    from pathlib import Path
+
+    source = Path("samples/02_SMA_Stage_Marking_Simple.sql").read_text(encoding="utf-8")
+    predicate_lines = _dml_predicate_tokens_by_line(source)
+    rule2_update_line = next(
+        i for i, line in enumerate(source.splitlines(), start=1)
+        if line.strip() == "UPDATE A" and i > 30 and i < 45
+    )
+    assert rule2_update_line not in predicate_lines, (
+        f"Line {rule2_update_line} (Rule 2's own UPDATE, which has no WHERE clause) "
+        "must not be attributed to a different statement's predicate."
+    )
