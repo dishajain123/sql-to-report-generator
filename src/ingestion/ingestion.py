@@ -1465,32 +1465,77 @@ class CodeIngestionAgent:
         batches.append(code[last_end:])
         return [b for b in batches if b.strip()]
 
+    # "nested_block" only exists because a T-SQL/PLSQL BEGIN...END pair
+    # happened to sit at begin_depth==2 (see _split_nested_blocks) - it is
+    # not a semantically distinct region the way "exception" or "cursor"
+    # is. The overwhelmingly common real-world shape this affects is the
+    # T-SQL conditional idiom:
+    #   IF <condition>            <- main_body
+    #   BEGIN ... END             <- nested_block
+    #   ELSE                      <- main_body (often just the bare word)
+    #   BEGIN ... END             <- nested_block
+    # Requiring an exact kind match to merge (the previous behavior) never
+    # merges this alternating main_body/nested_block sequence at all, so a
+    # procedure built out of many "IF (check) BEGIN EXEC sub_proc END"
+    # blocks (a very common batch-orchestrator pattern) produced one tiny
+    # chunk per IF/BEGIN/ELSE/BEGIN fragment - including standalone
+    # chunks containing nothing but the literal text "ELSE" - instead of
+    # the "small handful of chunks" the design intends. Treating
+    # main_body/nested_block as the same merge "family" fixes this while
+    # leaving genuinely distinct regions (exception, cursor, declaration)
+    # merge-isolated exactly as before.
+    _MERGE_FAMILY = {"main_body": "body", "nested_block": "body"}
+
+    def _kind_family(self, kind: str) -> str:
+        prefix = ""
+        base = kind
+        if kind.startswith("batch") and "_" in kind:
+            batch_label, base = kind.split("_", 1)
+            prefix = f"{batch_label}_"
+        return prefix + self._MERGE_FAMILY.get(base, base)
+
     def _merge_small_sections(self, sections: List[tuple]) -> List[tuple]:
         """Greedily coalesce consecutive (kind, text) sections into fewer,
         larger sections, never exceeding `max_chunk_chars` per merged
         section. This is what keeps the number of downstream LLM calls
         proportional to the object's actual size rather than to how many
         structural regions it happens to have.
+
+        Sections merge when they belong to the same merge "family"
+        (see `_kind_family`), not only when their kind strings match
+        exactly, so an alternating main_body/nested_block run coalesces
+        into one chunk. The merged chunk's kind is every distinct
+        original kind seen, joined with "+" (already understood by
+        `_build_context_path`) so downstream consumers can still see
+        both structural roles were present.
         """
         if not sections:
             return []
 
         merged: List[tuple] = []
-        current_kind: Optional[str] = None
+        current_family: Optional[str] = None
+        current_kinds_seen: List[str] = []
         current_text = ""
 
+        def _label(kinds_seen: List[str]) -> str:
+            return "+".join(dict.fromkeys(kinds_seen))
+
         for kind, text in sections:
+            family = self._kind_family(kind)
             candidate_text = f"{current_text}\n\n{text}" if current_text else text
-            if current_kind == kind and len(candidate_text) <= self.max_chunk_chars:
+            if current_family == family and len(candidate_text) <= self.max_chunk_chars:
                 current_text = candidate_text
+                if kind not in current_kinds_seen:
+                    current_kinds_seen.append(kind)
                 continue
             if current_text:
-                merged.append((current_kind or kind, current_text))
-            current_kind = kind
+                merged.append((_label(current_kinds_seen), current_text))
+            current_family = family
+            current_kinds_seen = [kind]
             current_text = text
 
         if current_text:
-            merged.append((current_kind or "main_body", current_text))
+            merged.append((_label(current_kinds_seen) or "main_body", current_text))
 
         return merged
 
@@ -1577,9 +1622,25 @@ class CodeIngestionAgent:
         i = 0
         n = len(masked_body)
 
-        def next_word(idx: int) -> str:
-            match = re.match(r"\b([A-Z_]+)\b", masked_body[idx:], re.IGNORECASE)
-            return match.group(1).upper() if match else ""
+        def next_word_span(idx: int) -> tuple[str, int]:
+            # NOTE: must allow leading whitespace between "END" and the
+            # next keyword (real source is "END TRY", "END IF", etc,
+            # never "ENDTRY") - an anchored \b right at `idx` fails to
+            # match when the very next character is a space, since \b
+            # requires a word/non-word transition at that exact position.
+            # That silently made this helper return "" for every real
+            # "END <KEYWORD>" occurrence, which in turn made the
+            # IF/LOOP/WHILE/CASE (and, transiently, TRY/CATCH) skip-set
+            # checks below never fire on real input.
+            # Returns (WORD, absolute end offset of the match) so a
+            # caller that needs to consume "END <WORD>" as a single
+            # token (e.g. "END TRY") advances past the real amount of
+            # source text - including the whitespace between "END" and
+            # the word - rather than a naive `len(word)`.
+            match = re.match(r"\s*([A-Z_]+)\b", masked_body[idx:], re.IGNORECASE)
+            if not match:
+                return "", idx
+            return match.group(1).upper(), idx + match.end()
 
         while i < n:
             begin_match = re.match(r"\bBEGIN\b", masked_body[i:], re.IGNORECASE)
@@ -1598,25 +1659,44 @@ class CodeIngestionAgent:
 
             end_match = re.match(r"\bEND\b", masked_body[i:], re.IGNORECASE)
             if end_match:
-                suffix = next_word(i + end_match.end())
-                if case_depth > 0 and suffix not in {"IF", "LOOP", "WHILE", "TRY", "CATCH", "CASE"}:
+                suffix, suffix_end = next_word_span(i + end_match.end())
+                # IF/LOOP/WHILE/CASE are Oracle-style block enders whose
+                # opening keyword is NOT "BEGIN" (e.g. Oracle's bare
+                # "IF ... END IF;"), so their "END <suffix>" must be
+                # skipped here rather than decrementing begin_depth.
+                # TRY/CATCH are T-SQL-only and the reverse is true -
+                # "BEGIN TRY"/"BEGIN CATCH" always open with a real
+                # BEGIN, so "END TRY"/"END CATCH" DOES need to close a
+                # real BEGIN like any other END. Treating them the same
+                # as IF/LOOP/WHILE/CASE desynced begin_depth on every
+                # T-SQL TRY/CATCH block, leaking a stray "TRY"/"CATCH"
+                # fragment as its own chunk once the real END was never
+                # counted.
+                if case_depth > 0 and suffix not in {"IF", "LOOP", "WHILE", "CASE"}:
                     case_depth = max(case_depth - 1, 0)
                     i += end_match.end()
                     continue
 
-                if suffix in {"IF", "LOOP", "WHILE", "TRY", "CATCH", "CASE"}:
-                    i += end_match.end() + len(suffix)
+                if suffix in {"IF", "LOOP", "WHILE", "CASE"}:
+                    i = suffix_end
                     continue
+
+                # "END TRY"/"END CATCH" close a real BEGIN, so this is a
+                # normal closing END - but the boundary/cursor must still
+                # advance past the "TRY"/"CATCH" word itself (not just
+                # "END"), or that word is left behind as an orphan
+                # fragment for the next section to pick up.
+                close_end = suffix_end if suffix in {"TRY", "CATCH"} else i + end_match.end()
 
                 if begin_depth == 2 and child_start is not None:
                     pre = body[last_end:child_start].strip()
                     if pre:
                         results.append(("main_body", pre))
-                    results.append(("nested_block", body[child_start : i + end_match.end()]))
-                    last_end = i + end_match.end()
+                    results.append(("nested_block", body[child_start:close_end]))
+                    last_end = close_end
                     child_start = None
                 begin_depth = max(begin_depth - 1, 0)
-                i += end_match.end()
+                i = close_end
                 continue
 
             i += 1
@@ -1644,9 +1724,16 @@ class CodeIngestionAgent:
         i = 0
         n = len(masked)
 
-        def next_word(idx: int) -> str:
-            match = re.match(r"\b([A-Z_]+)\b", masked[idx:], re.IGNORECASE)
-            return match.group(1).upper() if match else ""
+        def next_word_span(idx: int) -> tuple[str, int]:
+            # See the matching comment in _split_nested_blocks: must
+            # tolerate the whitespace between "END" and the following
+            # keyword, or this always returns "". Also returns the
+            # absolute end offset so "END TRY"/"END CATCH" can be
+            # consumed as one token.
+            match = re.match(r"\s*([A-Z_]+)\b", masked[idx:], re.IGNORECASE)
+            if not match:
+                return "", idx
+            return match.group(1).upper(), idx + match.end()
 
         while i < n:
             if dialect == TSQL:
@@ -1672,18 +1759,23 @@ class CodeIngestionAgent:
 
             end_match = re.match(r"\bEND\b", masked[i:], re.IGNORECASE)
             if end_match:
-                suffix = next_word(i + end_match.end())
-                if case_depth > 0 and suffix not in {"IF", "LOOP", "WHILE", "TRY", "CATCH", "CASE"}:
+                suffix, suffix_end = next_word_span(i + end_match.end())
+                # See the matching comment in _split_nested_blocks: TRY/
+                # CATCH always pair with a real BEGIN in T-SQL, unlike
+                # IF/LOOP/WHILE/CASE, so "END TRY"/"END CATCH" must
+                # decrement begin_depth like any other END rather than
+                # being skipped.
+                if case_depth > 0 and suffix not in {"IF", "LOOP", "WHILE", "CASE"}:
                     case_depth = max(case_depth - 1, 0)
                     i += end_match.end()
                     continue
 
-                if suffix in {"IF", "LOOP", "WHILE", "TRY", "CATCH", "CASE"}:
-                    i += end_match.end() + len(suffix)
+                if suffix in {"IF", "LOOP", "WHILE", "CASE"}:
+                    i = suffix_end
                     continue
 
                 begin_depth = max(begin_depth - 1, 0)
-                i += end_match.end()
+                i = suffix_end if suffix in {"TRY", "CATCH"} else i + end_match.end()
                 continue
 
             i += 1

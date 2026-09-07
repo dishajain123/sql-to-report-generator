@@ -776,7 +776,13 @@ def test_tsql_try_catch_is_not_duplicated():
     warnings = []
     chunks = agent.chunk_code(SAMPLE_TSQL_TRY_CATCH, warnings, dialect="tsql")
     kinds = [chunk.kind for chunk in chunks]
-    assert "main_body" in kinds
+    # main_body/nested_block are the same merge "family" (see
+    # _kind_family), so the TRY block's body may be reported as a
+    # composite "main_body+nested_block" label rather than a bare
+    # "main_body" - check membership via the "+"-split kind parts
+    # instead of exact string equality.
+    kind_parts = {part for kind in kinds for part in kind.split("+")}
+    assert "main_body" in kind_parts
     assert "exception" in kinds
     assert sum(1 for chunk in chunks if "SELECT 1;" in chunk.text) == 1
 
