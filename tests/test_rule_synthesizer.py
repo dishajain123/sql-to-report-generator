@@ -139,6 +139,8 @@ def test_compact_synthesis_payload_keeps_only_synthesis_facts():
     assert list(compact.keys()) == [
         "conditions",
         "decision_chains",
+        "statement_dependencies",
+        "decision_chain_evidence_map",
         "loops",
         "table_operations",
         "calculations",
@@ -146,6 +148,18 @@ def test_compact_synthesis_payload_keeps_only_synthesis_facts():
         "ambiguities",
     ]
     assert compact["conditions"] == [{"condition": "x"}]
+    assert compact["statement_dependencies"] == {"version": "1", "edges": []}
+    assert compact["decision_chain_evidence_map"]["chains"] == [
+        {
+            "chain": "decision_chain_001",
+            "source": "",
+            "type": "",
+            "branches": [],
+            "affected_fields": [],
+            "statement_ids": [],
+            "parse_status": "parsed",
+        }
+    ]
     # The two near-duplicate READ records for table A collapse into one
     # deduplicated entry, with the distinct predicate preserved.
     assert len(compact["table_operations"]) == 1
@@ -184,6 +198,115 @@ def test_compact_synthesis_payload_falls_back_to_tables_read_written_when_no_tab
     compact = RuleSynthesizerAgent._build_compact_synthesis_payload(merged_extraction)
     tables = {op["table"] for op in compact["table_operations"]}
     assert tables == {"A", "B"}
+
+
+def test_decision_chain_evidence_map_preserves_branches_locations_and_relationships():
+    compact = RuleSynthesizerAgent._build_compact_synthesis_payload(
+        {
+            "decision_chains": [
+                {
+                    "chain_id": "chain_1",
+                    "chain_type": "IF_ELSIF_ELSE",
+                    "source_file": "classify.sql",
+                    "source_line_start": 120,
+                    "source_line_end": 145,
+                    "branches": [
+                        {
+                            "branch_id": "chain_1:branch_001",
+                            "branch_condition": "DPD > 90",
+                            "source_line_start": 120,
+                            "source_line_end": 128,
+                            "source_statement_id": "stmt_7",
+                            "assignments": [
+                                {"field": "ASSET_CLASS", "value": "'NPA'"},
+                            ],
+                        },
+                        {
+                            "branch_id": "chain_1:branch_002",
+                            "branch_condition": "ELSE",
+                            "is_catch_all": True,
+                            "evidence_spans": [
+                                {"line_start": 129, "line_end": 145, "statement_id": "stmt_8"}
+                            ],
+                            "assignments": [
+                                {"field": "ASSET_CLASS", "value": "'STANDARD'"},
+                            ],
+                        },
+                    ],
+                }
+            ]
+        },
+        source_name="classify",
+    )
+
+    evidence = compact["decision_chain_evidence_map"]
+    chain = evidence["chains"][0]
+    assert chain["source"] == "classify.sql"
+    assert chain["location"] == {"lines": "120-145"}
+    assert chain["affected_fields"] == ["ASSET_CLASS"]
+    assert [branch["condition"] for branch in chain["branches"]] == ["DPD > 90", "ELSE"]
+    assert chain["branches"][0]["location"] == {"lines": "120-128"}
+    assert chain["branches"][0]["statement_ids"] == ["stmt_7"]
+    assert chain["branches"][1]["fallback"] is True
+    assert chain["branches"][1]["statement_ids"] == ["stmt_8"]
+
+
+def test_decision_chain_evidence_map_marks_unsupported_fragments_and_unknown_locations():
+    compact = RuleSynthesizerAgent._build_compact_synthesis_payload(
+        {
+            "decision_chains": [
+                {
+                    "chain_id": "chain_dynamic",
+                    "unsupported": True,
+                    "unresolved_fragments": ["dynamic branch target"],
+                    "branches": [
+                        {
+                            "branch_condition": "runtime predicate",
+                            "assignments": [],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    chain = compact["decision_chain_evidence_map"]["chains"][0]
+    assert chain["parse_status"] == "unsupported"
+    assert chain["unresolved"] == ["dynamic branch target"]
+    assert "location" not in chain["branches"][0]
+    assert chain["branches"][0]["condition"] == "runtime predicate"
+
+
+def test_decision_chain_evidence_map_is_bounded_for_wide_procedures(monkeypatch):
+    chains = [
+        {
+            "chain_id": f"chain_{index}",
+            "chain_type": "CASE",
+            "branches": [
+                {
+                    "branch_id": f"branch_{index}_{branch}",
+                    "branch_condition": "condition " + ("x" * 300),
+                    "assignments": [
+                        {"field": "FIELD", "value": "value " + ("y" * 300)},
+                    ],
+                }
+                for branch in range(20)
+            ],
+        }
+        for index in range(20)
+    ]
+    monkeypatch.setattr(
+        "src.synthesis.rule_synthesizer._SYNTHESIS_EVIDENCE_MAP_MAX_CHARS",
+        4000,
+    )
+
+    evidence = RuleSynthesizerAgent._build_decision_chain_evidence_map(chains)
+    serialized = json.dumps(evidence, separators=(",", ":"), ensure_ascii=True)
+    assert len(serialized) <= 4000
+    assert evidence["bounded"] is True
+    represented = sum(len(chain["branches"]) for chain in evidence["chains"])
+    assert represented + evidence["omitted_branch_count"] == 400
+    assert evidence.get("omitted_chain_count", 0) + len(evidence["chains"]) == len(chains)
 
 
 def test_synthesis_payload_includes_original_source_only_when_available():

@@ -542,6 +542,175 @@ def test_outcome_conflict_is_detected():
     assert "SMA-1" in str(record.deterministic_evidence["assigned_values"])
 
 
+def _semantic_table_result(*, filter_condition=None, columns=None, assigned_values=None, rule_condition=None, action=None, fields=None):
+    row = _table_row(
+        "ACCOUNT",
+        "UPDATE",
+        columns=columns or ["STATUS"],
+        filter_condition=filter_condition,
+        assigned_values=assigned_values,
+    )
+    rule = _rule(
+        source_chunks=["chunk_1"],
+        technical_references=["stmt_1"],
+        fields_affected=columns or ["STATUS"] if fields is None else fields,
+        condition=rule_condition,
+        action=action,
+    )
+    return reconcile_deterministic_evidence(
+        ingestion=_make_ingestion(),
+        merged_extraction={
+            "tables_read": [],
+            "tables_written": [row],
+            "llm_tables_read": [],
+            "llm_tables_written": [row],
+        },
+        synthesis=_make_synthesis([rule]),
+    )
+
+
+def test_structured_operator_mismatch_is_a_condition_conflict():
+    result = _semantic_table_result(
+        filter_condition="DPD > 30",
+        rule_condition="DPD >= 30",
+    )
+    record = _find_record(result, kind="rule", status="CONFLICT")
+    assert record.comparison["condition_status"] == "CONFLICT"
+
+
+def test_null_semantics_mismatch_is_a_condition_conflict():
+    result = _semantic_table_result(
+        filter_condition="CLOSED_DATE IS NULL",
+        rule_condition="CLOSED_DATE IS NOT NULL",
+    )
+    record = _find_record(result, kind="rule", status="CONFLICT")
+    assert record.comparison["condition_status"] == "CONFLICT"
+
+
+def test_literal_mismatch_is_an_outcome_conflict():
+    result = _semantic_table_result(
+        assigned_values=[{"column": "STATUS", "expression": "'OPEN'"}],
+        action="STATUS = 'CLOSED'",
+    )
+    record = _find_record(result, kind="rule", status="CONFLICT")
+    assert record.comparison["outcome_status"] == "CONFLICT"
+
+
+def test_date_boundary_mismatch_is_a_condition_conflict():
+    result = _semantic_table_result(
+        filter_condition="AS_OF_DATE >= '2024-01-01'",
+        rule_condition="AS_OF_DATE > '2024-01-01'",
+    )
+    record = _find_record(result, kind="rule", status="CONFLICT")
+    assert record.comparison["condition_status"] == "CONFLICT"
+
+
+def test_assignment_target_mismatch_is_a_field_conflict():
+    result = _semantic_table_result(
+        columns=["STATUS"],
+        fields=["CLASSIFICATION"],
+        action="CLASSIFICATION = 'OPEN'",
+        assigned_values=[{"column": "STATUS", "expression": "'OPEN'"}],
+    )
+    record = _find_record(result, kind="rule", status="CONFLICT")
+    assert record.comparison["field_status"] == "CONFLICT"
+
+
+def test_equivalent_structured_expression_is_matched():
+    result = _semantic_table_result(
+        filter_condition="status = 'A'",
+        rule_condition="STATUS='A'",
+        action="STATUS = 'OPEN'",
+        assigned_values=[{"column": "STATUS", "expression": "'OPEN'"}],
+    )
+    record = _find_record(result, kind="rule", status="MATCHED")
+    assert record.comparison["condition_status"] == "MATCHED"
+    assert record.comparison["outcome_status"] == "MATCHED"
+
+
+def test_paraphrased_rule_does_not_create_a_false_conflict():
+    result = _semantic_table_result(
+        filter_condition="DPD > 30",
+        rule_condition="when the account is significantly overdue",
+        action="STATUS is adjusted for the branch",
+        fields=["STATUS"],
+    )
+    record = _find_record(result, kind="rule")
+    assert record.status == "MATCHED"
+    assert record.comparison["condition_status"] == "UNRESOLVED"
+    assert record.comparison["outcome_status"] == "UNRESOLVED"
+
+
+def test_complex_expression_mismatch_remains_unresolved_not_conflict():
+    result = _semantic_table_result(
+        filter_condition="COALESCE(DPD, 0) > 30 AND (STATUS = 'A' OR FLAG = 'Y')",
+        rule_condition="complex account eligibility expression",
+        fields=[],
+    )
+    record = _find_record(result, kind="rule")
+    assert record.status == "UNRESOLVED"
+    assert record.comparison["condition_status"] == "UNRESOLVED"
+    assert not any(item.type == "condition_conflict" for item in result.contradictions)
+
+
+def test_structured_nested_branch_mismatch_is_detected():
+    chain = {
+        "chain_type": "NESTED_IF",
+        "subject": "STATUS",
+        "branches": [
+            {
+                "branch_condition": "INNER > 5",
+                "assignments": [{"field": "STATUS", "value": "'A'"}],
+            },
+            {
+                "branch_condition": "ELSE",
+                "assignments": [{"field": "STATUS", "value": "'B'"}],
+            },
+        ],
+    }
+    result = reconcile_deterministic_evidence(
+        ingestion=_make_ingestion(dialect="TSQL"),
+        merged_extraction={"decision_chains": [chain], "tables_read": [], "tables_written": []},
+        synthesis=_make_synthesis([
+            _rule(
+                fields_affected=["STATUS"],
+                condition="INNER >= 5",
+                action="STATUS = 'A'",
+                source_evidence=["INNER > 5"],
+            )
+        ]),
+    )
+    record = _find_record(result, kind="rule", status="CONFLICT")
+    assert record.comparison["condition_status"] == "CONFLICT"
+
+
+def test_else_fallback_literal_mismatch_is_an_outcome_conflict():
+    chain = {
+        "chain_type": "IF_ELSIF_ELSE",
+        "subject": "STATUS",
+        "branches": [
+            {"branch_condition": "STATUS = 'A'", "assignments": [{"field": "RESULT", "value": "'A'"}]},
+            {"branch_condition": "ELSE", "assignments": [{"field": "RESULT", "value": "NULL"}]},
+        ],
+    }
+    result = reconcile_deterministic_evidence(
+        ingestion=_make_ingestion(dialect="TSQL"),
+        merged_extraction={"decision_chains": [chain], "tables_read": [], "tables_written": []},
+        synthesis=_make_synthesis([
+            _rule(
+                fields_affected=["RESULT"],
+                decision_logic_rows=[
+                    {"condition": "STATUS = 'A'", "outcome": "'A'"},
+                    {"condition": "ELSE", "outcome": "0"},
+                ],
+                source_evidence=["STATUS = 'A'"],
+            )
+        ]),
+    )
+    record = _find_record(result, kind="rule", status="CONFLICT")
+    assert record.comparison["outcome_status"] == "CONFLICT"
+
+
 def test_llm_only_claim_is_flagged():
     ingestion = _make_ingestion()
     merged = {
@@ -1501,6 +1670,95 @@ def test_decision_chain_grounding_does_not_require_provenance_metadata():
     assert record.status == "MATCHED"
 
 
+def test_decision_chain_intermediate_variable_is_not_false_field_conflict():
+    """A branch may assign a local variable before a later write maps it to
+    the business column named by the synthesized rule.  Matching branch
+    condition/outcome evidence should keep that field axis unresolved, not
+    turn the otherwise grounded rule into a false contradiction."""
+    ingestion = _make_ingestion(dialect="ORACLE")
+    merged = {
+        "tables_read": [],
+        "tables_written": [],
+        "llm_tables_read": [],
+        "llm_tables_written": [],
+        "decision_chains": [
+            _decision_chain(
+                "SCORE",
+                [
+                    {"branch_condition": "SCORE >= 90", "assignments": [{"field": "v_status", "value": "'A'"}]},
+                    {"branch_condition": "ELSE", "assignments": [{"field": "v_status", "value": "'B'"}]},
+                ],
+            )
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            fields_affected=["STATUS"],
+            condition="SCORE >= 90",
+            action="STATUS = 'A'",
+            source_evidence=["SCORE >= 90"],
+            decision_logic_rows=[
+                {"condition": "SCORE >= 90", "outcome": "'A'"},
+                {"condition": "ELSE", "outcome": "'B'"},
+            ],
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    record = _find_record(result, kind="rule")
+    assert record.status == "MATCHED"
+    assert record.comparison["condition_status"] == "MATCHED"
+    assert record.comparison["outcome_status"] == "MATCHED"
+    assert record.comparison["field_status"] == "UNRESOLVED"
+    assert not any(item.type == "field_conflict" for item in result.contradictions)
+
+
+def test_ordered_else_can_be_rendered_as_a_proven_complement():
+    """An explicit ELSE may be rendered as the numeric range left after all
+    earlier branches, but only when that range is disjoint from them."""
+    ingestion = _make_ingestion(dialect="ORACLE")
+    merged = {
+        "tables_read": [],
+        "tables_written": [],
+        "llm_tables_read": [],
+        "llm_tables_written": [],
+        "decision_chains": [
+            _decision_chain(
+                "OVERDUE_DAYS",
+                [
+                    {"branch_condition": "OVERDUE_DAYS <= 90", "assignments": [{"field": "STATUS", "value": "'STANDARD'"}]},
+                    {"branch_condition": "OVERDUE_DAYS BETWEEN 91 AND 1095", "assignments": [{"field": "STATUS", "value": "'NPA'"}]},
+                    {"branch_condition": "ELSE", "assignments": [{"field": "STATUS", "value": "'LOSS'"}]},
+                ],
+            )
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            fields_affected=["STATUS"],
+            condition="OVERDUE_DAYS > 1095",
+            action="STATUS = 'LOSS'",
+            source_evidence=["ELSE"],
+            decision_logic_rows=[{"condition": "OVERDUE_DAYS > 1095", "outcome": "'LOSS'"}],
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    record = _find_record(result, kind="rule")
+    assert record.status == "MATCHED"
+    assert record.comparison["condition_status"] == "MATCHED"
+
+
 def test_decision_chain_contradicting_llm_claim_remains_a_conflict():
     """Test C: a genuine contradiction between the LLM's claimed outcome
     and the deterministic branch outcome must still be reported as a
@@ -1717,6 +1975,446 @@ def test_decision_chain_sibling_expansion_does_not_leak_across_chains():
     record = _find_record(result, kind="rule", status="MATCHED")
     assert "UNRELATED" not in record.deterministic_evidence["assigned_values"]
     assert "DEFAULT" not in record.deterministic_evidence["assigned_values"]
+
+
+def _coverage_chain(chain_type="IF_ELSIF_ELSE", subject="STATUS", prefix=""):
+    return {
+        "chain_type": chain_type,
+        "subject": subject,
+        "branches": [
+            {"branch_condition": f"{prefix}STATUS = 'A'", "assignments": [{"field": "STATUS", "value": "'A'"}]},
+            {"branch_condition": f"{prefix}STATUS = 'B'", "assignments": [{"field": "STATUS", "value": "'B'"}]},
+            {"branch_condition": "ELSE", "assignments": [{"field": "STATUS", "value": "'OTHER'"}]},
+        ],
+    }
+
+
+def _coverage_rule(condition, value, *, field="STATUS", rule_id=None):
+    return _rule(
+        rule_id=rule_id or f"rule_{value}",
+        fields_affected=[field],
+        condition=condition,
+        action=f"{field} = '{value}'",
+    )
+
+
+def _coverage_merged(chains):
+    return {
+        "tables_read": [],
+        "tables_written": [],
+        "llm_tables_read": [],
+        "llm_tables_written": [],
+        "decision_chains": chains,
+    }
+
+
+def test_decision_chain_coverage_reports_all_branches_covered():
+    chain = _coverage_chain()
+    rules = [
+        _coverage_rule("STATUS = 'A'", "A"),
+        _coverage_rule("STATUS = 'B'", "B"),
+        _coverage_rule("ELSE", "OTHER"),
+    ]
+    result = reconcile_deterministic_evidence(
+        ingestion=_make_ingestion(dialect="TSQL"),
+        merged_extraction=_coverage_merged([chain]),
+        synthesis=_make_synthesis(rules),
+    )
+
+    assert result.coverage["decision_chain_coverage_pct"] == 100.0
+    assert result.coverage["decision_chain_count"] == 1
+    assert result.coverage["decision_chains_uncovered"] == []
+
+
+def test_decision_chain_coverage_reports_partial_chain_and_gap():
+    chain = _coverage_chain()
+    rules = [
+        _coverage_rule("STATUS = 'A'", "A"),
+        _coverage_rule("STATUS = 'B'", "B"),
+    ]
+    result = reconcile_deterministic_evidence(
+        ingestion=_make_ingestion(dialect="TSQL"),
+        merged_extraction=_coverage_merged([chain]),
+        synthesis=_make_synthesis(rules),
+    )
+
+    assert result.coverage["decision_chain_coverage_pct"] == pytest.approx(66.7)
+    assert len(result.coverage["decision_chains_partially_covered"]) == 1
+    assert result.coverage["decision_chain_coverage_gaps"][0]["branch_condition"] == "ELSE"
+
+
+def test_decision_chain_coverage_reports_zero_when_no_rule_links():
+    result = reconcile_deterministic_evidence(
+        ingestion=_make_ingestion(dialect="TSQL"),
+        merged_extraction=_coverage_merged([_coverage_chain()]),
+        synthesis=_make_synthesis([]),
+    )
+
+    assert result.coverage["decision_chain_coverage_pct"] == 0.0
+    assert len(result.coverage["decision_chains_uncovered"]) == 1
+    assert result.coverage["decision_chains_uncovered"][0]["covered_branch_count"] == 0
+
+
+def test_technical_only_and_unsupported_decision_chains_are_not_quality_coverage_targets():
+    technical_chain = {
+        "chain_type": "TECHNICAL_FILTER",
+        "subject": "ACCOUNT",
+        "branches": [
+            {"branch_condition": "ACCOUNT_ID IS NOT NULL", "assignments": []},
+            {"branch_condition": "ELSE", "assignments": []},
+        ],
+    }
+    unsupported_chain = {
+        "chain_type": "IF_ELSIF_ELSE",
+        "subject": "STATUS",
+        "unsupported": True,
+        "branches": [
+            {"branch_condition": "STATUS = 'A'", "assignments": [{"field": "STATUS", "value": "'A'"}]},
+            {"branch_condition": "ELSE", "assignments": [{"field": "STATUS", "value": "'OTHER'"}]},
+        ],
+    }
+
+    result = reconcile_deterministic_evidence(
+        ingestion=_make_ingestion(dialect="TSQL"),
+        merged_extraction=_coverage_merged([technical_chain, unsupported_chain]),
+        synthesis=_make_synthesis([]),
+    )
+
+    assert result.coverage["decision_chain_count"] == 0
+    assert result.coverage["decision_chain_total_branches"] == 0
+    assert result.coverage["decision_chain_coverage_pct"] == 100.0
+
+
+def _quality_with_chain_coverage(coverage_pct=None, *, chain_count=0, branch_count=0, covered_count=0, **extra):
+    coverage = {
+        "total_statements": 3,
+        "synthesized_rules": 3,
+        "deterministic_facts": 3,
+        "llm_only_rules": 0,
+        "deterministic_only_facts": 0,
+        "unresolved_for_scoring": 0,
+        "statement_parse_success_pct": 100.0,
+        "rule_grounding_pct": 100.0,
+        "decision_chain_count": chain_count,
+        "decision_chain_total_branches": branch_count,
+        "decision_chain_covered_branches": covered_count,
+    }
+    if coverage_pct is not None:
+        coverage["decision_chain_coverage_pct"] = coverage_pct
+    coverage.update(extra)
+    records = [
+        ReconciliationRecord(
+            reconciliation_id=f"matched_{index}",
+            kind="rule",
+            status="MATCHED",
+            object_id="obj_1",
+        )
+        for index in range(3)
+    ]
+    return _build_quality_assessment(
+        coverage=coverage,
+        contradictions=[],
+        unsupported_dialect=False,
+        records=records,
+    )
+
+
+def test_quality_does_not_penalize_missing_or_fully_covered_decision_chains():
+    no_chains = _quality_with_chain_coverage()
+    fully_covered = _quality_with_chain_coverage(100.0, chain_count=1, branch_count=3, covered_count=3)
+
+    assert no_chains["score"] == 100
+    assert fully_covered["score"] == 100
+    assert no_chains["status"] == "PASS"
+    assert fully_covered["status"] == "PASS"
+    assert fully_covered["factors"]["decision_chain_penalty"] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("coverage_pct", "covered_count", "expected_score", "expected_penalty"),
+    [(66.7, 2, 95.005, 4.99), (50.0, 0, 92.5, 7.5), (0.0, 0, 85.0, 15.0)],
+)
+def test_quality_penalizes_incomplete_decision_chain_coverage(
+    coverage_pct, covered_count, expected_score, expected_penalty
+):
+    result = _quality_with_chain_coverage(
+        coverage_pct,
+        chain_count=1,
+        branch_count=3,
+        covered_count=covered_count,
+    )
+
+    assert 0 <= result["score"] <= 100
+    assert result["score"] == pytest.approx(expected_score)
+    assert result["factors"]["decision_chain_coverage_pct"] == coverage_pct
+    assert result["factors"]["decision_chain_penalty"] == pytest.approx(expected_penalty)
+    assert result["review_required"] is True
+    assert result["status"] == "REVIEW_REQUIRED"
+
+
+def test_decision_chain_coverage_penalty_combines_with_existing_review_findings():
+    result = _build_quality_assessment(
+        coverage={
+            "total_statements": 3,
+            "synthesized_rules": 3,
+            "deterministic_facts": 3,
+            "llm_only_rules": 0,
+            "deterministic_only_facts": 0,
+            "unresolved_for_scoring": 1,
+            "statement_parse_success_pct": 100.0,
+            "rule_grounding_pct": 100.0,
+            "decision_chain_count": 1,
+            "decision_chain_total_branches": 3,
+            "decision_chain_coverage_pct": 50.0,
+        },
+        contradictions=[
+            ContradictionFinding(
+                contradiction_id="c1",
+                type="rule_vs_rule_conflict",
+                severity="HIGH",
+                object_id="obj_1",
+                review_required=True,
+            )
+        ],
+        unsupported_dialect=False,
+        records=[
+            ReconciliationRecord(
+                reconciliation_id="matched_1",
+                kind="rule",
+                status="MATCHED",
+                object_id="obj_1",
+            )
+        ],
+    )
+
+    assert 0 <= result["score"] <= 100
+    assert result["status"] == "REVIEW_REQUIRED"
+    assert result["review_required"] is True
+    assert result["factors"]["decision_chain_penalty"] == pytest.approx(7.5)
+
+
+def test_unsupported_dialect_does_not_add_decision_chain_penalty():
+    result = _build_quality_assessment(
+        coverage={
+            "total_statements": 3,
+            "synthesized_rules": 3,
+            "deterministic_facts": 3,
+            "decision_chain_count": 1,
+            "decision_chain_total_branches": 3,
+            "decision_chain_coverage_pct": 0.0,
+        },
+        contradictions=[],
+        unsupported_dialect=True,
+        records=[],
+    )
+
+    assert result["factors"]["decision_chain_penalty"] == 0.0
+    assert result["status"] == "LOW_CONFIDENCE"
+    assert result["review_required"] is True
+
+
+def test_decision_chain_coverage_handles_multiple_chains_nested_if_and_case():
+    nested = _coverage_chain("NESTED_IF", prefix="OUTER = 1 AND ")
+    case = _coverage_chain("CASE_EXPRESSION", subject="CLASS_CODE")
+    rules = [
+        _coverage_rule("OUTER = 1 AND STATUS = 'A'", "A", rule_id="nested_a"),
+        _coverage_rule("OUTER = 1 AND STATUS = 'B'", "B", rule_id="nested_b"),
+        _coverage_rule("ELSE", "OTHER", rule_id="nested_else"),
+        _coverage_rule("STATUS = 'A'", "A", field="CLASS_CODE", rule_id="case_a"),
+        _coverage_rule("STATUS = 'B'", "B", field="CLASS_CODE", rule_id="case_b"),
+        _coverage_rule("ELSE", "OTHER", field="CLASS_CODE", rule_id="case_else"),
+    ]
+    result = reconcile_deterministic_evidence(
+        ingestion=_make_ingestion(dialect="TSQL"),
+        merged_extraction=_coverage_merged([nested, case]),
+        synthesis=_make_synthesis(rules),
+    )
+
+    assert result.coverage["decision_chain_count"] == 2
+    assert result.coverage["decision_chain_coverage_pct"] == 100.0
+
+
+def test_chain_linked_paraphrased_fallback_is_not_a_business_contradiction():
+    chain = {
+        "chain_type": "CASE_EXPRESSION",
+        "subject": "STATUS",
+        "branches": [
+            {"branch_condition": "STATUS = 'A'", "assignments": [{"field": "STATUS", "value": "'A'"}]},
+            {"branch_condition": "ELSE", "assignments": [{"field": "STATUS", "value": "'DEFAULT'"}]},
+        ],
+    }
+    rules = [
+        _coverage_rule("STATUS = 'A'", "A", rule_id="explicit_a"),
+        _rule(
+            rule_id="fallback_default",
+            fields_affected=["STATUS"],
+            condition="no other status applies",
+            action="STATUS = 'DEFAULT'",
+        ),
+    ]
+    result = reconcile_deterministic_evidence(
+        ingestion=_make_ingestion(dialect="TSQL"),
+        merged_extraction=_coverage_merged([chain]),
+        synthesis=_make_synthesis(rules),
+    )
+
+    assert not any(item.classification == "GENUINE_BUSINESS_CONTRADICTION" for item in result.contradictions)
+    assert result.coverage["decision_chain_coverage_pct"] == 100.0
+
+
+def test_final_condition_without_else_is_not_marked_catch_all():
+    chain = {
+        "chain_type": "IF_ELSIF",
+        "subject": "STATUS",
+        "branches": [
+            {"branch_condition": "STATUS = 'A'", "assignments": [{"field": "STATUS", "value": "'A'"}]},
+            {"branch_condition": "STATUS = 'B'", "assignments": [{"field": "STATUS", "value": "'B'"}]},
+        ],
+    }
+    rules = [
+        _coverage_rule("STATUS = 'A'", "A", rule_id="if_a"),
+        _rule(
+            rule_id="if_b_default_wording",
+            fields_affected=["STATUS"],
+            condition="any other status applies",
+            action="STATUS = 'B'",
+        ),
+    ]
+    result = reconcile_deterministic_evidence(
+        ingestion=_make_ingestion(dialect="TSQL"),
+        merged_extraction=_coverage_merged([chain]),
+        synthesis=_make_synthesis(rules),
+    )
+
+    assert result.coverage["decision_chain_coverage_pct"] == pytest.approx(50.0)
+
+
+def test_empty_else_remains_an_explicit_uncovered_catch_all_branch():
+    chain = {
+        "chain_type": "IF_ELSIF_ELSE",
+        "subject": "STATUS",
+        "branches": [
+            {"branch_condition": "STATUS = 'A'", "assignments": [{"field": "STATUS", "value": "'A'"}]},
+            {"branch_condition": "ELSE", "assignments": []},
+        ],
+    }
+    result = reconcile_deterministic_evidence(
+        ingestion=_make_ingestion(dialect="TSQL"),
+        merged_extraction=_coverage_merged([chain]),
+        synthesis=_make_synthesis([_coverage_rule("STATUS = 'A'", "A")]),
+    )
+
+    assert result.coverage["decision_chain_coverage_pct"] == pytest.approx(50.0)
+    gap = result.coverage["decision_chain_coverage_gaps"][0]
+    assert gap["branch_condition"] == "ELSE"
+    assert gap["is_catch_all"] is True
+
+
+def test_quality_penalties_are_ratio_normalized_for_small_and_large_objects():
+    def score(rule_count, llm_only, deterministic_only, unresolved):
+        records = [
+            ReconciliationRecord(
+                reconciliation_id=f"matched_{index}",
+                kind="rule",
+                status="MATCHED",
+                object_id="obj_1",
+            )
+            for index in range(max(rule_count - llm_only, 0))
+        ]
+        records.extend(
+            ReconciliationRecord(
+                reconciliation_id=f"llm_{index}",
+                kind="rule",
+                status="LLM_ONLY",
+                object_id="obj_1",
+            )
+            for index in range(llm_only)
+        )
+        coverage = {
+            "total_statements": rule_count,
+            "synthesized_rules": rule_count,
+            "deterministic_facts": rule_count,
+            "llm_only_rules": llm_only,
+            "deterministic_only_facts": deterministic_only,
+            "unresolved_for_scoring": unresolved,
+            "statement_parse_success_pct": 100.0,
+            "rule_grounding_pct": 100.0,
+        }
+        return _build_quality_assessment(
+            coverage=coverage,
+            contradictions=[],
+            unsupported_dialect=False,
+            records=records,
+        )
+
+    small = score(10, 2, 1, 1)
+    large = score(100, 20, 10, 10)
+
+    assert large["score"] == pytest.approx(small["score"])
+    assert large["factors"]["llm_only_rate_pct"] == small["factors"]["llm_only_rate_pct"]
+    assert large["factors"]["unresolved_rate_pct"] == small["factors"]["unresolved_rate_pct"]
+
+
+def test_contradiction_penalties_are_ratio_normalized_for_small_and_large_objects():
+    def score(rule_count, contradiction_count):
+        records = [
+            ReconciliationRecord(
+                reconciliation_id=f"matched_{index}",
+                kind="rule",
+                status="MATCHED",
+                object_id="obj_1",
+            )
+            for index in range(rule_count)
+        ]
+        contradictions = [
+            ContradictionFinding(
+                contradiction_id=f"c_{index}",
+                type="rule_vs_rule_conflict",
+                severity="HIGH",
+                object_id="obj_1",
+                review_required=True,
+            )
+            for index in range(contradiction_count)
+        ]
+        return _build_quality_assessment(
+            coverage={
+                "total_statements": rule_count,
+                "synthesized_rules": rule_count,
+                "deterministic_facts": rule_count,
+                "llm_only_rules": 0,
+                "deterministic_only_facts": 0,
+                "unresolved_for_scoring": 0,
+                "statement_parse_success_pct": 100.0,
+                "rule_grounding_pct": 100.0,
+            },
+            contradictions=contradictions,
+            unsupported_dialect=False,
+            records=records,
+        )
+
+    small = score(10, 1)
+    large = score(100, 10)
+    assert large["score"] == pytest.approx(small["score"])
+    assert large["factors"]["high_contradiction_rate_pct"] == small["factors"]["high_contradiction_rate_pct"]
+
+
+def test_quality_score_handles_zero_denominators():
+    result = _build_quality_assessment(
+        coverage={
+            "total_statements": 0,
+            "synthesized_rules": 0,
+            "deterministic_facts": 0,
+            "llm_only_rules": 0,
+            "deterministic_only_facts": 0,
+            "unresolved_for_scoring": 0,
+        },
+        contradictions=[],
+        unsupported_dialect=False,
+        records=[],
+    )
+
+    assert result["score"] == 60
+    assert result["factors"]["llm_only_rate_pct"] == 0.0
     """Realistic production shape (matches the actual SMA_Stage_Marking_Simple
     report): one rule whose decision_logic_rows cite an entire multi-branch
     decision table, all branches for the same field. Every branch's

@@ -273,7 +273,12 @@ class ReportFormatterAgent:
         if not review_required:
             return ""
 
-        coverage = quality.get("coverage") or merged_extraction.get("reconciliation", {}).get("coverage") or {}
+        coverage = (
+            quality.get("coverage")
+            or merged_extraction.get("coverage")
+            or merged_extraction.get("reconciliation", {}).get("coverage")
+            or {}
+        )
         score = quality.get("score")
 
         detail_bits: List[str] = []
@@ -332,6 +337,8 @@ class ReportFormatterAgent:
             self._telemetry_section(run_metadata_resolved),
             self._business_rule_summary_table(rules, include_technical_ids=True),
             self._source_traceability_details(rules, merged_extraction),
+            self._completeness_ledger_section(merged_extraction),
+            self._statement_dependencies_section(merged_extraction),
             self._validation_summary(rules, merged_extraction, synthesis),
             self._reconciliation_summary(merged_extraction, synthesis),
             self._quality_summary(merged_extraction, synthesis),
@@ -382,6 +389,89 @@ class ReportFormatterAgent:
         deduped = list(dict.fromkeys(items))
         lines = [f"- {item}" for item in deduped]
         return "## Pipeline Diagnostics\n\n" + "\n".join(lines)
+
+    @staticmethod
+    def _completeness_ledger_section(merged_extraction: Dict[str, Any]) -> str:
+        """Render the diagnostic construct inventory in verification output.
+
+        This section is intentionally absent from the business report. It
+        reports construct disposition without turning technical operations
+        into business rules.
+        """
+        ledger = merged_extraction.get("completeness_ledger") or {}
+        if not isinstance(ledger, dict) or not ledger.get("items"):
+            return ""
+        counts = ledger.get("status_counts") or {}
+        lines = [
+            "## Completeness Ledger",
+            "",
+            f"- **Executable constructs:** {ledger.get('construct_count', len(ledger.get('items') or []))}",
+            "- **Disposition:** " + ", ".join(
+                f"{status}={counts.get(status, 0)}"
+                for status in (
+                    "covered_by_rule",
+                    "technical_only",
+                    "parser_failed",
+                    "dynamic_unresolved",
+                    "unsupported",
+                    "uncovered",
+                )
+                if counts.get(status, 0)
+            ),
+            "",
+            "| Construct | Status | Source location | Statement / chunk | Evidence |",
+            "|---|---|---|---|---|",
+        ]
+        for item in ledger.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            location = ""
+            if item.get("line_start") is not None:
+                location = f"Lines {item.get('line_start')}-{item.get('line_end', item.get('line_start'))}"
+            if item.get("source_file"):
+                location = f"{item.get('source_file')} / {location}" if location else str(item.get("source_file"))
+            references = ", ".join(
+                str(item.get(key) or "")
+                for key in ("statement_id", "source_statement_id", "source_chunk_id", "chunk_id")
+                if item.get(key)
+            )
+            evidence = str(item.get("source_text") or "").replace("|", "\\|").replace("\n", " ")
+            lines.append(
+                f"| {item.get('construct_type', '')} | {item.get('status', '')} | {location or 'unavailable'} | "
+                f"{references or 'unavailable'} | {evidence or 'unavailable'} |"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _statement_dependencies_section(merged_extraction: Dict[str, Any]) -> str:
+        graph = merged_extraction.get("statement_dependencies") or {}
+        if not isinstance(graph, dict) or not graph.get("edges") and not graph.get("unresolved"):
+            return ""
+        lines = ["## Confirmed Statement Dependencies", ""]
+        if graph.get("edges"):
+            lines.extend([
+                "The following dependencies are confirmed from exact table/field matches and source order:",
+                "",
+                "| Relationship | From | To | Confidence |",
+                "|---|---|---|---|",
+            ])
+            for edge in graph.get("edges") or []:
+                if not isinstance(edge, dict):
+                    continue
+                before = edge.get("from") or {}
+                after = edge.get("to") or {}
+                lines.append(
+                    f"| {edge.get('type', '')} | {before.get('statement_id', 'unavailable')} / "
+                    f"{before.get('table', 'unavailable')} | {after.get('statement_id', 'unavailable')} / "
+                    f"{after.get('table', 'unavailable')} | {edge.get('confidence', '')} |"
+                )
+        unresolved = graph.get("unresolved") or []
+        if unresolved:
+            lines.extend([
+                "",
+                f"Unresolved dependency candidates: {len(unresolved)}. They were not supplied as confirmed dependencies.",
+            ])
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # 0. Title
@@ -876,7 +966,18 @@ class ReportFormatterAgent:
                     for branch in branches
                     if isinstance(branch, dict)
                 ]
-                lines.extend(self._render_decision_block(rendered_index, [*block_rules, block_rule]))
+                if branches and all(
+                    isinstance(branch, dict) and branch.get("results")
+                    for branch in branches
+                ):
+                    # Canonical branch results already contain the authored
+                    # action; rendering it again creates a blank-condition
+                    # duplicate row in the decision table.
+                    block_rule["action"] = ""
+                # The canonical block already contains the authoritative
+                # ordered branch rows. Rendering the original matched rules
+                # alongside it duplicates every branch in the same table.
+                lines.extend(self._render_decision_block(rendered_index, [block_rule]))
                 lines.append("")
                 consumed_ids.update(str(rule.get("rule_id") or "") for rule in block_rules)
                 rendered_index += 1
@@ -1542,6 +1643,9 @@ class ReportFormatterAgent:
                 f"{self._escape_table_cell(technical_refs_display)} | {self._escape_table_cell(notes)} |"
             )
         lines.append(self._render_split_table(header, rows))
+        branch_traceability = self._decision_chain_traceability_details(merged_extraction)
+        if branch_traceability:
+            lines.extend(["", branch_traceability])
         lines.append("")
         lines.append(
             "_Source evidence is the literal technical text carried through the pipeline; "
@@ -1552,6 +1656,50 @@ class ReportFormatterAgent:
         )
         lines.append("</details>")
         return "\n".join(lines)
+
+    def _decision_chain_traceability_details(self, merged_extraction: Dict[str, Any]) -> str:
+        """Render deterministic branch provenance in the verification artifact."""
+        chains = merged_extraction.get("decision_chains") or []
+        if not isinstance(chains, list):
+            return ""
+        rows: List[str] = []
+        for chain_index, chain in enumerate(chains, start=1):
+            if not isinstance(chain, dict):
+                continue
+            chain_id = str(chain.get("chain_id") or f"decision_chain_{chain_index:03d}")
+            for branch_index, branch in enumerate(chain.get("branches") or [], start=1):
+                if not isinstance(branch, dict):
+                    continue
+                spans = [span for span in branch.get("evidence_spans") or [] if isinstance(span, dict)]
+                span = dict(spans[0]) if spans else {}
+                branch_to_span_key = {
+                    "source_file": "source_file",
+                    "source_char_start": "char_start",
+                    "source_char_end": "char_end",
+                    "source_line_start": "line_start",
+                    "source_line_end": "line_end",
+                    "source_chunk_id": "chunk_id",
+                    "source_statement_id": "statement_id",
+                }
+                for branch_key, span_key in branch_to_span_key.items():
+                    if span_key not in span and branch_key in branch:
+                        span[span_key] = branch[branch_key]
+                span.setdefault("chunk_id", branch.get("source_chunk_id", ""))
+                span.setdefault("statement_id", branch.get("source_statement_id", ""))
+                location = self._format_source_location(span) if span else "Source location unavailable"
+                rows.append(
+                    f"| {self._escape_table_cell(str(branch.get('branch_id') or f'{chain_id}:branch_{branch_index:03d}'))} | "
+                    f"{self._escape_table_cell(str(branch.get('branch_condition') or ''))} | "
+                    f"{self._escape_table_cell(location)} |"
+                )
+        if not rows:
+            return ""
+        return (
+            "### Decision-Chain Branch Provenance\n\n"
+            "| Branch | Condition | Source Location |\n"
+            "|---|---|---|\n"
+            + "\n".join(rows)
+        )
 
     def _dedupe_technical_references(
         self, refs: List[str], merged_extraction: Dict[str, Any], limit: int = 6, max_len: int = 200
@@ -2006,7 +2154,12 @@ class ReportFormatterAgent:
         if not isinstance(quality, dict) or not quality:
             return ""
 
-        coverage = quality.get("coverage") or merged_extraction.get("reconciliation", {}).get("coverage") or {}
+        coverage = (
+            quality.get("coverage")
+            or merged_extraction.get("coverage")
+            or merged_extraction.get("reconciliation", {}).get("coverage")
+            or {}
+        )
         contradictions = quality.get("contradictions") or merged_extraction.get("reconciliation", {}).get("contradictions") or []
         factors = quality.get("factors") or {}
         status = str(quality.get("status") or "LOW_CONFIDENCE").upper()
@@ -2036,6 +2189,34 @@ class ReportFormatterAgent:
                 else ""
             )
         )
+        chain_count = coverage.get("decision_chain_count")
+        if chain_count:
+            lines.append(
+                f"- **Decision-chain coverage:** {coverage.get('decision_chain_covered_branches', 0)} / "
+                f"{coverage.get('decision_chain_total_branches', 0)} branches"
+                + (
+                    f" ({coverage.get('decision_chain_coverage_pct')}%)"
+                    if coverage.get("decision_chain_coverage_pct") is not None
+                    else ""
+                )
+            )
+        elif chain_count == 0:
+            lines.append("- **Decision-chain coverage:** Not applicable (no deterministic decision chains detected)")
+        chain_gaps = coverage.get("decision_chain_coverage_gaps") or []
+        if chain_gaps:
+            gap_conditions = [
+                str(gap.get("branch_condition") or "unlabeled branch").strip()
+                for gap in chain_gaps[:5]
+                if isinstance(gap, dict)
+            ]
+            gap_detail = ", ".join(f"`{condition}`" for condition in gap_conditions)
+            if len(chain_gaps) > len(gap_conditions):
+                gap_detail += f", and {len(chain_gaps) - len(gap_conditions)} more"
+            gap_status = "require review" if review_required else "detected"
+            lines.append(
+                f"- **Decision-chain coverage gaps:** {len(chain_gaps)} branch(es) {gap_status}"
+                + (f" ({gap_detail})" if gap_detail else "")
+            )
         lines.append(f"- **Conflicts:** {coverage.get('conflicts', 0)}")
         lines.append(f"- **Contradictions:** {coverage.get('contradictions', len(contradictions) if isinstance(contradictions, list) else 0)}")
         lines.append(f"- **Review required items:** {coverage.get('review_required_items', 0)}")

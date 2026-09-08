@@ -79,6 +79,12 @@ class SynthesisResult:
 _BASE_SYNTHESIS_TOKENS = int(os.environ.get("BASE_SYNTHESIS_TOKENS", "16000"))
 _PER_DECISION_POINT_TOKENS = int(os.environ.get("PER_DECISION_POINT_TOKENS", "256"))
 _HARD_MAX_OUTPUT_TOKENS = int(os.environ.get("LLM_HARD_MAX_OUTPUT_TOKENS", "32768"))
+_SYNTHESIS_EVIDENCE_MAP_MAX_CHARS = int(
+    os.environ.get("SYNTHESIS_EVIDENCE_MAP_MAX_CHARS", "12000")
+)
+_SYNTHESIS_EVIDENCE_TEXT_MAX_CHARS = int(
+    os.environ.get("SYNTHESIS_EVIDENCE_TEXT_MAX_CHARS", "240")
+)
 
 
 class RuleSynthesizerAgent:
@@ -150,6 +156,7 @@ class RuleSynthesizerAgent:
         compact_merged_extraction = self._build_compact_synthesis_payload(
             merged_extraction,
             raw_source=raw_source,
+            source_name=object_name,
         )
         user_prompt = render_user_prompt(
             prompt_set["user_template"],
@@ -521,6 +528,7 @@ class RuleSynthesizerAgent:
         compact_merged_extraction = self._build_compact_synthesis_payload(
             merged_extraction,
             raw_source=raw_source,
+            source_name=object_name,
         )
         gap_lines = []
         for gap in gaps:
@@ -652,6 +660,7 @@ class RuleSynthesizerAgent:
     def _build_compact_synthesis_payload(
         merged_extraction: Dict[str, Any],
         raw_source: str = "",
+        source_name: str = "",
     ) -> Dict[str, Any]:
         """Return only the technical facts the synthesis prompt can use.
 
@@ -676,6 +685,16 @@ class RuleSynthesizerAgent:
         payload = OrderedDict()
         payload["conditions"] = merged_extraction.get("conditions", []) or []
         payload["decision_chains"] = merged_extraction.get("decision_chains", []) or []
+        dependency_graph = merged_extraction.get("statement_dependencies") or {}
+        if isinstance(dependency_graph, dict):
+            payload["statement_dependencies"] = {
+                "version": dependency_graph.get("version", "1"),
+                "edges": dependency_graph.get("edges", []) or [],
+            }
+        payload["decision_chain_evidence_map"] = RuleSynthesizerAgent._build_decision_chain_evidence_map(
+            merged_extraction.get("decision_chains", []) or [],
+            source_name=source_name,
+        )
         payload["loops"] = merged_extraction.get("loops", []) or []
 
         raw_table_operations = merged_extraction.get("table_operations", []) or []
@@ -704,6 +723,191 @@ class RuleSynthesizerAgent:
         if str(raw_source or "").strip():
             payload["source_sql"] = str(raw_source)
         return payload
+
+    @staticmethod
+    def _compact_evidence_text(value: Any, limit: int = _SYNTHESIS_EVIDENCE_TEXT_MAX_CHARS) -> str:
+        text = " ".join(str(value or "").split())
+        if len(text) <= limit:
+            return text
+        return text[: max(1, limit - 3)].rstrip() + "..."
+
+    @staticmethod
+    def _compact_evidence_location(item: Dict[str, Any]) -> Dict[str, Any]:
+        spans = [span for span in item.get("evidence_spans", []) or [] if isinstance(span, dict)]
+        line_start = item.get("source_line_start", -1)
+        line_end = item.get("source_line_end", -1)
+        char_start = item.get("source_char_start", -1)
+        char_end = item.get("source_char_end", -1)
+        if spans:
+            line_values = [span.get("line_start", -1) for span in spans if span.get("line_start", -1) >= 0]
+            line_ends = [span.get("line_end", -1) for span in spans if span.get("line_end", -1) >= 0]
+            char_values = [span.get("char_start", -1) for span in spans if span.get("char_start", -1) >= 0]
+            char_ends = [span.get("char_end", -1) for span in spans if span.get("char_end", -1) >= 0]
+            if line_start in (None, -1) and line_values:
+                line_start = min(line_values)
+            if line_end in (None, -1) and line_ends:
+                line_end = max(line_ends)
+            if char_start in (None, -1) and char_values:
+                char_start = min(char_values)
+            if char_end in (None, -1) and char_ends:
+                char_end = max(char_ends)
+        location: Dict[str, Any] = {}
+        if isinstance(line_start, int) and isinstance(line_end, int) and line_start >= 0 and line_end >= 0:
+            location["lines"] = f"{line_start}-{line_end}"
+        if isinstance(char_start, int) and isinstance(char_end, int) and char_start >= 0 and char_end >= 0:
+            location["chars"] = f"{char_start}-{char_end}"
+        return location
+
+    @staticmethod
+    def _build_decision_chain_evidence_map(
+        chains: Any,
+        source_name: str = "",
+    ) -> Dict[str, Any]:
+        """Build a bounded, deterministic branch evidence view for synthesis.
+
+        This is deliberately a data summary, not a second extraction model:
+        it preserves branch order, source anchors, affected fields, and parse
+        risk while excluding arbitrary provenance payloads and raw SQL text.
+        """
+        if not isinstance(chains, list):
+            chains = []
+        compact_chains: List[Dict[str, Any]] = []
+        for chain_index, chain in enumerate(chains):
+            if not isinstance(chain, dict):
+                continue
+            branches = chain.get("branches") or []
+            if not isinstance(branches, list):
+                branches = []
+            chain_fields: List[str] = []
+            chain_statement_ids: List[str] = []
+            compact_branches: List[Dict[str, Any]] = []
+            for branch_index, branch in enumerate(branches):
+                if not isinstance(branch, dict):
+                    continue
+                assignments = branch.get("assignments") or []
+                if not isinstance(assignments, list):
+                    assignments = []
+                outcomes: List[Dict[str, str]] = []
+                branch_fields: List[str] = []
+                statement_ids: List[str] = []
+                for assignment in assignments:
+                    if not isinstance(assignment, dict):
+                        continue
+                    field_name = str(assignment.get("field") or "").strip()
+                    value = str(assignment.get("value") or "").strip()
+                    if field_name:
+                        branch_fields.append(field_name)
+                        outcomes.append({
+                            "field": RuleSynthesizerAgent._compact_evidence_text(field_name),
+                            "value": RuleSynthesizerAgent._compact_evidence_text(value),
+                        })
+                spans = [span for span in branch.get("evidence_spans", []) or [] if isinstance(span, dict)]
+                for candidate in [branch, *spans]:
+                    statement_id = str(
+                        candidate.get("source_statement_id")
+                        or candidate.get("statement_id")
+                        or ""
+                    ).strip()
+                    if statement_id and statement_id not in statement_ids:
+                        statement_ids.append(statement_id)
+                for field_name in branch_fields:
+                    if field_name not in chain_fields:
+                        chain_fields.append(field_name)
+                for statement_id in statement_ids:
+                    if statement_id not in chain_statement_ids:
+                        chain_statement_ids.append(statement_id)
+                branch_item: Dict[str, Any] = {
+                    "branch": branch.get("branch_id") or f"branch_{branch_index + 1:03d}",
+                    "condition": RuleSynthesizerAgent._compact_evidence_text(
+                        branch.get("branch_condition") or branch.get("condition") or ""
+                    ),
+                    "fallback": bool(branch.get("is_catch_all"))
+                    or str(branch.get("branch_condition") or "").strip().upper() in {"ELSE", "OTHERWISE"},
+                    "outcomes": outcomes,
+                    "fields": branch_fields,
+                    "statement_ids": statement_ids,
+                }
+                location = RuleSynthesizerAgent._compact_evidence_location(branch)
+                if location:
+                    branch_item["location"] = location
+                compact_branches.append(branch_item)
+
+            status = str(
+                chain.get("parse_status")
+                or chain.get("status")
+                or ("unsupported" if chain.get("unsupported") else "parsed")
+            ).strip().lower()
+            unresolved = []
+            for key in ("unresolved", "unresolved_fragments", "ambiguities", "parse_warnings", "unsupported_constructs"):
+                values = chain.get(key) or []
+                if isinstance(values, str):
+                    values = [values]
+                if isinstance(values, list):
+                    unresolved.extend(
+                        RuleSynthesizerAgent._compact_evidence_text(value)
+                        for value in values
+                        if str(value or "").strip()
+                    )
+            chain_item: Dict[str, Any] = {
+                "chain": chain.get("chain_id") or f"decision_chain_{chain_index + 1:03d}",
+                "source": RuleSynthesizerAgent._compact_evidence_text(
+                    chain.get("source_identifier") or chain.get("source_file") or source_name
+                ),
+                "type": RuleSynthesizerAgent._compact_evidence_text(chain.get("chain_type") or ""),
+                "branches": compact_branches,
+                "affected_fields": chain_fields,
+                "statement_ids": chain_statement_ids,
+                "parse_status": status or "unresolved",
+            }
+            chain_location = RuleSynthesizerAgent._compact_evidence_location(chain)
+            if chain_location:
+                chain_item["location"] = chain_location
+            if unresolved:
+                chain_item["unresolved"] = list(dict.fromkeys(unresolved))
+            compact_chains.append(chain_item)
+
+        evidence_map: Dict[str, Any] = {
+            "format": "decision_chain_evidence_v1",
+            "chains": compact_chains,
+        }
+        serialized = json.dumps(evidence_map, separators=(",", ":"), ensure_ascii=True, default=str)
+        if len(serialized) <= _SYNTHESIS_EVIDENCE_MAP_MAX_CHARS:
+            return evidence_map
+
+        # Keep every branch anchor but drop optional detail first. This makes
+        # the bound predictable for unusually large procedures without
+        # silently pretending omitted provenance was unavailable.
+        for chain_item in compact_chains:
+            chain_item.pop("unresolved", None)
+            chain_item.pop("statement_ids", None)
+            for branch_item in chain_item.get("branches", []):
+                branch_item.pop("outcomes", None)
+                branch_item.pop("statement_ids", None)
+                branch_item["bounded_detail"] = True
+        evidence_map["bounded"] = True
+        evidence_map["bound_chars"] = _SYNTHESIS_EVIDENCE_MAP_MAX_CHARS
+        total_chain_count = len(compact_chains)
+        total_branch_count = sum(len(item.get("branches", [])) for item in compact_chains)
+        omitted_branch_count = 0
+        while (
+            len(json.dumps(evidence_map, separators=(",", ":"), ensure_ascii=True, default=str))
+            > _SYNTHESIS_EVIDENCE_MAP_MAX_CHARS
+            and evidence_map["chains"]
+        ):
+            last_chain = evidence_map["chains"][-1]
+            if last_chain.get("branches"):
+                last_chain["branches"].pop()
+                omitted_branch_count += 1
+            else:
+                omitted_branch_count += len(last_chain.get("branches", []))
+                evidence_map["chains"].pop()
+        if len(evidence_map["chains"]) < total_chain_count:
+            evidence_map["omitted_chain_count"] = total_chain_count - len(evidence_map["chains"])
+        if omitted_branch_count:
+            evidence_map["omitted_branch_count"] = omitted_branch_count
+        if total_branch_count == 0 and len(evidence_map["chains"]) < total_chain_count:
+            evidence_map["omitted_branch_count"] = 0
+        return evidence_map
 
     @staticmethod
     def _remove_operational_status_rules(

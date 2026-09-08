@@ -637,6 +637,18 @@ def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[D
     blocks: List[Dict[str, Any]] = []
     if not isinstance(chains, list):
         return blocks
+
+    def _condition_matches(source: Any, candidate: Any) -> bool:
+        source_text = str(source or "").strip()
+        candidate_text = str(candidate or "").strip()
+        if source_text.casefold() == candidate_text.casefold():
+            return True
+        source_tokens = _decision_chain_tokens(source_text)
+        candidate_tokens = _decision_chain_tokens(candidate_text)
+        return bool(source_tokens and candidate_tokens) and (
+            source_tokens <= candidate_tokens or candidate_tokens <= source_tokens
+        )
+
     for chain_index, chain in enumerate(chains, start=1):
         branches = chain.get("branches") if isinstance(chain, dict) else None
         if not isinstance(branches, list):
@@ -653,20 +665,11 @@ def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[D
                 if isinstance(row, dict)
             ]
             candidates = [rule.condition, *row_conditions, *rule.evidence]
-            branch_matches = [index for index, condition in enumerate(conditions) if any(
-                (
-                    str(condition).strip().casefold() == "else"
-                    and str(candidate).strip().casefold() == "else"
-                )
-                or (
-                    _decision_chain_tokens(condition)
-                    and (
-                        _decision_chain_tokens(condition) <= _decision_chain_tokens(candidate)
-                        or _decision_chain_tokens(candidate) <= _decision_chain_tokens(condition)
-                    )
-                )
-                for candidate in candidates if str(candidate or "").strip()
-            )]
+            branch_matches = [
+                index
+                for index, condition in enumerate(conditions)
+                if any(_condition_matches(condition, candidate) for candidate in candidates)
+            ]
             if branch_matches:
                 matched.append(rule)
                 rule_branch_matches[rule.rule_id] = branch_matches
@@ -681,6 +684,7 @@ def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[D
                 branch_rule_ids[branch_index].append(rule.rule_id)
 
         for branch_index, condition in enumerate(conditions):
+            branch = branches[branch_index]
             results: List[Any] = []
             for rule in matched:
                 if branch_index not in rule_branch_matches[rule.rule_id]:
@@ -690,10 +694,7 @@ def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[D
                     if not isinstance(row, dict):
                         continue
                     row_condition = str(row.get("condition") or "")
-                    if _decision_chain_tokens(condition) and not (
-                        _decision_chain_tokens(condition) <= _decision_chain_tokens(row_condition)
-                        or _decision_chain_tokens(row_condition) <= _decision_chain_tokens(condition)
-                    ) and row_condition.strip().casefold() != condition.strip().casefold():
+                    if not _condition_matches(condition, row_condition):
                         continue
                     row_results.extend(row.get("assignments") or [])
                     if row.get("outcome") not in (None, ""):
@@ -707,6 +708,9 @@ def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[D
                 "condition": condition,
                 "rule_ids": list(branch_rule_ids[branch_index]),
                 "results": results,
+                "chain_id": str(chain.get("chain_id") or ""),
+                "branch_id": str(branch.get("branch_id") or ""),
+                "provenance": [dict(span) for span in (branch.get("evidence_spans") or []) if isinstance(span, dict)],
             })
 
         names = [rule.extra.get("rule_name") or "" for rule in matched]
@@ -773,6 +777,7 @@ class CanonicalBusinessIR:
     statements: List[StatementIR] = field(default_factory=list)
     table_operations: List[TableOperationIR] = field(default_factory=list)
     business_rules: List[BusinessRuleIR] = field(default_factory=list)
+    decision_chains: List[Dict[str, Any]] = field(default_factory=list)
     decision_blocks: List[Dict[str, Any]] = field(default_factory=list)
     calculations: List[Dict[str, Any]] = field(default_factory=list)
     exceptions: List[str] = field(default_factory=list)
@@ -827,6 +832,18 @@ class CanonicalBusinessIR:
                 extract_procedural_decision_chains(source_text),
             )
         decision_blocks = _build_decision_blocks(business_rules, chains)
+        decision_chains = [
+            {
+                **chain,
+                "branches": [
+                    dict(branch)
+                    for branch in (chain.get("branches") or [])
+                    if isinstance(branch, dict)
+                ],
+            }
+            for chain in (chains or [])
+            if isinstance(chain, dict)
+        ] if isinstance(chains, list) else []
         calculations = _attach_calculation_destinations(
             [dict(item) for item in _dict_list(synthesis.data.get("calculations"))],
             table_operations,
@@ -843,6 +860,7 @@ class CanonicalBusinessIR:
             statements=statements,
             table_operations=table_operations,
             business_rules=business_rules,
+            decision_chains=decision_chains,
             decision_blocks=decision_blocks,
             calculations=calculations,
             exceptions=exceptions,
@@ -863,6 +881,7 @@ class CanonicalBusinessIR:
             "statements": [item.to_dict() for item in self.statements],
             "table_operations": [item.to_dict() for item in self.table_operations],
             "business_rules": [item.to_dict() for item in self.business_rules],
+            "decision_chains": [dict(item) for item in self.decision_chains],
             "calculations": [dict(item) for item in self.calculations],
             "exceptions": list(self.exceptions),
             "ambiguities": list(self.ambiguities),
@@ -884,6 +903,7 @@ class CanonicalBusinessIR:
                 "tables_read": reads,
                 "tables_written": writes,
                 "table_operations": [row.to_dict() for row in self.table_operations],
+                "decision_chains": [dict(item) for item in self.decision_chains],
                 "statement_provenance": [item.to_dict() for item in self.statements],
                 "chunk_provenance": [dict(item) for item in self.chunk_provenance],
                 "ambiguities": list(self.ambiguities),

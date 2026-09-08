@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -14,7 +14,14 @@ from src.dialect.detector import AMBIGUOUS, UNKNOWN, UNSUPPORTED, detect_dialect
 from src.ingestion.guardrails import run_input_guardrails
 from src.core.llm_client import load_llm_config
 from pipeline import LogicRulesExtractorPipeline, supported_analysis_dialect
+from src.ir.canonical_ir import CanonicalBusinessIR
 from src.parsing.technical_sql_ops import extract_table_operations_from_chunks, split_table_operations
+from src.validation.reconciliation import (
+    _condition_space,
+    _parse_structured_assignment,
+    _parse_structured_comparison,
+    reconcile_deterministic_evidence,
+)
 
 from .metrics import (
     CaseResult,
@@ -58,6 +65,7 @@ class ActualArtifacts:
     important_fields: List[str]
     source_issues: List[str]
     parser_mode: str
+    field_aliases: Dict[str, str] = field(default_factory=dict)
 
 
 def load_manifest(manifest_path: Path = MANIFEST_PATH) -> List[GoldenCase]:
@@ -140,6 +148,7 @@ def run_deterministic_artifacts(sql_path: Path, dialect_hint: str) -> ActualArti
         important_fields=important_fields,
         source_issues=list(guard_result.warnings + guard_result.injection_flags),
         parser_mode="deterministic",
+        field_aliases=_derive_field_aliases(table_ops),
     )
 
 
@@ -184,6 +193,29 @@ def run_live_artifacts(sql_path: Path, dialect_hint: str) -> ActualArtifacts:
         dialect=analysis_dialect or ingestion.dialect,
         raw_source=ingestion.raw_code,
     )
+    # The live evaluator must measure the same safety boundary as production:
+    # deterministic reconciliation and canonical normalization happen before
+    # report/evaluation artifacts are compared.  Comparing raw model JSON here
+    # counted duplicate variants and ungrounded claims that production would
+    # classify and expose through verification diagnostics.
+    reconciliation = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged_extraction,
+        synthesis=synthesis,
+    )
+    merged_extraction["reconciliation"] = reconciliation.to_dict()
+    merged_extraction["coverage"] = reconciliation.coverage
+    merged_extraction["quality"] = reconciliation.quality
+    synthesis.data["reconciliation"] = reconciliation.to_dict()
+    synthesis.data["coverage"] = reconciliation.coverage
+    synthesis.data["quality"] = reconciliation.quality
+    canonical_ir = CanonicalBusinessIR.from_pipeline(
+        ingestion=ingestion,
+        merged_extraction=merged_extraction,
+        synthesis=synthesis,
+        reconciliation=reconciliation,
+        run_metadata=run_metadata,
+    )
     keep_merge_target = any(
         str(rule.get("condition", "")).strip().lower() in {"source row matches target", "source row does not match target"}
         or "source row matches target" in str(rule.get("condition", "")).strip().lower()
@@ -195,13 +227,15 @@ def run_live_artifacts(sql_path: Path, dialect_hint: str) -> ActualArtifacts:
         ingestion=ingestion,
         merged_extraction=merged_extraction,
         synthesis=synthesis,
+        canonical_ir=canonical_ir,
         extraction_guardrail_warnings=[],
         run_metadata=run_metadata,
     )
+    canonical_rules = [rule.to_dict() for rule in canonical_ir.business_rules]
     important_fields = _derive_important_fields(
         ingestion,
         reads + writes,
-        synthesis.data.get("business_rules", []) or [],
+        canonical_rules,
     )
     reportable_ops = _reportable_operations(table_ops)
     return ActualArtifacts(
@@ -212,12 +246,30 @@ def run_live_artifacts(sql_path: Path, dialect_hint: str) -> ActualArtifacts:
         tables_read=reads,
         tables_written=writes,
         operations=[{"operation": op.get("operation"), "table": op.get("table")} for op in reportable_ops],
-        business_rules=list(synthesis.data.get("business_rules", []) or []),
+        business_rules=canonical_rules,
         ambiguities=list(synthesis.data.get("ambiguities", []) or []) + list(ingestion.parse_warnings),
         important_fields=important_fields,
         source_issues=[],
         parser_mode="live",
+        field_aliases=_derive_field_aliases(table_ops),
     )
+
+
+def _derive_field_aliases(table_operations: Sequence[Dict[str, Any]]) -> Dict[str, str]:
+    """Return only source-proven intermediate-variable to column mappings."""
+    aliases: Dict[str, str] = {}
+    for row in table_operations or []:
+        if str(row.get("operation") or "").upper() not in {"INSERT", "UPDATE", "MERGE"}:
+            continue
+        for assignment in row.get("assigned_values") or []:
+            if not isinstance(assignment, dict):
+                continue
+            target = normalize_identifier(assignment.get("column") or assignment.get("target_column"))
+            expression = normalize_identifier(assignment.get("expression"))
+            if not target or not expression or not re.fullmatch(r"[A-Z_][A-Z0-9_$#]*", expression):
+                continue
+            aliases.setdefault(expression, target)
+    return aliases
 
 
 def _reportable_operations(table_operations: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -705,53 +757,262 @@ def _rule_signature_candidates(rule: Dict[str, Any]) -> List[Tuple[str, str, str
     return deduped
 
 
-def _compare_business_rules(expected_rules: Sequence[Dict[str, Any]], actual_rules: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    expected_candidates: List[Tuple[str, str, str]] = []
-    for rule in expected_rules or []:
-        expected_candidates.append(
-            (
-                normalize_text(rule.get("condition")),
-                normalize_text(rule.get("action")),
-                normalize_text(rule.get("output_field")),
-            )
+_SEMANTIC_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "by", "for", "from", "if", "in", "into", "is",
+    "it", "of", "on", "or", "row", "rows", "set", "sets", "setting", "the", "then", "to",
+    "update", "updates", "updated", "with", "when", "where", "this", "that", "account", "record",
+    "days", "day", "value", "values", "field", "fields", "based", "upon", "specified", "only",
+}
+
+
+def _semantic_condition(text: Any) -> Optional[Tuple[str, str, str]]:
+    """Parse SQL or a small, deterministic natural-language condition subset."""
+    raw = normalize_text(text)
+    if not raw:
+        return None
+    if raw in {"else", "otherwise", "default", "all other cases"}:
+        return ("__catch_all__", "", "")
+    if raw in {"source row matches target", "when matched", "matched"}:
+        return ("__merge__", "matched", "")
+    if raw in {"source row does not match target", "when not matched", "not matched"}:
+        return ("__merge__", "not_matched", "")
+    if "non-matching" in raw or "not matched" in raw:
+        return ("__merge__", "not_matched", "")
+
+    parsed = _parse_structured_comparison(raw)
+    if parsed:
+        lhs = normalize_identifier(parsed.get("lhs")).replace(" ", "_")
+        if parsed.get("op") == "=" and "target" in normalize_text(parsed.get("lhs")) and "src" in normalize_text(parsed.get("rhs")):
+            return ("__merge__", "matched", "")
+        return (
+            lhs,
+            normalize_text(parsed.get("op")),
+            normalize_text(parsed.get("rhs")),
         )
 
-    actual_candidates: List[Tuple[str, str, str]] = []
-    for rule in actual_rules or []:
-        actual_candidates.extend(_rule_signature_candidates(rule))
+    compact = raw.replace("_", " ")
+    implicit_between = re.match(r"^(?P<low>\d+(?:\.\d+)?)\s*(?:to|-)\s*(?P<high>\d+(?:\.\d+)?)\s+days?\b", compact)
+    if implicit_between:
+        return ("__implicit__", "between", f"{implicit_between.group('low')}..{implicit_between.group('high')}")
+    implicit_comparison = re.match(
+        r"^(?P<op><=|>=|<|>)\s*(?P<rhs>\d+(?:\.\d+)?)\s+days?\b|^(?P<word>more than|over|at most|at least|less than)\s+(?P<word_rhs>\d+(?:\.\d+)?)\s+days?\b",
+        compact,
+    )
+    if implicit_comparison:
+        if implicit_comparison.group("op"):
+            return ("__implicit__", implicit_comparison.group("op"), implicit_comparison.group("rhs"))
+        word = implicit_comparison.group("word")
+        operator = ">" if word in {"more than", "over"} else ">=" if word == "at least" else "<=" if word == "at most" else "<"
+        return ("__implicit__", operator, implicit_comparison.group("word_rhs"))
+    null_match = re.match(r"^(?P<lhs>[a-z0-9 .]+?)\s+(?:is\s+)?(?P<negated>not\s+)?(?:null|missing|empty)$", compact)
+    if null_match:
+        return (
+            normalize_identifier(null_match.group("lhs")).replace(" ", "_"),
+            "isnotnull" if null_match.group("negated") else "isnull",
+            "null",
+        )
+
+    between = re.search(r"(?P<lhs>[a-z0-9 .]+?)\s+(?:is\s+)?between\s+(?P<low>\d+(?:\.\d+)?)\s+and\s+(?P<high>\d+(?:\.\d+)?)", compact)
+    if between:
+        return (
+            normalize_identifier(between.group("lhs")).replace(" ", "_"),
+            "between",
+            f"{between.group('low')}..{between.group('high')}",
+        )
+
+    patterns = (
+        (r"(?P<lhs>[a-z0-9 .]+?)\s+(?:is\s+)?(?:greater than|more than|exceeds|over)\s+(?P<rhs>\d+(?:\.\d+)?)", ">"),
+        (r"(?P<lhs>[a-z0-9 .]+?)\s+(?:is\s+)?(?:at least|greater than or equal to)\s+(?P<rhs>\d+(?:\.\d+)?)", ">="),
+        (r"(?P<lhs>[a-z0-9 .]+?)\s+(?:is\s+)?(?:less than|under)\s+(?P<rhs>\d+(?:\.\d+)?)", "<"),
+        (r"(?P<lhs>[a-z0-9 .]+?)\s+(?:is\s+)?(?:at most|less than or equal to)\s+(?P<rhs>\d+(?:\.\d+)?)", "<="),
+    )
+    for pattern, operator in patterns:
+        match = re.search(pattern, compact)
+        if match:
+            return (normalize_identifier(match.group("lhs")).replace(" ", "_"), operator, match.group("rhs"))
+    return None
+
+
+def _semantic_field_set(value: Any, aliases: Optional[Dict[str, str]] = None) -> set[str]:
+    aliases = {normalize_identifier(k): normalize_identifier(v) for k, v in (aliases or {}).items()}
+    values = value if isinstance(value, list) else re.split(r"[,;]", str(value or ""))
+    result: set[str] = set()
+    for item in values:
+        key = normalize_identifier(item)
+        if not key:
+            continue
+        result.add(key)
+        seen = set()
+        while key in aliases and key not in seen:
+            seen.add(key)
+            key = aliases[key]
+            result.add(key)
+    return result
+
+
+def _semantic_outcome_tokens(text: Any) -> Optional[set[str]]:
+    original = str(text or "").strip()
+    raw = normalize_text(text)
+    if not raw:
+        return None
+    assignment = _parse_structured_assignment(raw)
+    if assignment:
+        raw = normalize_text(assignment.get("rhs"))
+    raw = raw.replace("_", " ").replace("-", " ")
+    raw = re.sub(r"\b(?:is|are|was|were|becomes?|become|classified|classification|status|field|value)\b", " ", raw)
+    synonyms = {"pct": "percentage", "provisioning": "provision", "amount": "amount"}
+    tokens = set()
+    for token in re.findall(r"[a-z][a-z0-9]*|\d+(?:\.\d+)?", raw):
+        token = synonyms.get(token, token)
+        if token not in _SEMANTIC_STOP_WORDS:
+            tokens.add(token)
+    for token in re.findall(r"\b[A-Z]\b", original):
+        tokens.add(token.lower())
+    return tokens or None
+
+
+def _semantic_rule_candidates(rule: Dict[str, Any], aliases: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
+    rows = [row for row in rule.get("decision_logic_rows") or [] if isinstance(row, dict)]
+    fields = list(rule.get("fields_affected") or [])
+    if rule.get("output_field"):
+        fields.append(rule.get("output_field"))
+    if rows:
+        candidates = []
+        for row in rows:
+            condition = row.get("condition") or row.get("when") or row.get("if")
+            outcome = row.get("outcome") or row.get("then") or row.get("result")
+            if condition and outcome:
+                candidates.append({
+                    "condition": condition,
+                    "action": outcome,
+                    "outcome": outcome,
+                    "fields": fields,
+                    "rule": rule,
+                })
+        return candidates
+    return [{
+        "condition": rule.get("condition"),
+        "action": rule.get("action"),
+        "outcome": rule.get("action"),
+        "fields": fields,
+        "rule": rule,
+    }]
+
+
+def _semantic_condition_match(expected: Any, actual: Any) -> Optional[bool]:
+    left = _semantic_condition(expected)
+    right = _semantic_condition(actual)
+    if left is None or right is None:
+        return None
+    if left[0] == "__implicit__" or right[0] == "__implicit__":
+        return left[1:] == right[1:]
+    return left == right
+
+
+def _semantic_outcome_match(expected: Any, actual: Any) -> Optional[bool]:
+    left = _semantic_outcome_tokens(expected)
+    right = _semantic_outcome_tokens(actual)
+    if left is None or right is None:
+        return None
+    return left.issubset(right) or right.issubset(left)
+
+
+def _compare_business_rules(
+    expected_rules: Sequence[Dict[str, Any]],
+    actual_rules: Sequence[Dict[str, Any]],
+    field_aliases: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    expected_candidates = [candidate for rule in expected_rules or [] for candidate in _semantic_rule_candidates(rule, field_aliases)]
+    actual_candidates = [candidate for rule in actual_rules or [] for candidate in _semantic_rule_candidates(rule, field_aliases)]
 
     matched_indices: set[int] = set()
-    matches: List[Tuple[str, str, str]] = []
-    missing: List[Tuple[str, str, str]] = []
+    matches: List[Dict[str, Any]] = []
+    missing: List[Dict[str, Any]] = []
+    classifications: List[Dict[str, Any]] = []
     for expected in expected_candidates:
-        found_index = -1
+        condition_matches = []
         for index, actual in enumerate(actual_candidates):
             if index in matched_indices:
                 continue
-            if expected[0] != actual[0] or expected[1] != actual[1]:
+            condition_matches.append((index, _semantic_condition_match(expected["condition"], actual["condition"])))
+        exact = None
+        for index, condition_match in condition_matches:
+            if condition_match is not True:
                 continue
-            if expected[2] and expected[2] != actual[2]:
-                continue
-            found_index = index
-            break
-        if found_index >= 0:
-            matched_indices.add(found_index)
+            actual = actual_candidates[index]
+            outcome_match = _semantic_outcome_match(expected["outcome"], actual["outcome"])
+            expected_fields = _semantic_field_set(expected.get("fields"), field_aliases)
+            actual_fields = _semantic_field_set(actual.get("fields"), field_aliases)
+            field_match = not expected_fields or bool(expected_fields & actual_fields)
+            if outcome_match is True and field_match:
+                exact = index
+                break
+        if exact is not None:
+            matched_indices.add(exact)
             matches.append(expected)
-        else:
-            missing.append(expected)
+            continue
 
-    unexpected = [candidate for index, candidate in enumerate(actual_candidates) if index not in matched_indices]
-    precision = len(matches) / len(actual_candidates) if actual_candidates else None
-    recall = len(matches) / len(expected_candidates) if expected_candidates else None
+        condition_true = any(value is True for _, value in condition_matches)
+        condition_actuals = [
+            actual_candidates[index]
+            for index, value in condition_matches
+            if value is True
+        ]
+        outcome_true = any(
+            _semantic_outcome_match(expected["outcome"], actual["outcome"]) is True
+            for actual in condition_actuals
+        )
+        classification = "MISSING_BRANCH" if expected.get("condition") and str(expected.get("condition")).lower() in {"else", "otherwise"} and not condition_true else "MISSING_RULE"
+        if condition_true and not outcome_true:
+            classification = "WRONG_OUTCOME"
+        elif condition_true and outcome_true:
+            classification = "WRONG_FIELD"
+        elif any(value is None for _, value in condition_matches):
+            classification = "OTHER_EVALUATOR_LIMITATION"
+        else:
+            expected_condition = _semantic_condition(expected.get("condition"))
+            for actual, value in zip(actual_candidates, [v for _, v in condition_matches]):
+                if value is not False:
+                    continue
+                actual_condition = _semantic_condition(actual.get("condition"))
+                if not expected_condition or not actual_condition:
+                    continue
+                if expected_condition[0] == actual_condition[0]:
+                    if expected_condition[1] != actual_condition[1] and expected_condition[2] == actual_condition[2]:
+                        classification = "WRONG_NULL_SEMANTICS" if expected_condition[1].startswith("is") else "WRONG_OPERATOR"
+                        break
+                    if expected_condition[1] == actual_condition[1] and expected_condition[2] != actual_condition[2]:
+                        classification = "WRONG_DATE_SEMANTICS" if re.search(r"date|timestamp", expected_condition[0], re.IGNORECASE) or re.match(r"\d{4}-\d{2}-\d{2}", expected_condition[2]) else "WRONG_LITERAL"
+                        break
+        missing.append(expected)
+        classifications.append({"type": classification, "expected": expected})
+
+    unexpected = [actual for index, actual in enumerate(actual_candidates) if index not in matched_indices]
+    for actual in unexpected:
+        blob = normalize_text(actual.get("action") or actual.get("rule", {}).get("business_meaning"))
+        if any(term in blob for term in ("audit", "error log", "dynamic sql", "manual review")):
+            classifications.append({"type": "EXTRA_UNSUPPORTED_RULE", "actual": actual})
+        else:
+            classifications.append({"type": "OTHER_EVALUATOR_LIMITATION", "actual": actual})
+
+    hard_failure_types = {
+        "MISSING_RULE", "MISSING_BRANCH", "WRONG_OUTCOME", "WRONG_FIELD", "WRONG_OPERATOR",
+        "WRONG_LITERAL", "WRONG_NULL_SEMANTICS", "WRONG_DATE_SEMANTICS", "EXTRA_UNSUPPORTED_RULE",
+    }
+    semantic_status = "PASS" if not missing and not unexpected else "REVIEW_REQUIRED" if any(
+        item["type"] == "OTHER_EVALUATOR_LIMITATION" for item in classifications
+    ) and not any(item["type"] in hard_failure_types for item in classifications) else "FAIL"
     return {
         "expected": expected_candidates,
         "actual": actual_candidates,
         "matches": matches,
         "missing": missing,
         "unexpected": unexpected,
-        "precision": precision,
-        "recall": recall,
-        "f1": None if precision is None or recall is None or (precision + recall) == 0 else 2 * precision * recall / (precision + recall),
+        "classifications": classifications,
+        "semantic_status": semantic_status,
+        "precision": len(matches) / len(actual_candidates) if actual_candidates else None,
+        "recall": len(matches) / len(expected_candidates) if expected_candidates else None,
+        "f1": None,
     }
 
 
@@ -797,10 +1058,12 @@ def compare_case(expected: Dict[str, Any], actual: ActualArtifacts, live_mode: b
 
     if live_mode:
         checks["business_rules"] = _compare_business_rules(
-            expected.get("business_rules", []), actual.business_rules
+            expected.get("business_rules", []), actual.business_rules, actual.field_aliases
         )
-        if expected.get("business_rules") and checks["business_rules"]["missing"]:
+        if expected.get("business_rules") and checks["business_rules"].get("semantic_status") == "FAIL":
             failures.append("business_rules")
+        elif expected.get("business_rules") and checks["business_rules"].get("semantic_status") == "REVIEW_REQUIRED":
+            failures.append("business_rules_review")
         checks["important_fields"] = compare_sets(expected.get("important_fields", []), actual.important_fields)
         checks["ambiguities"] = compare_sets(expected.get("ambiguities", []), actual.ambiguities)
     else:

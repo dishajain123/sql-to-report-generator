@@ -56,7 +56,12 @@ from src.validation.semantic_validation import (
     merge_decision_chains,
     find_semantic_anomalies,
 )
-from src.validation.coverage_check import find_coverage_gaps, format_gap_for_ambiguity
+from src.validation.coverage_check import (
+    build_completeness_ledger,
+    find_coverage_gaps,
+    format_gap_for_ambiguity,
+)
+from src.validation.dependencies import build_statement_dependencies
 from src.ir.canonical_ir import CanonicalBusinessIR
 from src.core.pipeline_utils import (
     PIPELINE_VERSION,
@@ -130,6 +135,130 @@ def supported_analysis_dialect(ingestion: IngestionResult) -> Optional[str]:
     if dialect in {"oracle", "tsql"}:
         return dialect
     return None
+
+
+def _extract_deterministic_decision_chains(source: str) -> List[Dict[str, Any]]:
+    """Run every deterministic chain extractor before canonical merging.
+
+    The extractors cover complementary procedural shapes.  In particular,
+    nested extraction must not suppress the flat PL/SQL ladder extractor;
+    ``merge_decision_chains`` remains the single deduplication boundary.
+    """
+    return merge_decision_chains(
+        extract_case_assignment_decision_chains(source),
+        extract_nested_decision_chains(source),
+        extract_procedural_decision_chains(source),
+    )
+
+
+def _ranges_overlap(left_start: Any, left_end: Any, right_start: Any, right_end: Any) -> bool:
+    try:
+        left_start, left_end = int(left_start), int(left_end)
+        right_start, right_end = int(right_start), int(right_end)
+    except (TypeError, ValueError):
+        return False
+    if min(left_start, left_end, right_start, right_end) < 0:
+        return False
+    return not (left_end <= right_start or right_end <= left_start)
+
+
+def _annotate_decision_chain_provenance(
+    merged_extraction: Dict[str, Any], ingestion: IngestionResult
+) -> None:
+    """Join extracted branch spans to existing chunks and statements.
+
+    Only exact character/line overlap is used. Missing offsets remain missing;
+    a chunk or statement is never assigned merely because it is nearby.
+    """
+    chains = merged_extraction.get("decision_chains") or []
+    if not isinstance(chains, list):
+        return
+    chunks = list(getattr(ingestion, "chunks", []) or [])
+    statements = list(merged_extraction.get("statement_provenance") or [])
+
+    def overlaps(item: Any, span: Dict[str, Any]) -> bool:
+        if not isinstance(item, dict):
+            start = getattr(item, "source_char_start", -1)
+            end = getattr(item, "source_char_end", -1)
+            line_start = getattr(item, "source_line_start", -1)
+            line_end = getattr(item, "source_line_end", -1)
+        else:
+            start = item.get("source_char_start", item.get("char_start", -1))
+            end = item.get("source_char_end", item.get("char_end", -1))
+            line_start = item.get("source_line_start", item.get("line_start", -1))
+            line_end = item.get("source_line_end", item.get("line_end", -1))
+        if _ranges_overlap(span.get("char_start", -1), span.get("char_end", -1), start, end):
+            return True
+        try:
+            return (
+                int(span.get("line_start", -1)) > 0
+                and int(line_start) > 0
+                and int(span.get("line_end", -1)) >= int(line_start)
+                and int(line_end) >= int(span.get("line_start", -1))
+            )
+        except (TypeError, ValueError):
+            return False
+
+    for chain_index, chain in enumerate(chains, start=1):
+        if not isinstance(chain, dict):
+            continue
+        chain_id = str(chain.get("chain_id") or f"decision_chain_{chain_index:03d}").strip()
+        chain["chain_id"] = chain_id
+        source_identifier = str(
+            getattr(ingestion, "source_filename", "") or getattr(ingestion, "object_id", "") or ""
+        ).strip()
+        if source_identifier:
+            chain["source_identifier"] = source_identifier
+        for branch_index, branch in enumerate(chain.get("branches") or [], start=1):
+            if not isinstance(branch, dict):
+                continue
+            branch_id = str(branch.get("branch_id") or f"{chain_id}:branch_{branch_index:03d}").strip()
+            branch["chain_id"] = chain_id
+            branch["branch_id"] = branch_id
+            spans = [dict(span) for span in branch.get("evidence_spans", []) if isinstance(span, dict)]
+            if not spans:
+                spans = [
+                    {
+                        "char_start": branch.get("source_char_start", -1),
+                        "char_end": branch.get("source_char_end", -1),
+                        "line_start": branch.get("source_line_start", -1),
+                        "line_end": branch.get("source_line_end", -1),
+                        "source_location_status": branch.get("source_location_status", "unavailable"),
+                    }
+                ]
+            enriched_spans = []
+            for span in spans:
+                span["chain_id"] = chain_id
+                span["branch_id"] = branch_id
+                if source_identifier:
+                    span.setdefault("source_identifier", source_identifier)
+                matching_chunks = [chunk for chunk in chunks if overlaps(chunk, span)]
+                matching_statements = [statement for statement in statements if overlaps(statement, span)]
+                if matching_chunks:
+                    span.setdefault("source_file", getattr(matching_chunks[0], "source_filename", ""))
+                    span["chunk_id"] = getattr(matching_chunks[0], "chunk_id", "")
+                if matching_statements:
+                    statement = matching_statements[0]
+                    span["statement_id"] = str(
+                        statement.get("statement_id") or statement.get("source_statement_id") or ""
+                    )
+                    span.setdefault("source_file", statement.get("source_file", ""))
+                enriched_spans.append(span)
+            primary = enriched_spans[0]
+            branch["evidence_spans"] = enriched_spans
+            branch["source_char_start"] = primary.get("char_start", -1)
+            branch["source_char_end"] = primary.get("char_end", -1)
+            branch["source_line_start"] = primary.get("line_start", -1)
+            branch["source_line_end"] = primary.get("line_end", -1)
+            branch["source_location_status"] = primary.get("source_location_status", "unavailable")
+            if source_identifier:
+                branch["source_identifier"] = source_identifier
+            if primary.get("source_file"):
+                branch["source_file"] = primary["source_file"]
+            if primary.get("chunk_id"):
+                branch["source_chunk_id"] = primary["chunk_id"]
+            if primary.get("statement_id"):
+                branch["source_statement_id"] = primary["statement_id"]
 
 
 class PipelineInputError(ValueError):
@@ -431,12 +560,7 @@ class LogicRulesExtractorPipeline:
         # single check covers both dialects). Neither firing does not mean
         # the object has no decision logic - it means this deterministic
         # pass found no *unambiguous, single-target* ladder to anchor on.
-        procedural_ladder_chains = (
-            extract_nested_decision_chains(ingestion.raw_code)
-            or extract_procedural_decision_chains(ingestion.raw_code)
-        )
-        case_expression_chains = extract_case_assignment_decision_chains(ingestion.raw_code)
-        deterministic_chains = case_expression_chains + procedural_ladder_chains
+        deterministic_chains = _extract_deterministic_decision_chains(ingestion.raw_code)
         if deterministic_chains:
             # Keep deterministic chains as structured technical context for
             # the model; they never replace or rewrite synthesized rules.
@@ -459,11 +583,16 @@ class LogicRulesExtractorPipeline:
                 ingestion.chunks, analysis_dialect
             )
         merged_extraction["statement_provenance"] = statement_provenance
+        _annotate_decision_chain_provenance(merged_extraction, ingestion)
         if table_operations:
             merged_extraction["table_operations"] = table_operations
             merged_extraction["tables_read"], merged_extraction["tables_written"] = (
                 split_table_operations(table_operations)
             )
+        merged_extraction["statement_dependencies"] = build_statement_dependencies(
+            merged_extraction.get("table_operations", []),
+            merged_extraction.get("statement_provenance", []),
+        )
         synthesis_input = self._build_synthesis_input(merged_extraction)
         parameter_summary = self._summarize_parameters(ingestion)
         synthesis = self.synthesizer_agent.synthesize(
@@ -541,6 +670,15 @@ class LogicRulesExtractorPipeline:
             merged_extraction["ambiguities"].extend(gap_findings)
             synthesis.data["ambiguities"] = list(synthesis.data.get("ambiguities", []) or [])
             synthesis.data["ambiguities"].extend(gap_findings)
+
+        # Diagnostic-only inventory: this is deliberately built after
+        # synthesis/revision so it can say what happened to each executable
+        # construct without becoming another source of business rules.
+        merged_extraction["completeness_ledger"] = build_completeness_ledger(
+            ingestion.raw_code,
+            merged_extraction=merged_extraction,
+            rules=synthesis.data.get("business_rules", []),
+        )
 
         logger.info("Stage 5/6 completed in %.2fs (business reasoning)", time.perf_counter() - stage_start)
 
@@ -1147,6 +1285,7 @@ class LogicRulesExtractorPipeline:
             "llm_tables_read",
             "llm_tables_written",
             "semantic_findings",
+            "statement_dependencies",
         }
         return copy.deepcopy(
             {

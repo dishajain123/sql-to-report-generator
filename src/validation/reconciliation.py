@@ -55,6 +55,10 @@ _SIMPLE_ASSIGNMENT_RE = re.compile(
     r"^(?P<lhs>[A-Z0-9_.\[\]#$]+)\s*(?P<op>:=|=)\s*(?P<rhs>.+)$",
     re.IGNORECASE,
 )
+_NULL_CONDITION_RE = re.compile(
+    r"^(?P<lhs>[A-Z0-9_.\[\]#$]+)\s+IS\s+(?P<negated>NOT\s+)?NULL$",
+    re.IGNORECASE,
+)
 
 
 def _clean_text(value: Any) -> str:
@@ -217,6 +221,14 @@ def _strip_quotes(text: str) -> str:
 
 def _parse_structured_comparison(text: Any) -> Optional[Dict[str, str]]:
     cleaned = _normalize_sql_fragment(str(text or ""))
+    null_match = _NULL_CONDITION_RE.match(cleaned)
+    if null_match:
+        return {
+            "lhs": _normalize_value(null_match.group("lhs")),
+            "op": "ISNOTNULL" if null_match.group("negated") else "ISNULL",
+            "rhs": "NULL",
+            "raw": _clean_text(text),
+        }
     match = _SIMPLE_CONDITION_RE.match(cleaned)
     if not match:
         return None
@@ -224,6 +236,11 @@ def _parse_structured_comparison(text: Any) -> Optional[Dict[str, str]]:
     op = match.group("op").upper().replace(" ", "")
     rhs = _normalize_value(_strip_quotes(match.group("rhs")))
     if not lhs or not op or not rhs:
+        return None
+    # A simple comparison parser must not consume a compound predicate as a
+    # long RHS (for example ``A = 1 AND B > 2``). Such expressions remain
+    # unresolved rather than producing a false semantic contradiction.
+    if re.search(r"\b(?:AND|OR)\b|[<>!=]=?", rhs, re.IGNORECASE):
         return None
     return {"lhs": lhs, "op": op, "rhs": rhs, "raw": _clean_text(text)}
 
@@ -238,6 +255,78 @@ def _parse_structured_assignment(text: Any) -> Optional[Dict[str, str]]:
     if not lhs or not rhs:
         return None
     return {"lhs": lhs, "op": match.group("op"), "rhs": rhs, "raw": _clean_text(text)}
+
+
+def _is_simple_scalar(value: Any) -> bool:
+    """Recognize literals safe for exact deterministic comparison."""
+    raw = _clean_text(value)
+    if not raw:
+        return False
+    if re.fullmatch(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"", raw):
+        return True
+    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", raw):
+        return True
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})?", raw):
+        return True
+    return bool(
+        re.fullmatch(
+            r"NULL|[A-Za-z_][A-Za-z0-9_$#]*(?:-[A-Za-z0-9_$#]+)*",
+            raw,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _structured_conditions(values: Sequence[Any]) -> List[Dict[str, str]]:
+    return [
+        parsed
+        for value in values or []
+        for parsed in [_parse_structured_comparison(value)]
+        if parsed is not None
+    ]
+
+
+def _structured_condition_sets_match(
+    claims: Sequence[Dict[str, str]], deterministic: Sequence[Dict[str, str]]
+) -> bool:
+    if not claims or not deterministic:
+        return False
+    return all(
+        any(
+            _normalize_column_reference(claim.get("lhs"))
+            == _normalize_column_reference(candidate.get("lhs"))
+            and _normalize_value(claim.get("op")) == _normalize_value(candidate.get("op"))
+            and _normalize_value(claim.get("rhs")) == _normalize_value(candidate.get("rhs"))
+            for candidate in deterministic
+        )
+        for claim in claims
+    )
+
+
+def _structured_assignment_pairs(values: Sequence[Any]) -> List[Dict[str, str]]:
+    pairs: List[Dict[str, str]] = []
+    for value in values or []:
+        parsed = _parse_structured_assignment(value)
+        if not parsed or not _is_simple_scalar(parsed.get("rhs")):
+            continue
+        pairs.append(parsed)
+    return pairs
+
+
+def _assignment_pairs_match(
+    claims: Sequence[Dict[str, str]], deterministic: Sequence[Dict[str, str]]
+) -> bool:
+    if not claims or not deterministic:
+        return False
+    return all(
+        any(
+            _normalize_column_reference(claim.get("lhs"))
+            == _normalize_column_reference(candidate.get("lhs"))
+            and _normalize_value(claim.get("rhs")) == _normalize_value(candidate.get("rhs"))
+            for candidate in deterministic
+        )
+        for claim in claims
+    )
 
 
 def _source_identity(row: Dict[str, Any]) -> Tuple[str, str]:
@@ -333,6 +422,10 @@ def _condition_space(condition: Dict[str, str]) -> Optional[Dict[str, Any]]:
         if not values:
             return None
         return {"lhs": lhs, "kind": "negated_set", "values": values, "raw": condition.get("raw", "")}
+    if op == "ISNULL":
+        return {"lhs": lhs, "kind": "null", "raw": condition.get("raw", "")}
+    if op == "ISNOTNULL":
+        return {"lhs": lhs, "kind": "not_null", "raw": condition.get("raw", "")}
     if op == "=":
         return {"lhs": lhs, "kind": "point", "lower": rhs_raw, "upper": rhs_raw, "lower_inclusive": True, "upper_inclusive": True, "raw": condition.get("raw", "")}
     if op in {">", ">=", "<", "<="}:
@@ -371,6 +464,23 @@ def _condition_space(condition: Dict[str, str]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _row_is_authoritative_catch_all(row: Dict[str, Any]) -> bool:
+    """Return the deterministic fallback marker for a decision-chain row.
+
+    The branch position is authoritative only when the chain metadata says
+    the branch is an explicit fallback.  A final conditional branch without
+    ELSE must not be widened into a catch-all.
+    """
+    if not isinstance(row, dict) or row.get("_section") != "decision_chains":
+        return False
+    if "_chain_is_catch_all" in row:
+        return bool(row.get("_chain_is_catch_all"))
+    return _normalize_value(row.get("filter_condition") or row.get("statement_text")) in {
+        "else",
+        "otherwise",
+    }
+
+
 def _spaces_overlap(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
     if not left or not right:
         return False
@@ -378,6 +488,10 @@ def _spaces_overlap(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
         return False
     if left.get("kind") == "catch_all" or right.get("kind") == "catch_all":
         return left.get("kind") == "catch_all" and right.get("kind") == "catch_all"
+    if left.get("kind") in {"null", "not_null"} or right.get("kind") in {"null", "not_null"}:
+        if left.get("kind") == "null" or right.get("kind") == "null":
+            return left.get("kind") == right.get("kind") == "null"
+        return True
     if left.get("kind") == "point" and right.get("kind") == "point":
         return _normalize_value(left.get("lower")) == _normalize_value(right.get("lower"))
     if left.get("kind") == "set" and right.get("kind") == "set":
@@ -499,6 +613,177 @@ def _rule_candidate_rows(rule: Dict[str, Any], deterministic_rows: Sequence[Dict
     return candidate_rows
 
 
+def _line_ranges_overlap(left_start: Any, left_end: Any, right_start: Any, right_end: Any) -> bool:
+    try:
+        left_start, left_end = int(left_start), int(left_end)
+        right_start, right_end = int(right_start), int(right_end)
+    except (TypeError, ValueError):
+        return False
+    if min(left_start, left_end, right_start, right_end) < 0:
+        return False
+    return not (left_end < right_start or right_end < left_start)
+
+
+def _rule_decision_chain_links(
+    rule: Dict[str, Any], deterministic_rows: Sequence[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Link a synthesized rule to deterministic decision-chain branches.
+
+    Evidence spans and branch structure are preferred.  Condition/outcome
+    comparisons are used only with the existing normalized reconciliation
+    primitives, and a fallback branch can be inferred from field/outcome
+    evidence only when it identifies one unambiguous chain.  This keeps
+    coverage and catch-all classification source-grounded without treating
+    arbitrary prose as an ELSE branch.
+    """
+    chain_rows = [
+        row for row in deterministic_rows
+        if row.get("_section") == "decision_chains"
+    ]
+    if not chain_rows:
+        return []
+
+    claim_conditions = {_normalize_value(value) for value in _rule_claim_conditions(rule) if _clean_text(value)}
+    claim_outcomes = set()
+    for value in _rule_claim_outcomes(rule):
+        parsed = _parse_structured_assignment(value)
+        claim_outcomes.add(
+            _normalize_sql_fragment(parsed.get("rhs") if parsed else _strip_quotes(value)).lower()
+        )
+    claim_fields = {
+        _normalize_column_reference(value)
+        for value in _rule_claim_fields(rule)
+        if _clean_text(value)
+    }
+    evidence_text = {
+        _normalize_value(value)
+        for value in rule.get("source_evidence") or []
+        if _clean_text(value)
+    }
+    evidence_spans = _rule_evidence_spans(rule)
+    links: List[Dict[str, Any]] = []
+    fallback_candidates: Dict[Any, List[Dict[str, Any]]] = {}
+
+    for row in chain_rows:
+        row_fields = {
+            _normalize_column_reference(value)
+            for value in _row_columns(row)
+            if _clean_text(value)
+        }
+        row_outcomes = {
+            _normalize_sql_fragment(value).lower()
+            for value in _row_assigned_values(row)
+            if _clean_text(value)
+        }
+        row_condition = _normalize_value(
+            row.get("filter_condition") or row.get("where_predicate") or row.get("statement_text")
+        )
+        condition_match = bool(
+            row_condition
+            and (
+                row_condition in claim_conditions
+                or any(row_condition in evidence or evidence in row_condition for evidence in evidence_text)
+            )
+        )
+        field_match = bool(row_fields and claim_fields and row_fields & claim_fields)
+        outcome_match = bool(row_outcomes and claim_outcomes and row_outcomes & claim_outcomes)
+        row_spans = row.get("_chain_evidence_spans") or []
+        span_match = any(
+            (
+                _line_ranges_overlap(
+                    span.get("line_start", -1),
+                    span.get("line_end", -1),
+                    candidate.get("line_start", row.get("_chain_source_line_start", -1)),
+                    candidate.get("line_end", row.get("_chain_source_line_end", -1)),
+                )
+                or _line_ranges_overlap(
+                    span.get("char_start", -1),
+                    span.get("char_end", -1),
+                    candidate.get("char_start", -1),
+                    candidate.get("char_end", -1),
+                )
+            )
+            for span in evidence_spans
+            for candidate in (row_spans or [{"line_start": row.get("_chain_source_line_start", -1), "line_end": row.get("_chain_source_line_end", -1)}])
+        )
+        if (span_match and (field_match or outcome_match or condition_match)) or (
+            condition_match
+            and (
+                field_match
+                or outcome_match
+                or (_row_is_authoritative_catch_all(row) and bool(claim_fields))
+            )
+        ):
+            links.append(row)
+        elif (
+            _row_is_authoritative_catch_all(row)
+            and outcome_match
+            and (field_match or row_condition in evidence_text)
+        ):
+            fallback_candidates.setdefault(row.get("_chain_index"), []).append(row)
+
+    # A paraphrased fallback condition has no literal condition match.  Allow
+    # its structured outcome/field pair to link only when exactly one chain
+    # can own that fallback, avoiding cross-chain false positives.
+    if len(fallback_candidates) == 1:
+        links.extend(next(iter(fallback_candidates.values())))
+
+    seen = set()
+    return [
+        row for row in links
+        if not (id(row) in seen or seen.add(id(row)))
+    ]
+
+
+def _safe_ordered_fallback_condition(
+    rule: Dict[str, Any],
+    deterministic_rows: Sequence[Dict[str, Any]],
+    chain_links: Sequence[Dict[str, Any]],
+) -> bool:
+    """Recognize a numeric condition that is the proven complement of ELSE.
+
+    This is intentionally narrower than treating any paraphrase as a
+    fallback.  The rule must link to an authoritative catch-all branch, and
+    its structured condition must be disjoint from every other structured
+    branch in that same chain.  Unknown or overlapping expressions remain
+    conflicts/review-required.
+    """
+    if not any(_row_is_authoritative_catch_all(row) for row in chain_links):
+        return False
+    claim_spaces = [
+        _condition_space(parsed)
+        for parsed in _structured_rule_conditions(rule)
+    ]
+    claim_spaces = [space for space in claim_spaces if space]
+    if not claim_spaces:
+        return False
+    chain_indexes = {
+        row.get("_chain_index")
+        for row in chain_links
+        if row.get("_chain_index") is not None
+    }
+    prior_spaces = []
+    for row in deterministic_rows:
+        if (
+            row.get("_section") != "decision_chains"
+            or row.get("_chain_index") not in chain_indexes
+            or _row_is_authoritative_catch_all(row)
+        ):
+            continue
+        parsed = _parse_structured_comparison(
+            row.get("filter_condition") or row.get("where_predicate") or row.get("statement_text")
+        )
+        space = _condition_space(parsed) if parsed else None
+        if space:
+            prior_spaces.append(space)
+    if not prior_spaces:
+        return False
+    return any(
+        all(not _spaces_overlap(claim_space, prior_space) for prior_space in prior_spaces)
+        for claim_space in claim_spaces
+    )
+
+
 def _expand_decision_chain_siblings(
     candidate_rows: List[Dict[str, Any]], deterministic_rows: Sequence[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
@@ -548,7 +833,10 @@ def _condition_overlap_key(condition: Dict[str, str]) -> Optional[Dict[str, Any]
     return space
 
 
-def _rule_condition_spaces(rule: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+def _rule_condition_spaces(
+    rule: Dict[str, Any],
+    chain_links: Sequence[Dict[str, Any]] = (),
+) -> Dict[str, List[Dict[str, Any]]]:
     spaces: Dict[str, List[Dict[str, Any]]] = {}
     for condition in _structured_rule_conditions(rule):
         space = _condition_space(condition)
@@ -558,12 +846,32 @@ def _rule_condition_spaces(rule: Dict[str, Any]) -> Dict[str, List[Dict[str, Any
         if not lhs:
             continue
         spaces.setdefault(lhs, []).append(space)
+    for row in chain_links:
+        if not _row_is_authoritative_catch_all(row):
+            continue
+        lhs = _normalize_column_reference(row.get("table") or row.get("_chain_subject") or "")
+        if not lhs:
+            # A paraphrased fallback may not expose a comparable subject in
+            # its own text.  The rule's existing structured condition, when
+            # present, supplies the same axis without guessing from prose.
+            existing_lhs = next(iter(spaces), "")
+            lhs = existing_lhs
+        if lhs:
+            spaces.setdefault(lhs, []).append(
+                {"lhs": lhs, "kind": "catch_all", "raw": row.get("filter_condition", "")}
+            )
     return spaces
 
 
-def _rules_have_structural_overlap(left_rule: Dict[str, Any], right_rule: Dict[str, Any]) -> bool:
-    left_spaces = _rule_condition_spaces(left_rule)
-    right_spaces = _rule_condition_spaces(right_rule)
+def _rules_have_structural_overlap(
+    left_rule: Dict[str, Any],
+    right_rule: Dict[str, Any],
+    deterministic_rows: Sequence[Dict[str, Any]] = (),
+) -> bool:
+    left_links = _rule_decision_chain_links(left_rule, deterministic_rows)
+    right_links = _rule_decision_chain_links(right_rule, deterministic_rows)
+    left_spaces = _rule_condition_spaces(left_rule, left_links)
+    right_spaces = _rule_condition_spaces(right_rule, right_links)
     shared_lhs = set(left_spaces) & set(right_spaces)
     if not shared_lhs:
         return False
@@ -958,13 +1266,22 @@ def _decision_chain_rows(merged_extraction: Dict[str, Any]) -> List[Dict[str, An
         branches = chain.get("branches") or []
         if not isinstance(branches, list):
             continue
+        explicit_catch_all_index = next(
+            (
+                index
+                for index, item in enumerate(branches)
+                if isinstance(item, dict)
+                and _normalize_value(item.get("branch_condition")) in {"else", "otherwise"}
+            ),
+            None,
+        )
         for branch_idx, branch in enumerate(branches):
             if not isinstance(branch, dict):
                 continue
             condition = str(branch.get("branch_condition") or "").strip()
             assignments = branch.get("assignments") or []
             if not isinstance(assignments, list) or not assignments:
-                continue
+                assignments = []
             fields: List[str] = []
             assigned_values: List[Dict[str, str]] = []
             for assignment in assignments:
@@ -976,7 +1293,7 @@ def _decision_chain_rows(merged_extraction: Dict[str, Any]) -> List[Dict[str, An
                     continue
                 fields.append(field_name)
                 assigned_values.append({"column": field_name, "expression": value_text})
-            if not fields:
+            if not fields and not condition:
                 continue
             # Keep the branch condition exactly as written, including a
             # bare "ELSE" for the default branch - this matches the
@@ -1004,6 +1321,33 @@ def _decision_chain_rows(merged_extraction: Dict[str, Any]) -> List[Dict[str, An
                     "_chain_type": str(chain.get("chain_type") or "").strip(),
                     "_chain_index": chain_idx,
                     "_branch_index": branch_idx,
+                    "_chain_is_catch_all": (
+                        bool(branch.get("is_catch_all"))
+                        if "is_catch_all" in branch
+                        else explicit_catch_all_index == branch_idx
+                    ),
+                    "_chain_subject": str(chain.get("subject") or "").strip(),
+                    "_chain_id": str(chain.get("chain_id") or "").strip(),
+                    "_branch_id": str(branch.get("branch_id") or "").strip(),
+                    "source_identifier": str(
+                        branch.get("source_identifier") or chain.get("source_identifier") or ""
+                    ).strip(),
+                    "_chain_evidence_spans": [
+                        dict(span) for span in (branch.get("evidence_spans") or []) if isinstance(span, dict)
+                    ],
+                    "source_file": str(branch.get("source_file") or chain.get("source_file") or "").strip(),
+                    "source_chunk_id": str(
+                        branch.get("source_chunk_id") or chain.get("source_chunk_id") or ""
+                    ).strip(),
+                    "source_statement_id": str(
+                        branch.get("source_statement_id") or chain.get("source_statement_id") or ""
+                    ).strip(),
+                    "source_char_start": branch.get("source_char_start", chain.get("source_char_start", -1)),
+                    "source_char_end": branch.get("source_char_end", chain.get("source_char_end", -1)),
+                    "source_line_start": branch.get("source_line_start", chain.get("source_line_start", -1)),
+                    "source_line_end": branch.get("source_line_end", chain.get("source_line_end", -1)),
+                    "_chain_source_line_start": chain.get("source_line_start", -1),
+                    "_chain_source_line_end": chain.get("source_line_end", -1),
                 }
             )
     return rows
@@ -1023,6 +1367,126 @@ def _collect_deterministic_rows(merged_extraction: Dict[str, Any]) -> List[Dict[
             rows.append(cloned)
     rows.extend(_decision_chain_rows(merged_extraction))
     return rows
+
+
+def _build_decision_chain_coverage(
+    *,
+    merged_extraction: Dict[str, Any],
+    rules: Sequence[Dict[str, Any]],
+    deterministic_rows: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Measure deterministic branch coverage without authoring rules.
+
+    The denominator is every valid branch in every deterministic chain.  A
+    branch is covered when a synthesized rule links to that branch through
+    evidence spans or normalized branch field/condition/outcome structure.
+    This makes partial coverage visible instead of promoting one covered
+    branch to a fully covered chain.
+    """
+    chains = merged_extraction.get("decision_chains") or []
+    valid_chains = [
+        (index, chain)
+        for index, chain in enumerate(chains)
+        if isinstance(chain, dict)
+        and isinstance(chain.get("branches"), list)
+        and len(chain.get("branches") or []) >= 2
+        and _is_business_bearing_decision_chain(chain)
+    ] if isinstance(chains, list) else []
+
+    branch_keys = {
+        (chain_index, branch_index)
+        for chain_index, chain in valid_chains
+        for branch_index, branch in enumerate(chain.get("branches") or [])
+        if isinstance(branch, dict) and _clean_text(branch.get("branch_condition"))
+    }
+    covered_keys = set()
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        for row in _rule_decision_chain_links(rule, deterministic_rows):
+            key = (row.get("_chain_index"), row.get("_branch_index"))
+            if key in branch_keys:
+                covered_keys.add(key)
+
+    gaps = []
+    for chain_index, chain in valid_chains:
+        for branch_index, branch in enumerate(chain.get("branches") or []):
+            if (chain_index, branch_index) in covered_keys:
+                continue
+            gaps.append(
+                {
+                    "chain_index": chain_index,
+                    "branch_index": branch_index,
+                    "chain_type": str(chain.get("chain_type") or ""),
+                    "subject": str(chain.get("subject") or ""),
+                    "branch_condition": str(branch.get("branch_condition") or ""),
+                    "is_catch_all": (
+                        bool(branch.get("is_catch_all"))
+                        if "is_catch_all" in branch
+                        else _normalize_value(branch.get("branch_condition")) in {"else", "otherwise"}
+                    ),
+                }
+            )
+
+    total_branches = len(branch_keys)
+    covered_branches = len(covered_keys)
+    coverage_pct = 100.0 if not total_branches else round((covered_branches / total_branches) * 100, 1)
+    fully_covered = []
+    partially_covered = []
+    uncovered = []
+    for chain_index, chain in valid_chains:
+        keys = {
+            (chain_index, branch_index)
+            for branch_index, branch in enumerate(chain.get("branches") or [])
+            if isinstance(branch, dict) and _clean_text(branch.get("branch_condition"))
+        }
+        covered = keys & covered_keys
+        summary = {
+            "chain_index": chain_index,
+            "chain_type": str(chain.get("chain_type") or ""),
+            "subject": str(chain.get("subject") or ""),
+            "branch_count": len(keys),
+            "covered_branch_count": len(covered),
+            "covered": bool(keys and covered == keys),
+        }
+        if not covered:
+            uncovered.append(summary)
+        elif covered == keys:
+            fully_covered.append(summary)
+        else:
+            partially_covered.append(summary)
+
+    return {
+        "decision_chain_count": len(valid_chains),
+        "decision_chain_total_branches": total_branches,
+        "decision_chain_covered_branches": covered_branches,
+        "decision_chain_coverage_pct": coverage_pct,
+        "decision_chains_fully_covered": fully_covered,
+        "decision_chains_partially_covered": partially_covered,
+        "decision_chains_uncovered": uncovered,
+        "decision_chain_coverage_gaps": gaps,
+    }
+
+
+def _is_business_bearing_decision_chain(chain: Dict[str, Any]) -> bool:
+    """Return whether a chain is eligible for business-coverage scoring.
+
+    Deterministic chains are emitted for assignment ladders. A chain with no
+    assignment is only structural/technical evidence, so it must not lower a
+    business-rule quality score. Honor explicit safety metadata as well when
+    callers provide unnormalized extraction data.
+    """
+    if any(bool(chain.get(key)) for key in ("technical_only", "unsupported", "ambiguous")):
+        return False
+    if chain.get("business_bearing") is False:
+        return False
+    for branch in chain.get("branches") or []:
+        if not isinstance(branch, dict):
+            continue
+        for assignment in branch.get("assignments") or []:
+            if isinstance(assignment, dict) and _clean_text(assignment.get("field")):
+                return True
+    return False
 
 
 def _chunk_id_from_row(row: Dict[str, Any]) -> str:
@@ -1321,6 +1785,7 @@ def _gather_contradictions(
     object_id: str,
     rules: Sequence[Dict[str, Any]],
     records: Sequence[ReconciliationRecord],
+    deterministic_rows: Sequence[Dict[str, Any]] = (),
 ) -> tuple[List[ContradictionFinding], List[Dict[str, Any]]]:
     contradictions: List[ContradictionFinding] = []
     duplicate_groups: List[Dict[str, Any]] = []
@@ -1566,7 +2031,9 @@ def _gather_contradictions(
         left_fields = set(_rule_claim_fields(left_rule))
         left_conditions = _structured_rule_conditions(left_rule)
         left_outcomes = _structured_rule_outcomes(left_rule)
-        if not left_conditions or not left_fields or not left_outcomes:
+        left_links = _rule_decision_chain_links(left_rule, deterministic_rows)
+        left_spaces = _rule_condition_spaces(left_rule, left_links)
+        if not left_spaces or not left_fields or not left_outcomes:
             continue
         left_chunks, left_statements = _rule_source_identity(left_rule)
         for right_rule in rules[left_index + 1 :]:
@@ -1575,7 +2042,9 @@ def _gather_contradictions(
             right_fields = set(_rule_claim_fields(right_rule))
             right_conditions = _structured_rule_conditions(right_rule)
             right_outcomes = _structured_rule_outcomes(right_rule)
-            if not right_conditions or not right_fields or not right_outcomes:
+            right_links = _rule_decision_chain_links(right_rule, deterministic_rows)
+            right_spaces = _rule_condition_spaces(right_rule, right_links)
+            if not right_spaces or not right_fields or not right_outcomes:
                 continue
             right_chunks, right_statements = _rule_source_identity(right_rule)
             if not (left_fields & right_fields):
@@ -1583,7 +2052,7 @@ def _gather_contradictions(
 
             # Duplicates: same structured condition and same outcome, just
             # supported by more than one chunk.
-            if {
+            if left_conditions and right_conditions and {
                 (cond["lhs"], cond["op"], cond["rhs"])
                 for cond in left_conditions
             } == {
@@ -1619,9 +2088,7 @@ def _gather_contradictions(
                     )
                 continue
 
-            left_condition_sig = {(cond["lhs"], cond["op"], cond["rhs"]) for cond in left_conditions}
-            right_condition_sig = {(cond["lhs"], cond["op"], cond["rhs"]) for cond in right_conditions}
-            same_lhs = {cond["lhs"] for cond in left_conditions} & {cond["lhs"] for cond in right_conditions}
+            same_lhs = set(left_spaces) & set(right_spaces)
             if not same_lhs:
                 continue
 
@@ -1630,7 +2097,11 @@ def _gather_contradictions(
             if left_outcome_values == right_outcome_values:
                 continue
 
-            contradictory = _rules_have_structural_overlap(left_rule, right_rule)
+            contradictory = _rules_have_structural_overlap(
+                left_rule,
+                right_rule,
+                deterministic_rows,
+            )
             explanation = ""
             if contradictory:
                 explanation = "Rules overlap on the same structured condition but assign different outcomes."
@@ -1712,6 +2183,11 @@ def _build_coverage_metrics(
     parsed_statements = sum(1 for row in statement_provenance if str((row or {}).get("parse_status") or "").lower() == "parsed")
     unsupported_statements = max(total_statements - parsed_statements, 0)
     deterministic_rows = _collect_deterministic_rows(merged_extraction)
+    decision_chain_coverage = _build_decision_chain_coverage(
+        merged_extraction=merged_extraction,
+        rules=rules,
+        deterministic_rows=deterministic_rows,
+    )
     rule_list = list(rules)
     synthesized_rules = [record for record in records if record.kind == "rule"]
     rules_with_deterministic_support = sum(1 for record in synthesized_rules if bool(record.deterministic_evidence))
@@ -1752,6 +2228,18 @@ def _build_coverage_metrics(
         "unresolved_for_scoring": unresolved_for_scoring,
         "duplicate_rule_groups": len(list(duplicate_rule_groups)),
     }
+    ledger = merged_extraction.get("completeness_ledger") or {}
+    if isinstance(ledger, dict):
+        status_counts = dict(ledger.get("status_counts") or {})
+        metrics["completeness_ledger"] = {
+            "construct_count": int(ledger.get("construct_count", 0) or 0),
+            "status_counts": status_counts,
+            "uncovered_count": int(status_counts.get("uncovered", 0) or 0),
+            "parser_failed_count": int(status_counts.get("parser_failed", 0) or 0),
+            "dynamic_unresolved_count": int(status_counts.get("dynamic_unresolved", 0) or 0),
+            "unsupported_count": int(status_counts.get("unsupported", 0) or 0),
+        }
+    metrics.update(decision_chain_coverage)
     if classification_summary:
         metrics["genuine_business_contradictions"] = int(classification_summary.get("genuine_business_contradictions", 0) or 0)
         metrics["technical_provenance_noise"] = int(classification_summary.get("technical_provenance_noise", 0) or 0)
@@ -1792,6 +2280,22 @@ def _build_quality_assessment(
     grounding_pct = float(coverage.get("rule_grounding_pct") or 0.0)
     total_statements = int(coverage.get("total_statements", 0) or 0)
     synthesized_rules = int(coverage.get("synthesized_rules", 0) or 0)
+    deterministic_facts = int(coverage.get("deterministic_facts", 0) or 0)
+    decision_chain_count = int(coverage.get("decision_chain_count", 0) or 0)
+    decision_chain_total_branches = int(coverage.get("decision_chain_total_branches", 0) or 0)
+    decision_chain_coverage_pct = coverage.get("decision_chain_coverage_pct")
+    decision_chain_gap_pct = 0.0
+    decision_chain_incomplete = False
+    decision_chain_penalty = 0.0
+    if (
+        not unsupported_dialect
+        and decision_chain_count > 0
+        and decision_chain_total_branches > 0
+        and decision_chain_coverage_pct is not None
+    ):
+        decision_chain_coverage_pct = max(0.0, min(100.0, float(decision_chain_coverage_pct)))
+        decision_chain_gap_pct = max(0.0, 100.0 - decision_chain_coverage_pct)
+        decision_chain_incomplete = decision_chain_gap_pct > 0.0
 
     if unsupported_dialect:
         score -= 20
@@ -1802,12 +2306,28 @@ def _build_quality_assessment(
     if synthesized_rules == 0:
         score -= 15
         notes.append("No synthesized rules were available.")
-    score -= min(40, high_contradictions * 20)
-    score -= min(20, medium_contradictions * 8)
-    score -= min(10, low_contradictions * 3)
-    score -= min(15, llm_only_rules * 7)
-    score -= min(10, deterministic_only_facts * 2)
-    score -= min(15, unresolved_items * 2)
+    # Count-based findings are intentionally volume-normalized.  A handful of
+    # unsupported rules in a large object should not hit the same cap as the
+    # same count in a small object; the caps remain to preserve the original
+    # scoring intent and keep any one factor bounded.
+    rule_volume = max(synthesized_rules, 1)
+    fact_volume = max(deterministic_facts, 1)
+    review_volume = max(synthesized_rules, total_statements, deterministic_facts, 1)
+    score -= min(40, (high_contradictions / review_volume) * 100 * 0.20)
+    score -= min(20, (medium_contradictions / review_volume) * 100 * 0.08)
+    score -= min(10, (low_contradictions / review_volume) * 100 * 0.03)
+    score -= min(15, (llm_only_rules / rule_volume) * 100 * 0.07)
+    score -= min(10, (deterministic_only_facts / fact_volume) * 100 * 0.02)
+    score -= min(15, (unresolved_items / review_volume) * 100 * 0.02)
+    # Decision-chain coverage is already normalized by branch volume. Charge
+    # only the uncovered percentage, with the same 15-point ceiling used for
+    # the existing LLM-only and unresolved completeness factors.
+    if decision_chain_incomplete:
+        decision_chain_penalty = min(15.0, decision_chain_gap_pct * 0.15)
+        score -= decision_chain_penalty
+        notes.append(
+            f"Deterministic decision-chain coverage is incomplete ({decision_chain_coverage_pct:.1f}%)."
+        )
     if parse_success_pct and parse_success_pct < 75:
         score -= 10
         notes.append("Statement parse success is below the preferred threshold.")
@@ -1818,7 +2338,7 @@ def _build_quality_assessment(
         score -= 10
 
     score = max(0, min(100, score))
-    if high_contradictions or medium_contradictions or unresolved_items or llm_only_rules:
+    if high_contradictions or medium_contradictions or unresolved_items or llm_only_rules or decision_chain_incomplete:
         overall_status = "REVIEW_REQUIRED"
     elif unsupported_dialect or parse_success_pct < 50 or grounding_pct < 50 or score < 60 or total_statements == 0 or synthesized_rules == 0:
         overall_status = "LOW_CONFIDENCE"
@@ -1829,16 +2349,32 @@ def _build_quality_assessment(
     return {
         "status": overall_status,
         "score": score,
-        "review_required": bool(high_contradictions or medium_contradictions or unresolved_items or llm_only_rules or unsupported_dialect),
+        "review_required": bool(
+            high_contradictions
+            or medium_contradictions
+            or unresolved_items
+            or llm_only_rules
+            or decision_chain_incomplete
+            or unsupported_dialect
+        ),
         "factors": {
             "high_contradictions": high_contradictions,
             "medium_contradictions": medium_contradictions,
             "low_contradictions": low_contradictions,
             "llm_only_rules": llm_only_rules,
             "deterministic_only_facts": deterministic_only_facts,
+            "llm_only_rate_pct": round((llm_only_rules / rule_volume) * 100, 1),
+            "deterministic_only_rate_pct": round((deterministic_only_facts / fact_volume) * 100, 1),
+            "unresolved_rate_pct": round((unresolved_items / review_volume) * 100, 1),
+            "high_contradiction_rate_pct": round((high_contradictions / review_volume) * 100, 1),
+            "medium_contradiction_rate_pct": round((medium_contradictions / review_volume) * 100, 1),
+            "low_contradiction_rate_pct": round((low_contradictions / review_volume) * 100, 1),
             "business_review_required_items": business_review_items,
             "parse_success_pct": coverage.get("statement_parse_success_pct"),
             "rule_grounding_pct": coverage.get("rule_grounding_pct"),
+            "decision_chain_coverage_pct": coverage.get("decision_chain_coverage_pct"),
+            "decision_chain_gap_pct": round(decision_chain_gap_pct, 1),
+            "decision_chain_penalty": round(decision_chain_penalty, 2),
         },
         "note": "; ".join(notes),
     }
@@ -1987,6 +2523,8 @@ def reconcile_deterministic_evidence(
             field_union: set[str] = set()
             condition_union: set[str] = set()
             outcome_union: set[str] = set()
+            deterministic_condition_values: List[str] = []
+            deterministic_assignment_values: List[str] = []
             for row in candidate_rows:
                 row_fields = {_normalize_column_reference(value) for value in _row_columns(row) if _clean_text(value)}
                 row_filter = _row_filter(row)
@@ -1994,14 +2532,107 @@ def reconcile_deterministic_evidence(
                 field_union |= row_fields
                 if row_filter:
                     condition_union.add(row_filter)
+                    deterministic_condition_values.append(row_filter)
                 outcome_union |= row_values
+                for pair in _row_assigned_pairs(row):
+                    if pair.get("column") and pair.get("expression"):
+                        deterministic_assignment_values.append(
+                            f"{pair['column']} = {pair['expression']}"
+                        )
 
             field_match = bool(claim_field_set and field_union and claim_field_set.issubset(field_union))
-            condition_match = bool(claim_condition_set and condition_union and claim_condition_set.issubset(condition_union))
-            outcome_match = bool(claim_outcome_set and outcome_union and claim_outcome_set.issubset(outcome_union))
-            field_conflict = bool(claim_field_set and field_union and not field_match)
-            condition_conflict = bool(claim_condition_set and condition_union and not condition_match)
-            outcome_conflict = bool(claim_outcome_set and outcome_union and not outcome_match)
+
+            parsed_claim_conditions = _structured_conditions(claim_conditions)
+            parsed_deterministic_conditions = _structured_conditions(deterministic_condition_values)
+            condition_structured_match = _structured_condition_sets_match(
+                parsed_claim_conditions, parsed_deterministic_conditions
+            )
+            condition_match = condition_structured_match or bool(
+                not parsed_claim_conditions
+                and claim_condition_set
+                and condition_union
+                and claim_condition_set.issubset(condition_union)
+            )
+
+            parsed_claim_assignments = _structured_assignment_pairs(claim_outcomes)
+            parsed_deterministic_assignments = _structured_assignment_pairs(deterministic_assignment_values)
+            assignment_structured_match = _assignment_pairs_match(
+                parsed_claim_assignments, parsed_deterministic_assignments
+            )
+            scalar_claim_outcomes = {
+                _normalize_sql_fragment(_strip_quotes(value)).lower()
+                for value in claim_outcomes
+                if _is_simple_scalar(value) and _parse_structured_assignment(value) is None
+            }
+            scalar_deterministic_outcomes = {
+                _normalize_sql_fragment(value).lower()
+                for value in outcome_union
+                if _is_simple_scalar(value)
+            }
+            scalar_outcome_match = bool(
+                scalar_claim_outcomes
+                and scalar_deterministic_outcomes
+                and scalar_claim_outcomes.issubset(scalar_deterministic_outcomes)
+            )
+            outcome_match = assignment_structured_match or scalar_outcome_match or bool(
+                not parsed_claim_assignments
+                and not scalar_claim_outcomes
+                and claim_outcome_set
+                and outcome_union
+                and claim_outcome_set.issubset(outcome_union)
+            )
+            # A decision-chain branch may assign an intermediate PL/SQL/T-SQL
+            # variable which is written to a business column later (for
+            # example v_classification -> asset_classification).  When the
+            # chain condition or literal outcome is independently grounded,
+            # the field axis is unresolved rather than a proven conflict.
+            # Direct table/assignment claims still use the strict mismatch
+            # check below, preserving high-confidence field safeguards.
+            chain_linked = bool(_rule_decision_chain_links(rule, deterministic_rows))
+            safe_fallback_condition = _safe_ordered_fallback_condition(
+                rule,
+                deterministic_rows,
+                _rule_decision_chain_links(rule, deterministic_rows),
+            )
+            if safe_fallback_condition:
+                condition_match = True
+            field_conflict = bool(
+                claim_field_set
+                and field_union
+                and not field_match
+                and not (chain_linked and (condition_match or outcome_match))
+            )
+            condition_conflict = bool(
+                parsed_claim_conditions
+                and parsed_deterministic_conditions
+                and not condition_structured_match
+                and not safe_fallback_condition
+            )
+            outcome_conflict = bool(
+                (
+                    parsed_claim_assignments
+                    and parsed_deterministic_assignments
+                    and not assignment_structured_match
+                    and not (chain_linked and scalar_outcome_match)
+                )
+                or (
+                    scalar_claim_outcomes
+                    and scalar_deterministic_outcomes
+                    and not scalar_outcome_match
+                )
+                or (
+                    _rule_has_technical_preprocessing_metadata(
+                        rule,
+                        {"assigned_values": [
+                            {"column": pair.get("lhs"), "expression": pair.get("rhs")}
+                            for pair in parsed_deterministic_assignments
+                        ]},
+                    )
+                    and claim_outcome_set
+                    and outcome_union
+                    and not outcome_match
+                )
+            )
 
             if field_conflict or condition_conflict or outcome_conflict:
                 status = "CONFLICT"
@@ -2148,6 +2779,7 @@ def reconcile_deterministic_evidence(
         object_id=object_id,
         rules=rules,
         records=records,
+        deterministic_rows=deterministic_rows,
     )
     classification_summary = _classification_summary_from_contradictions(contradictions)
     review_summary = _build_review_summary(

@@ -408,6 +408,19 @@ def _normalize_decision_chains(value: List[Any]) -> List[Dict[str, Any]]:
     posture as the rest of this module.
     """
     normalized_chains: List[Dict[str, Any]] = []
+    provenance_keys = {
+        "chain_id",
+        "source_file",
+        "source_identifier",
+        "source_chunk_id",
+        "source_chunk_kind",
+        "source_statement_id",
+        "source_char_start",
+        "source_char_end",
+        "source_line_start",
+        "source_line_end",
+        "source_location_status",
+    }
     for chain in value:
         if not isinstance(chain, dict):
             continue
@@ -432,20 +445,35 @@ def _normalize_decision_chains(value: List[Any]) -> List[Dict[str, Any]]:
                     if not field_name:
                         continue
                     assignments.append({"field": field_name, "value": value_text})
-            branches.append({"branch_condition": branch_condition, "assignments": assignments})
+            normalized_branch = {"branch_condition": branch_condition, "assignments": assignments}
+            for key in provenance_keys | {"branch_id"}:
+                if key in branch:
+                    normalized_branch[key] = branch[key]
+            evidence_spans = branch.get("evidence_spans")
+            if isinstance(evidence_spans, list):
+                normalized_branch["evidence_spans"] = [
+                    dict(span) for span in evidence_spans if isinstance(span, dict)
+                ]
+            branches.append(normalized_branch)
         if len(branches) < 2:
             # A "chain" of fewer than two branches isn't a decision ladder -
             # it carries no structural information the flat "conditions"
             # field doesn't already capture, so don't keep a degenerate
             # single-branch entry around to confuse downstream synthesis.
             continue
-        normalized_chains.append(
-            {
-                "chain_type": str(chain.get("chain_type", "") or "").strip(),
-                "subject": str(chain.get("subject", "") or "").strip(),
-                "branches": branches,
-            }
-        )
+        normalized_chain = {
+            "chain_type": str(chain.get("chain_type", "") or "").strip(),
+            "subject": str(chain.get("subject", "") or "").strip(),
+            "branches": branches,
+        }
+        for key in provenance_keys:
+            if key in chain:
+                normalized_chain[key] = chain[key]
+        if "source_identifier" in chain or "source_file" in chain:
+            normalized_chain["source_identifier"] = str(
+                chain.get("source_identifier") or chain.get("source_file") or ""
+            ).strip()
+        normalized_chains.append(normalized_chain)
     return normalized_chains
 
 

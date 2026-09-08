@@ -17,13 +17,121 @@ _ELSE_RE = re.compile(r"^\s*ELSE\s*$", re.IGNORECASE)
 _END_IF_RE = re.compile(r"^\s*END\s+IF\b", re.IGNORECASE)
 
 
+def _source_line_records(source: str) -> List[Dict[str, Any]]:
+    """Return exact line/character offsets without guessing missing locations."""
+    text = str(source or "")
+    records: List[Dict[str, Any]] = []
+    offset = 0
+    for line_number, raw_line in enumerate(text.splitlines(keepends=True), start=1):
+        line = raw_line.rstrip("\r\n")
+        end = offset + len(line)
+        records.append(
+            {
+                "line": line,
+                "line_number": line_number,
+                "char_start": offset,
+                "char_end": end,
+            }
+        )
+        offset += len(raw_line)
+    if text and not records:
+        records.append({"line": text, "line_number": 1, "char_start": 0, "char_end": len(text)})
+    return records
+
+
+def _source_provenance(
+    source: str,
+    start: int,
+    end: int,
+    *,
+    chain_id: str = "",
+    branch_id: str = "",
+) -> Dict[str, Any]:
+    """Build one existing evidence-span-shaped provenance record."""
+    text = str(source or "")
+    if start < 0 or end < start or end > len(text):
+        return {
+            "char_start": -1,
+            "char_end": -1,
+            "line_start": -1,
+            "line_end": -1,
+            "source_location_status": "unavailable",
+            "chain_id": chain_id,
+            "branch_id": branch_id,
+        }
+    line_starts = [0]
+    line_starts.extend(index + 1 for index, value in enumerate(text) if value == "\n")
+    def line_for(offset: int) -> int:
+        return max((index for index, value in enumerate(line_starts) if value <= offset), default=0) + 1
+    return {
+        "char_start": start,
+        "char_end": end,
+        "line_start": line_for(start),
+        "line_end": line_for(max(end - 1, start)),
+        "source_location_status": "available",
+        "chain_id": chain_id,
+        "branch_id": branch_id,
+    }
+
+
+def _line_provenance(
+    source: str,
+    records: List[Dict[str, Any]],
+    start_index: int,
+    end_index: int,
+    *,
+    chain_id: str = "",
+    branch_id: str = "",
+) -> Dict[str, Any]:
+    if not records or start_index < 0 or end_index < start_index or end_index >= len(records):
+        return _source_provenance(source, -1, -1, chain_id=chain_id, branch_id=branch_id)
+    return _source_provenance(
+        source,
+        records[start_index]["char_start"],
+        records[end_index]["char_end"],
+        chain_id=chain_id,
+        branch_id=branch_id,
+    )
+
+
+def _apply_branch_provenance(
+    branch: Dict[str, Any], provenance: Dict[str, Any], *, chain_id: str, branch_index: int
+) -> Dict[str, Any]:
+    branch_id = f"{chain_id}:branch_{branch_index + 1:03d}"
+    span = dict(provenance)
+    span["chain_id"] = chain_id
+    span["branch_id"] = branch_id
+    result = dict(branch)
+    existing_spans = [dict(item) for item in result.get("evidence_spans", []) if isinstance(item, dict)]
+    if not existing_spans:
+        existing_spans = [span]
+    for existing_span in existing_spans:
+        existing_span.setdefault("chain_id", chain_id)
+        existing_span.setdefault("branch_id", branch_id)
+    result.update(
+        {
+            "chain_id": chain_id,
+            "branch_id": branch_id,
+            "source_char_start": span.get("char_start", -1),
+            "source_char_end": span.get("char_end", -1),
+            "source_line_start": span.get("line_start", -1),
+            "source_line_end": span.get("line_end", -1),
+            "source_location_status": span.get("source_location_status", "unavailable"),
+            "evidence_spans": existing_spans,
+        }
+    )
+    return result
+
+
 def extract_procedural_decision_chains(source: str) -> List[Dict[str, Any]]:
     """Extract simple PL/SQL IF/ELSIF/ELSE assignment ladders deterministically.
 
     This deliberately handles only a complete, unambiguous ladder. It does
     not guess through nested control flow, SQL statements, or dynamic code.
     """
-    lines = str(source or "").splitlines()
+    source_text = str(source or "")
+    records = _source_line_records(source_text)
+    lines = [record["line"] for record in records]
     chains: List[Dict[str, Any]] = []
     index = 0
     while index < len(lines):
@@ -37,6 +145,18 @@ def extract_procedural_decision_chains(source: str) -> List[Dict[str, Any]]:
         depth = 1
         assignments: List[Dict[str, str]] = []
         branch_start = index
+        chain_start = index
+
+        def finish_branch(end_index: int) -> None:
+            branches.append(
+                {
+                    "branch_condition": current_condition,
+                    "assignments": assignments,
+                    "_start_index": branch_start,
+                    "_end_index": max(branch_start, end_index),
+                }
+            )
+
         index += 1
         while index < len(lines):
             line = lines[index]
@@ -47,7 +167,7 @@ def extract_procedural_decision_chains(source: str) -> List[Dict[str, Any]]:
             if _END_IF_RE.match(line):
                 depth -= 1
                 if depth == 0:
-                    branches.append({"branch_condition": current_condition, "assignments": assignments})
+                    finish_branch(index - 1)
                     break
                 index += 1
                 continue
@@ -59,9 +179,10 @@ def extract_procedural_decision_chains(source: str) -> List[Dict[str, Any]]:
                 elif _ELSE_RE.match(line):
                     next_condition = "ELSE"
                 if next_condition is not None:
-                    branches.append({"branch_condition": current_condition, "assignments": assignments})
+                    finish_branch(index - 1)
                     current_condition = next_condition
                     assignments = []
+                    branch_start = index
                     index += 1
                     continue
                 assignment = _ASSIGNMENT_RE.match(line)
@@ -75,17 +196,31 @@ def extract_procedural_decision_chains(source: str) -> List[Dict[str, Any]]:
             index += 1
         if depth == 0 and len(branches) >= 2:
             previous = [branch["branch_condition"] for branch in branches]
-            for branch in branches:
+            chain_id = f"procedural_if_{chain_start + 1:04d}_{index + 1:04d}"
+            for branch_index, branch in enumerate(branches):
                 if branch["branch_condition"].upper() == "ELSE":
                     branch["effective_condition"] = (
                         "all preceding conditions are false: " + "; ".join(previous[:-1])
                     )
+                provenance = _line_provenance(
+                    source_text,
+                    records,
+                    branch.pop("_start_index"),
+                    branch.pop("_end_index"),
+                )
+                branches[branch_index] = _apply_branch_provenance(
+                    branch, provenance, chain_id=chain_id, branch_index=branch_index
+                )
             chains.append({
                 "chain_type": "IF_ELSIF_ELSE",
                 "subject": subject,
                 "branches": branches,
-                "source_line_start": branch_start + 1,
+                "chain_id": chain_id,
+                "source_char_start": records[chain_start]["char_start"],
+                "source_char_end": records[index]["char_end"],
+                "source_line_start": chain_start + 1,
                 "source_line_end": index + 1,
+                "source_location_status": "available",
             })
         index += 1
     return chains
@@ -98,7 +233,10 @@ def extract_nested_decision_chains(source: str) -> List[Dict[str, Any]]:
     parent path. It deliberately emits only ladders with at least two
     categorical outcomes and never interprets SQL statements as branches.
     """
-    lines = [line for line in str(source or "").splitlines() if line.strip()]
+    source_text = str(source or "")
+    source_records = _source_line_records(source_text)
+    line_records = [record for record in source_records if record["line"].strip()]
+    lines = [record["line"] for record in line_records]
 
     def assignment(line: str) -> Dict[str, str] | None:
         match = _ASSIGNMENT_RE.match(line)
@@ -106,20 +244,22 @@ def extract_nested_decision_chains(source: str) -> List[Dict[str, Any]]:
             return None
         return {"field": match.group("field").strip(), "value": match.group("value").strip().rstrip(";").strip()}
 
-    def parse_if(position: int, parents: List[str]) -> tuple[List[Dict[str, Any]], int]:
+    def parse_if(position: int, parents: List[str]) -> tuple[List[Dict[str, Any]], int, int, int]:
+        if_start = position
         first = _IF_RE.match(lines[position])
         if not first:
-            return [], position + 1
+            return [], position + 1, if_start, position
         branches: List[Dict[str, Any]] = []
         condition = first.group(1).strip()
         preceding_conditions: List[str] = []
+        condition_index = position
         position += 1
         while position < len(lines):
             direct: List[Dict[str, str]] = []
             nested_paths: List[Dict[str, Any]] = []
             while position < len(lines):
                 if _IF_RE.match(lines[position]):
-                    nested_paths, position = parse_if(position, parents + [condition])
+                    nested_paths, position, _, _ = parse_if(position, parents + [condition])
                     continue
                 if _ELSIF_RE.match(lines[position]) or _ELSE_RE.match(lines[position]) or _END_IF_RE.match(lines[position]):
                     break
@@ -146,18 +286,50 @@ def extract_nested_decision_chains(source: str) -> List[Dict[str, Any]]:
             if nested_paths:
                 for nested in nested_paths:
                     assignments = list(direct) + list(nested.get("assignments", []))
-                    branches.append({"branch_condition": nested["branch_condition"], "assignments": assignments})
+                    parent_span = _line_provenance(
+                        source_text, line_records, condition_index, max(condition_index, position - 1)
+                    )
+                    nested_spans = list(nested.get("evidence_spans") or [])
+                    if not nested_spans and isinstance(nested.get("_provenance"), dict):
+                        nested_spans = [nested["_provenance"]]
+                    branches.append(
+                        {
+                            "branch_condition": nested["branch_condition"],
+                            "assignments": assignments,
+                            "evidence_spans": [parent_span, *nested_spans],
+                        }
+                    )
             else:
-                branches.append({"branch_condition": path_condition, "assignments": direct})
+                branches.append(
+                    {
+                        "branch_condition": path_condition,
+                        "assignments": direct,
+                        "_provenance": _line_provenance(
+                            source_text,
+                            line_records,
+                            condition_index,
+                            max(condition_index, position - 1),
+                        ),
+                    }
+                )
 
             if condition.upper() != "ELSE":
                 preceding_conditions.append(condition)
             if position >= len(lines) or _END_IF_RE.match(lines[position]):
-                return branches, position + 1
+                end_index = position
+                if branches:
+                    for branch in branches:
+                        if "_provenance" not in branch:
+                            spans = branch.get("evidence_spans") or []
+                            branch["_provenance"] = spans[-1] if spans else _line_provenance(
+                                source_text, line_records, condition_index, condition_index
+                            )
+                return branches, position + 1, if_start, end_index
             elsif = _ELSIF_RE.match(lines[position])
             condition = elsif.group(1).strip() if elsif else "ELSE"
+            condition_index = position
             position += 1
-        return branches, position
+        return branches, position, if_start, max(if_start, position - 1)
 
     chains: List[Dict[str, Any]] = []
     position = 0
@@ -165,13 +337,31 @@ def extract_nested_decision_chains(source: str) -> List[Dict[str, Any]]:
         if not _IF_RE.match(lines[position]):
             position += 1
             continue
-        branches, position = parse_if(position, [])
+        branches, position, chain_start, chain_end = parse_if(position, [])
         fields = {item["field"] for branch in branches for item in branch["assignments"] if item.get("field")}
         outcomes = {
             item["value"] for branch in branches for item in branch["assignments"] if item.get("value")
         }
         if len(branches) >= 2 and fields and len(outcomes) >= 2:
-            chains.append({"chain_type": "NESTED_IF", "subject": "", "branches": branches})
+            chain_id = f"nested_if_{line_records[chain_start]['line_number']:04d}_{line_records[chain_end]['line_number']:04d}"
+            for branch_index, branch in enumerate(branches):
+                provenance = branch.pop("_provenance", _source_provenance(source_text, -1, -1))
+                branches[branch_index] = _apply_branch_provenance(
+                    branch, provenance, chain_id=chain_id, branch_index=branch_index
+                )
+            chains.append(
+                {
+                    "chain_type": "NESTED_IF",
+                    "subject": "",
+                    "branches": branches,
+                    "chain_id": chain_id,
+                    "source_char_start": line_records[chain_start]["char_start"],
+                    "source_char_end": line_records[chain_end]["char_end"],
+                    "source_line_start": line_records[chain_start]["line_number"],
+                    "source_line_end": line_records[chain_end]["line_number"],
+                    "source_location_status": "available",
+                }
+            )
     return chains
 
 
@@ -259,7 +449,7 @@ def _find_outer_case_spans(text: str) -> List[Tuple[int, int]]:
 
 def _split_top_level_case_branches(
     text: str, case_start: int, case_end: int
-) -> Tuple[List[Dict[str, str]], Optional[str]]:
+) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """Split one `CASE ... END` span (from `_find_outer_case_spans`) into
     its top-level `WHEN <cond> THEN <value>` branches plus an optional
     `ELSE <value>`.
@@ -292,7 +482,7 @@ def _split_top_level_case_branches(
             boundaries.append((token, match.start(), match.end()))
 
     branches: List[Dict[str, str]] = []
-    else_value: Optional[str] = None
+    else_value: Optional[Dict[str, Any]] = None
     index = 0
     total = len(boundaries)
     while index < total:
@@ -306,14 +496,25 @@ def _split_top_level_case_branches(
             value_stop = boundaries[then_index + 1][1] if then_index + 1 < total else len(body)
             value = body[boundaries[then_index][2] : value_stop].strip()
             if condition and value:
-                branches.append({"condition": condition, "value": value})
+                branches.append(
+                    {
+                        "condition": condition,
+                        "value": value,
+                        "source_start": case_start + body_start + start,
+                        "source_end": case_start + body_start + value_stop,
+                    }
+                )
             index = then_index + 1
             continue
         if token == "ELSE":
             value_stop = boundaries[index + 1][1] if index + 1 < total else len(body)
             value = body[end:value_stop].strip()
             if value:
-                else_value = value
+                else_value = {
+                    "value": value,
+                    "source_start": case_start + body_start + start,
+                    "source_end": case_start + body_start + value_stop,
+                }
             index += 1
             continue
         index += 1
@@ -372,13 +573,19 @@ def extract_case_assignment_decision_chains(source: str) -> List[Dict[str, Any]]
                 {
                     "branch_condition": branch["condition"],
                     "assignments": [{"field": field_name, "value": branch["value"]}],
+                    "_provenance": _source_provenance(
+                        str(source or ""), branch["source_start"], branch["source_end"]
+                    ),
                 }
             )
             conditions_so_far.append(branch["condition"])
         if else_value is not None:
             else_branch: Dict[str, Any] = {
                 "branch_condition": "ELSE",
-                "assignments": [{"field": field_name, "value": else_value}],
+                "assignments": [{"field": field_name, "value": else_value["value"]}],
+                "_provenance": _source_provenance(
+                    str(source or ""), else_value["source_start"], else_value["source_end"]
+                ),
             }
             if conditions_so_far:
                 else_branch["effective_condition"] = (
@@ -388,13 +595,23 @@ def extract_case_assignment_decision_chains(source: str) -> List[Dict[str, Any]]
 
         subject_match = re.match(r"[A-Za-z_][A-Za-z0-9_$#]*", branches_raw[0]["condition"]) if branches_raw else None
         subject = subject_match.group(0) if subject_match else field_name
+        chain_id = f"case_{text.count(chr(10), 0, case_start) + 1:04d}_{text.count(chr(10), 0, case_end) + 1:04d}"
+        for branch_index, branch in enumerate(branches):
+            provenance = branch.pop("_provenance", _source_provenance(str(source or ""), -1, -1))
+            branches[branch_index] = _apply_branch_provenance(
+                branch, provenance, chain_id=chain_id, branch_index=branch_index
+            )
         chains.append(
             {
                 "chain_type": "CASE_EXPRESSION",
                 "subject": subject,
                 "branches": branches,
+                "chain_id": chain_id,
+                "source_char_start": case_start,
+                "source_char_end": case_end,
                 "source_line_start": text.count("\n", 0, case_start) + 1,
                 "source_line_end": text.count("\n", 0, case_end) + 1,
+                "source_location_status": "available",
             }
         )
     return chains
@@ -413,10 +630,22 @@ def _decision_chain_signature(chain: Any) -> Optional[str]:
     if not isinstance(branches, list) or not branches:
         return None
     normalized_branches = []
-    for branch in branches:
+    chain_type = str(chain.get("chain_type") or "").strip().upper()
+    for branch_index, branch in enumerate(branches):
         if not isinstance(branch, dict):
             continue
         condition = re.sub(r"\s+", " ", str(branch.get("branch_condition") or "")).strip().lower()
+        # The nested extractor represents a flat ladder's final ELSE as the
+        # effective predicate ``NOT(A) AND NOT(B)``. The procedural ladder
+        # extractor represents the same branch as literal ELSE. Normalize
+        # only that final nested fallback for deduplication; explicit final
+        # conditions and genuinely nested leaf paths remain distinct.
+        if (
+            chain_type == "NESTED_IF"
+            and branch_index == len(branches) - 1
+            and re.match(r"^not\s*\(", condition)
+        ):
+            condition = "else"
         assignments = branch.get("assignments")
         pairs: List[List[str]] = []
         if isinstance(assignments, list):

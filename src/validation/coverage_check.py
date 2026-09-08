@@ -120,6 +120,217 @@ class CoverageGap:
     keywords: List[str] = field(default_factory=list)
 
 
+_LEDGER_DYNAMIC_RE = re.compile(r"\b(?:EXEC(?:UTE)?|SP_EXECUTESQL)\b|\bdynamic\s+sql\b", re.IGNORECASE)
+_LEDGER_CURSOR_RE = re.compile(r"\b(?:CURSOR|OPEN|FETCH|CLOSE)\b", re.IGNORECASE)
+_LEDGER_CONTROL_RE = re.compile(
+    r"\b(?:IF|ELSIF|ELSEIF|ELSE|CASE|WHEN|WHILE|LOOP|EXCEPTION|CATCH|RAISE|RETURN)\b",
+    re.IGNORECASE,
+)
+_LEDGER_DML_RE = re.compile(r"\b(?:SELECT|INSERT|UPDATE|DELETE|MERGE|TRUNCATE)\b", re.IGNORECASE)
+
+
+def _ledger_text(value: Any, limit: int = 240) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: max(1, limit - 3)].rstrip() + "..."
+
+
+def _ledger_location(item: Dict[str, Any], *, line: int = -1) -> Dict[str, Any]:
+    def _int(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return -1
+
+    line_start = _int(item.get("source_line_start", item.get("line_start", line)))
+    line_end = _int(item.get("source_line_end", item.get("line_end", line)))
+    char_start = _int(item.get("source_char_start", item.get("char_start", -1)))
+    char_end = _int(item.get("source_char_end", item.get("char_end", -1)))
+    location: Dict[str, Any] = {}
+    if line_start >= 0:
+        location["line_start"] = line_start
+    if line_end >= 0:
+        location["line_end"] = line_end
+    if char_start >= 0:
+        location["char_start"] = char_start
+    if char_end >= 0:
+        location["char_end"] = char_end
+    for key in ("source_file", "source_identifier", "source_chunk_id", "chunk_id", "statement_id", "source_statement_id"):
+        value = item.get(key)
+        if value not in (None, "", -1):
+            location[key] = value
+    return location
+
+
+def _ledger_rule_text(rule: Any) -> str:
+    if not isinstance(rule, dict):
+        return ""
+    values = []
+    for key in ("source_evidence", "condition", "action", "business_meaning", "eligibility", "decision_logic_rows"):
+        value = rule.get(key)
+        if isinstance(value, list):
+            values.extend(str(item) for item in value)
+        elif value:
+            values.append(str(value))
+    return " ".join(values)
+
+
+def _ledger_rule_covers(item: Dict[str, Any], rules: Sequence[Any]) -> bool:
+    item_text = str(item.get("source_text") or "")
+    item_norm = _compact_text(item_text)
+    item_statement = str(item.get("statement_id") or item.get("source_statement_id") or "").strip()
+    item_chunk = str(item.get("source_chunk_id") or item.get("chunk_id") or "").strip()
+    item_line_start = item.get("line_start", item.get("source_line_start", -1))
+    item_line_end = item.get("line_end", item.get("source_line_end", item_line_start))
+    try:
+        item_line_start, item_line_end = int(item_line_start), int(item_line_end)
+    except (TypeError, ValueError):
+        item_line_start, item_line_end = -1, -1
+    for rule in rules or []:
+        if not isinstance(rule, dict):
+            continue
+        refs = {
+            str(value).strip()
+            for key in ("source_statement_ids", "statement_ids", "technical_references", "source_chunks", "source_chunk_ids")
+            for value in (rule.get(key) or [])
+            if str(value).strip()
+        }
+        if item_statement and any(item_statement == ref or item_statement in ref for ref in refs):
+            return True
+        if item_chunk and any(item_chunk == ref.split(":", 1)[0] for ref in refs):
+            return True
+        spans = rule.get("evidence_spans") or []
+        for span in spans if isinstance(spans, list) else []:
+            if not isinstance(span, dict):
+                continue
+            try:
+                span_start = int(span.get("line_start", -1))
+                span_end = int(span.get("line_end", span_start))
+            except (TypeError, ValueError):
+                continue
+            if item_line_start >= 0 and span_start >= 0 and not (span_end < item_line_start or item_line_end < span_start):
+                return True
+        if item_norm:
+            for fragment in rule.get("source_evidence") or [] if isinstance(rule.get("source_evidence"), list) else []:
+                if _compact_text(fragment) and _compact_text(fragment) in item_norm:
+                    return True
+            rule_norm = _compact_text(_ledger_rule_text(rule))
+            if rule_norm and item_norm in rule_norm:
+                return True
+    return False
+
+
+def _ledger_status(item: Dict[str, Any], rules: Sequence[Any]) -> str:
+    parse_status = str(item.get("parse_status") or item.get("statement_parse_status") or "").lower()
+    text = str(item.get("source_text") or "")
+    if item.get("unsupported") or "unsupported" in parse_status:
+        return "unsupported"
+    if item.get("dynamic_unresolved") or _LEDGER_DYNAMIC_RE.search(text):
+        return "dynamic_unresolved"
+    if "failed" in parse_status or parse_status in {"error", "unparsed"}:
+        return "parser_failed"
+    table = str(item.get("table") or "").lower()
+    if item.get("operation") and (table.startswith("#") or "temp" in table or "tmp" in table):
+        return "technical_only"
+    if _ledger_rule_covers(item, rules):
+        return "covered_by_rule"
+    if item.get("technical_only"):
+        return "technical_only"
+    return "uncovered"
+
+
+def build_completeness_ledger(
+    source: str,
+    merged_extraction: Optional[Dict[str, Any]] = None,
+    rules: Sequence[Any] = (),
+) -> Dict[str, Any]:
+    """Inventory executable constructs without authoring business rules.
+
+    The ledger is intentionally conservative: parser metadata takes priority,
+    explicit evidence is required for ``covered_by_rule``, and unlinked
+    ordinary constructs remain ``uncovered`` rather than being guessed as
+    technical-only. Temporary-object operations are the narrow exception
+    because their existing operation metadata identifies them as technical
+    working storage.
+    """
+    merged = merged_extraction if isinstance(merged_extraction, dict) else {}
+    items: List[Dict[str, Any]] = []
+
+    def add(kind: str, data: Dict[str, Any], source_text: str = "") -> None:
+        item = {
+            "construct_id": f"construct_{len(items) + 1:04d}",
+            "construct_type": kind,
+            "source_text": _ledger_text(source_text or data.get("source_statement_text") or data.get("statement_text") or data.get("branch_condition") or ""),
+            **_ledger_location(data),
+        }
+        for key in ("parse_status", "statement_parse_status", "operation", "table", "technical_only", "unsupported", "dynamic_unresolved"):
+            if key in data:
+                item[key] = data[key]
+        item["status"] = _ledger_status(item, rules)
+        items.append(item)
+
+    for statement in merged.get("statement_provenance", []) or []:
+        if not isinstance(statement, dict):
+            continue
+        statement_text = str(statement.get("source_statement_text") or "")
+        statement_kind = str(statement.get("statement_kind") or "").upper()
+        if not statement_kind:
+            match = _LEDGER_DML_RE.search(statement_text)
+            statement_kind = match.group(0).upper() if match else "STATEMENT"
+        add(statement_kind, statement, statement_text)
+
+    for operation in merged.get("table_operations", []) or []:
+        if not isinstance(operation, dict):
+            continue
+        table = str(operation.get("table") or "")
+        operation_kind = str(operation.get("operation") or "TABLE_OPERATION").upper()
+        add(
+            f"{operation_kind}_TEMP" if table.startswith("#") or "temp" in table.lower() or "tmp" in table.lower() else operation_kind,
+            operation,
+            operation.get("source_statement_text") or table,
+        )
+
+    for chain in merged.get("decision_chains", []) or []:
+        if not isinstance(chain, dict):
+            continue
+        chain_kind = str(chain.get("chain_type") or "DECISION_CHAIN").upper()
+        for branch in chain.get("branches", []) or []:
+            if not isinstance(branch, dict):
+                continue
+            branch_kind = "CASE" if "CASE" in chain_kind else "IF_BRANCH"
+            if str(branch.get("branch_condition") or "").strip().upper() in {"ELSE", "OTHERWISE"}:
+                branch_kind = "ELSE"
+            data = {**chain, **branch}
+            data["source_text"] = branch.get("branch_condition") or ""
+            data["parse_status"] = chain.get("parse_status") or chain.get("status") or "parsed"
+            data["unsupported"] = chain.get("unsupported", False)
+            add(branch_kind, data, data["source_text"])
+
+    masked = _strip_comments_and_strings_for_scan(source)
+    for line_number, line in enumerate(masked.splitlines(), start=1):
+        control_matches = list(_LEDGER_CONTROL_RE.finditer(line))
+        cursor_matches = list(_LEDGER_CURSOR_RE.finditer(line))
+        for match in [*control_matches, *cursor_matches]:
+            kind = match.group(0).upper()
+            if kind in {"WHEN", "THEN"}:
+                kind = "CASE_BRANCH"
+            elif kind in {"OPEN", "FETCH", "CLOSE"}:
+                kind = "CURSOR_OPERATION"
+            data = {"line_start": line_number, "line_end": line_number}
+            add(kind, data, line.strip())
+        if _CALCULATION_RE.search(line):
+            add("CALCULATION", {"line_start": line_number, "line_end": line_number}, line.strip())
+
+    counts: Dict[str, int] = {}
+    for item in items:
+        counts[item["status"]] = counts.get(item["status"], 0) + 1
+    return {
+        "version": "1",
+        "construct_count": len(items),
+        "status_counts": counts,
+        "items": items,
+    }
+
+
 def _strip_comments_and_strings_for_scan(source: str) -> str:
     """Same-length copy of `source` with comments blanked (so a keyword
     appearing only in a comment is never counted as a decision point) and

@@ -5,6 +5,7 @@ from src.validation.semantic_validation import (
     merge_decision_chains,
     find_semantic_anomalies,
 )
+from pipeline import _extract_deterministic_decision_chains
 
 
 def test_extracts_ordered_oracle_ladder_and_effective_else_condition():
@@ -31,6 +32,13 @@ def test_extracts_ordered_oracle_ladder_and_effective_else_condition():
         "'STANDARD'", "0.40"
     ]
     assert "all preceding conditions are false" in chains[0]["branches"][-1]["effective_condition"]
+    assert chains[0]["chain_id"].startswith("procedural_if_0002_")
+    for index, branch in enumerate(chains[0]["branches"], start=1):
+        assert branch["branch_id"].endswith(f":branch_{index:03d}")
+        assert branch["source_location_status"] == "available"
+        assert branch["source_line_start"] > 0
+        assert branch["source_char_end"] > branch["source_char_start"]
+        assert branch["evidence_spans"][0]["branch_id"] == branch["branch_id"]
 
 
 def test_flags_sub_one_provision_percentage_divided_by_100():
@@ -67,6 +75,9 @@ def test_nested_decision_chain_keeps_parent_and_child_conditions_bound():
     assert "v_days BETWEEN 366 AND 1095" in conditions[2]
     assert "v_since <= 365" in conditions[2]
     assert "v_since > 1095" in conditions[4]
+    assert all(branch["source_location_status"] == "available" for branch in chain["branches"])
+    assert all(branch["evidence_spans"] for branch in chain["branches"])
+    assert chain["branches"][2]["source_line_start"] > chain["branches"][0]["source_line_start"]
 
 
 def test_tsql_case_expression_assignment_ladder_is_captured():
@@ -104,6 +115,9 @@ def test_tsql_case_expression_assignment_ladder_is_captured():
     # field name so it lines up with how a rule would name it.
     assert all(branch["assignments"][0]["field"] == "SMA_CLASS" for branch in chain["branches"])
     assert "all preceding conditions are false" in chain["branches"][-1]["effective_condition"]
+    assert chain["source_char_end"] > chain["source_char_start"]
+    assert [branch["source_line_start"] for branch in chain["branches"]] == [3, 4, 5, 6, 7]
+    assert all(branch["branch_id"].startswith(chain["chain_id"] + ":") for branch in chain["branches"])
 
 
 def test_case_expression_ignores_commented_out_when_branch():
@@ -221,3 +235,163 @@ def test_procedural_ladder_still_wins_when_present_alongside_case_expressions():
     ladder_chains = extract_procedural_decision_chains(source)
     assert case_chains == []
     assert len(ladder_chains) == 1
+
+
+def test_pipeline_keeps_nested_only_deterministic_chain():
+    source = """
+    IF v_outer = 1 THEN
+      IF v_inner = 1 THEN
+        v_result := 'A';
+      ELSE
+        v_result := 'B';
+      END IF;
+    ELSE
+      v_result := 'C';
+    END IF;
+    """
+
+    chains = _extract_deterministic_decision_chains(source)
+
+    assert chains
+    assert any(chain["chain_type"] == "NESTED_IF" for chain in chains)
+    assert any(
+        assignment["value"] == "'B'"
+        for chain in chains
+        for branch in chain["branches"]
+        for assignment in branch["assignments"]
+    )
+
+
+def test_pipeline_keeps_flat_procedural_chain():
+    source = """
+    IF v_status = 'A' THEN
+      v_result := 'X';
+    ELSIF v_status = 'B' THEN
+      v_result := 'Y';
+    ELSE
+      v_result := 'Z';
+    END IF;
+    """
+
+    chains = _extract_deterministic_decision_chains(source)
+
+    assert len(chains) == 1
+    assert any(
+        [assignment["value"] for branch in chain["branches"] for assignment in branch["assignments"]]
+        == ["'X'", "'Y'", "'Z'"]
+        for chain in chains
+    )
+
+
+def test_pipeline_keeps_nested_and_separate_flat_chains():
+    source = """
+    IF v_outer = 1 THEN
+      IF v_inner = 1 THEN
+        v_nested := 'A';
+      ELSE
+        v_nested := 'B';
+      END IF;
+    ELSE
+      v_nested := 'C';
+    END IF;
+
+    IF v_status = 'A' THEN
+      v_flat := 'X';
+    ELSIF v_status = 'B' THEN
+      v_flat := 'Y';
+    ELSE
+      v_flat := 'Z';
+    END IF;
+    """
+
+    chains = _extract_deterministic_decision_chains(source)
+    fields = {
+        assignment["field"]
+        for chain in chains
+        for branch in chain["branches"]
+        for assignment in branch["assignments"]
+    }
+
+    assert {"v_nested", "v_flat"}.issubset(fields)
+    assert sum("v_nested" in fields_for_chain for fields_for_chain in [
+        {
+            assignment["field"]
+            for branch in chain["branches"]
+            for assignment in branch["assignments"]
+        }
+        for chain in chains
+    ]) >= 1
+    assert sum("v_flat" in fields_for_chain for fields_for_chain in [
+        {
+            assignment["field"]
+            for branch in chain["branches"]
+            for assignment in branch["assignments"]
+        }
+        for chain in chains
+    ]) >= 1
+
+
+def test_pipeline_chain_collection_deduplicates_duplicate_extractor_results(monkeypatch):
+    chain = {
+        "chain_type": "IF_ELSIF_ELSE",
+        "subject": "status",
+        "branches": [
+            {"branch_condition": "status = 'A'", "assignments": [{"field": "result", "value": "'X'"}]},
+            {"branch_condition": "ELSE", "assignments": [{"field": "result", "value": "'Y'"}]},
+        ],
+    }
+    calls = []
+
+    monkeypatch.setattr(
+        "pipeline.extract_case_assignment_decision_chains",
+        lambda source: calls.append("case") or [],
+    )
+    monkeypatch.setattr(
+        "pipeline.extract_nested_decision_chains",
+        lambda source: calls.append("nested") or [chain],
+    )
+    monkeypatch.setattr(
+        "pipeline.extract_procedural_decision_chains",
+        lambda source: calls.append("procedural") or [dict(chain)],
+    )
+
+    chains = _extract_deterministic_decision_chains("source")
+
+    assert calls == ["case", "nested", "procedural"]
+    assert len(chains) == 1
+
+
+def test_multiple_deterministic_chains_have_additive_coverage_denominator():
+    from src.validation.reconciliation import reconcile_deterministic_evidence
+    from tests.test_reconciliation import _coverage_chain, _coverage_rule, _make_ingestion, _make_synthesis
+
+    first = _coverage_chain(subject="FIRST")
+    second = {
+        "chain_type": "IF_ELSIF",
+        "subject": "SECOND",
+        "branches": [
+            {
+                "branch_condition": "OTHER_STATUS = 'A'",
+                "assignments": [{"field": "SECOND", "value": "'A'"}],
+            },
+            {
+                "branch_condition": "OTHER_STATUS = 'B'",
+                "assignments": [{"field": "SECOND", "value": "'B'"}],
+            },
+        ],
+    }
+    rules = [
+        _coverage_rule("STATUS = 'A'", "A", rule_id="first_a"),
+        _coverage_rule("STATUS = 'B'", "B", rule_id="first_b"),
+        _coverage_rule("ELSE", "OTHER", rule_id="first_else"),
+        _coverage_rule("OTHER_STATUS = 'A'", "A", rule_id="second_a", field="SECOND"),
+    ]
+    result = reconcile_deterministic_evidence(
+        ingestion=_make_ingestion(dialect="TSQL"),
+        merged_extraction={"decision_chains": [first, second]},
+        synthesis=_make_synthesis(rules),
+    )
+
+    assert result.coverage["decision_chain_count"] == 2
+    assert result.coverage["decision_chain_total_branches"] == 5
+    assert result.coverage["decision_chain_coverage_pct"] == 80.0

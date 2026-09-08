@@ -87,6 +87,45 @@ END
 GO
 """
 
+SAMPLE_TSQL_TRY_CATCH_WITH_CASE = """
+CREATE PROCEDURE dbo.try_case_demo
+AS
+BEGIN
+    BEGIN TRY
+        UPDATE dbo.TargetTable
+        SET status = CASE
+            WHEN amount > 100 THEN 'HIGH'
+            ELSE 'LOW'
+        END;
+    END TRY
+    BEGIN CATCH
+        SELECT ERROR_MESSAGE();
+    END CATCH
+END
+GO
+"""
+
+SAMPLE_TSQL_NESTED_IF_TRY_CATCH = """
+CREATE PROCEDURE dbo.nested_try_demo
+AS
+BEGIN
+    BEGIN TRY
+        IF @is_priority = 1
+        BEGIN
+            UPDATE dbo.Accounts SET status = 'PRIORITY';
+        END
+        ELSE
+        BEGIN
+            UPDATE dbo.Accounts SET status = 'STANDARD';
+        END
+    END TRY
+    BEGIN CATCH
+        SELECT ERROR_MESSAGE();
+    END CATCH
+END
+GO
+"""
+
 SAMPLE_TSQL_CREATE_OR_ALTER = """
 CREATE OR ALTER PROCEDURE [dbo].[usp_mark_sma]
 (
@@ -819,6 +858,43 @@ GO
     chunks = agent.chunk_code(text, warnings, dialect="tsql")
     assert any("IF @timekey > 26267 THEN" in chunk.text and "ELSE" in chunk.text for chunk in chunks)
     assert not any(chunk.text.lstrip().startswith("ELSE") for chunk in chunks)
+
+
+def test_branchy_orchestrator_does_not_degenerate_into_keyword_chunks():
+    agent = CodeIngestionAgent(max_chunk_chars=300, dialect="tsql")
+    warnings = []
+    branches = [
+        f"IF @flag_{idx} = 1 BEGIN SELECT {idx}; END ELSE BEGIN SELECT {idx + 100}; END"
+        for idx in range(12)
+    ]
+    text = "CREATE PROCEDURE dbo.branchy_demo AS BEGIN\n" + "\n".join(branches) + "\nEND\nGO\n"
+
+    chunks = agent.chunk_code(text, warnings, dialect="tsql")
+    size_ceiling = -(-len(text) // agent.max_chunk_chars)
+
+    assert len(chunks) <= size_ceiling + 1
+    assert len(chunks) < 12
+    assert not any(chunk.text.strip() in {"BEGIN", "END", "ELSE", "TRY", "CATCH"} for chunk in chunks)
+
+
+def test_tsql_try_catch_with_case_keeps_inner_case_and_exception_block_together():
+    agent = CodeIngestionAgent(max_chunk_chars=300, dialect="tsql")
+    warnings = []
+    chunks = agent.chunk_code(SAMPLE_TSQL_TRY_CATCH_WITH_CASE, warnings, dialect="tsql")
+
+    assert any("CASE" in chunk.text and "HIGH" in chunk.text for chunk in chunks)
+    assert any("BEGIN CATCH" in chunk.text for chunk in chunks)
+    assert not any(chunk.text.strip() in {"BEGIN", "END", "ELSE", "TRY", "CATCH"} for chunk in chunks)
+
+
+def test_tsql_nested_if_inside_try_catch_preserves_both_branches():
+    agent = CodeIngestionAgent(max_chunk_chars=300, dialect="tsql")
+    warnings = []
+    chunks = agent.chunk_code(SAMPLE_TSQL_NESTED_IF_TRY_CATCH, warnings, dialect="tsql")
+
+    assert any("IF @is_priority = 1" in chunk.text and "ELSE" in chunk.text for chunk in chunks)
+    assert any("BEGIN CATCH" in chunk.text and "ERROR_MESSAGE" in chunk.text for chunk in chunks)
+    assert not any(chunk.text.strip() in {"BEGIN", "END", "ELSE", "TRY", "CATCH"} for chunk in chunks)
 
 
 def test_detect_dialect_marks_postgresql_as_unsupported():
