@@ -910,8 +910,22 @@ class CodeIngestionAgent:
                 return False
             header_region = masked[search_start : search_start + as_match.start()]
             return "@" in header_region
-        header = re.search(r"\b(?:PROCEDURE|FUNCTION)\b", masked, re.IGNORECASE)
-        return bool(header and "(" in masked[header.end() :])
+        # Must be an open-paren immediately following the object name (the
+        # start of a real Oracle parameter list), not merely "any '(' that
+        # appears somewhere later in the object". The previous check
+        # (`"(" in masked[header.end():]`) scanned the entire rest of the
+        # object body - since almost every non-trivial procedure body
+        # contains a parenthesis somewhere (function calls, subqueries,
+        # CASE expressions, etc.), this was true for virtually any input
+        # and made every genuinely parameterless procedure whose T-SQL
+        # parse also failed get misclassified as "failed" instead of
+        # "parameterless".
+        header_match = re.search(
+            rf"(?:PROCEDURE|FUNCTION)\s+({_ORACLE_NAME.pattern})\s*\(",
+            masked,
+            re.IGNORECASE,
+        )
+        return bool(header_match)
 
     def _extract_parameters_with_fallback(
         self, code: str, object_type: str, dialect: str
@@ -1213,8 +1227,17 @@ class CodeIngestionAgent:
         param_block_masked = masked[search_start : search_start + as_match.start()]
         param_block = code[search_start : search_start + as_match.start()]
 
+        # NOTE: deliberately NOT anchored to the start of a line (no `^\s*`)
+        # - a header option can also appear glued onto the tail of the last
+        # parameter's own line with no preceding comma or newline, e.g.
+        # "@TIMEKEY INT with recompile" (seen verbatim in the client
+        # corpus). Anchoring to line-start missed that shape entirely,
+        # since "with recompile" there is preceded by "@TIMEKEY INT ", not
+        # a newline. These phrases are specific, multi-word, and never
+        # legitimately part of a parameter name/datatype, so a plain
+        # word-boundary search anywhere in the parameter block is safe.
         header_option_match = re.search(
-            r"(?im)^\s*(?:WITH\s+RECOMPILE|WITH\s+ENCRYPTION|WITH\s+SCHEMABINDING|"
+            r"(?i)\b(?:WITH\s+RECOMPILE|WITH\s+ENCRYPTION|WITH\s+SCHEMABINDING|"
             r"WITH\s+NATIVE_COMPILATION|WITH\s+EXECUTE\s+AS|EXECUTE\s+AS|FOR\s+REPLICATION|"
             r"RETURNS\s+NULL\s+ON\s+NULL\s+INPUT|CALLED\s+ON\s+NULL\s+INPUT)\b",
             param_block_masked,
@@ -1261,17 +1284,24 @@ class CodeIngestionAgent:
                 complete = False
                 continue
             saw_candidate = True
-            # Try the RAW (unmasked) text first: a masked default-value
-            # literal directly adjacent to "OUTPUT"/"OUT" (e.g.
-            # `= 'A' OUTPUT` -> masked to `=     OUTPUT`) loses the quote
-            # character that otherwise gives the regex a clear boundary
-            # between the default value and the direction keyword, and can
-            # silently swallow "OUTPUT" into the (also non-greedy) default
-            # group instead of capturing it as the direction. The masked
-            # text remains the fallback for cases where the raw text has a
-            # leading comment fragment glued onto the parameter itself
-            # (see the split-on-masked-text comment above).
-            m = _PARAM_LINE_TSQL.match(raw_original.strip()) or _PARAM_LINE_TSQL.match(raw)
+            # Try the RAW (unmasked) text first, but anchored at the real
+            # "@" position located via the masked text rather than via a
+            # blind `.strip()`. A parameter preceded on its own line by a
+            # comment (e.g. "-- Add the parameters here\n@date1 date=''")
+            # has that comment blanked to spaces in `raw_masked` but left
+            # as literal text in `raw_original`; `.strip()` only trims
+            # actual leading/trailing whitespace, so it can't remove a
+            # non-whitespace comment and `raw_original.strip()` still
+            # starts with the comment text, failing the "@..." match
+            # entirely. Locating "@" in the masked text and slicing the
+            # *original* text from that same offset drops the comment
+            # while preserving the real default-value literal (which the
+            # `raw` masked-and-stripped fallback below would otherwise
+            # lose: a masked `=''` default collapses to trailing spaces
+            # that `.strip()` then trims away as if it were never there).
+            at_pos = raw_masked.find("@")
+            original_from_at = raw_original[at_pos:].rstrip() if at_pos >= 0 else raw_original.strip()
+            m = _PARAM_LINE_TSQL.match(original_from_at) or _PARAM_LINE_TSQL.match(raw)
             if m:
                 name, datatype, out_kw = m.groups()
                 direction = "OUT" if out_kw else "IN"
