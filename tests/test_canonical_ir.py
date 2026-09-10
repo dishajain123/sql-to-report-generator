@@ -247,11 +247,16 @@ def test_business_report_findings_preserves_merged_and_synthesis_ambiguities():
     )
 
     findings_section = report.split("## Findings / Needs Review", 1)[1]
+    # NOTE: chunk-parse-error wording was shortened and (when there's more
+    # than one failed chunk) consolidated into a single bullet - see
+    # `_findings_section` in report_formatter.py. With exactly one failed
+    # chunk here it still renders as its own bullet, just with the new,
+    # shorter phrasing.
     assert "Automatic extraction for this chunk returned malformed JSON and could not be parsed; this chunk needs manual review." in findings_section
-    assert "Chunk '01_nested_block' (nested_block) technical extraction returned malformed JSON and needs manual review." in findings_section
+    assert "Chunk 01_nested_block (nested_block) returned malformed JSON and needs manual review." in findings_section
     assert "Automatic extraction for some chunks returned malformed JSON and needs manual review." in findings_section
-    assert findings_section.index("Automatic extraction for this chunk returned malformed JSON and could not be parsed; this chunk needs manual review.") < findings_section.index("Chunk '01_nested_block' (nested_block) technical extraction returned malformed JSON and needs manual review.")
-    assert findings_section.index("Chunk '01_nested_block' (nested_block) technical extraction returned malformed JSON and needs manual review.") < findings_section.index("Automatic extraction for some chunks returned malformed JSON and needs manual review.")
+    assert findings_section.index("Automatic extraction for this chunk returned malformed JSON and could not be parsed; this chunk needs manual review.") < findings_section.index("Chunk 01_nested_block (nested_block) returned malformed JSON and needs manual review.")
+    assert findings_section.index("Chunk 01_nested_block (nested_block) returned malformed JSON and needs manual review.") < findings_section.index("Automatic extraction for some chunks returned malformed JSON and needs manual review.")
 
 
 def test_business_rules_are_ordered_by_source_execution_order_not_llm_order():

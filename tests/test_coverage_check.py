@@ -359,8 +359,10 @@ def test_failed_bounded_revision_reports_gap_without_fabricating_rule(monkeypatc
     pipeline, result = _run_coverage_pipeline(monkeypatch, source, [], fail_revision=True, retries=2)
     assert len(pipeline.synthesizer_agent.revise_calls) == 2
     assert pipeline.synthesizer_agent.revised_rules == []
+    # Wording shortened (no more "Possible unreviewed decision logic" +
+    # quoted snippet) - see `format_gap_for_ambiguity` in coverage_check.py.
     assert any(
-        "Possible unreviewed decision logic" in item
+        "not referenced by any synthesized rule" in item
         for item in pipeline.formatter_agent.synthesis_data[-1]["ambiguities"]
     )
 

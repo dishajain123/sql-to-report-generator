@@ -984,13 +984,34 @@ def format_gap_for_ambiguity(gap: CoverageGap) -> str:
     matching the pipeline's existing 'never silently guess' convention
     (see DESIGN_NOTES.md) for anything that can't be confidently
     resolved after the bounded revision loop.
+
+    Kept to one short line, no quoted source snippet - the line range and
+    keyword are enough for a reader to open the source and check; the
+    quoted snippet mostly duplicated that same information at length.
     """
-    snippet = gap.snippet.strip().replace("\n", " ")
-    if len(snippet) > 160:
-        snippet = snippet[:160].rstrip() + "..."
+    keyword = "/".join(gap.keywords) or "decision keyword"
     return (
-        f"Possible unreviewed decision logic near source line "
-        f"{gap.line_start}-{gap.line_end} ({'/'.join(gap.keywords) or 'decision keyword'}): "
-        f"no synthesized rule's evidence appears to reference \"{snippet}\". "
-        "Needs human review to confirm whether this is business-relevant."
+        f"Lines {gap.line_start}-{gap.line_end} ({keyword}) not referenced by any "
+        "synthesized rule - needs review to confirm business relevance."
+    )
+
+
+def format_consolidated_gap_ambiguity(gaps: list["CoverageGap"], max_ranges: int = 5) -> str:
+    """Render multiple unresolved gaps as ONE short fragment.
+
+    Used when the gaps are a downstream symptom of a single synthesis
+    truncation rather than independently-reviewed ambiguous constructs
+    (see call site in `pipeline.py`, which merges this fragment into the
+    existing truncation ambiguity instead of adding it as a separate
+    list item - one bullet explaining both the cause and the affected
+    regions, not two).
+    """
+    ranges = [f"{gap.line_start}-{gap.line_end}" for gap in gaps]
+    shown = ranges[:max_ranges]
+    range_text = ", ".join(shown)
+    if len(ranges) > max_ranges:
+        range_text += f" (+{len(ranges) - max_ranges} more)"
+    return (
+        f"Affected regions: lines {range_text} ({len(gaps)} total) - needs review "
+        "after a larger output budget or chunked synthesis."
     )

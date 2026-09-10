@@ -60,6 +60,7 @@ from src.validation.coverage_check import (
     build_completeness_ledger,
     find_coverage_gaps,
     format_gap_for_ambiguity,
+    format_consolidated_gap_ambiguity,
 )
 from src.validation.dependencies import build_statement_dependencies
 from src.ir.canonical_ir import CanonicalBusinessIR
@@ -160,6 +161,28 @@ def _ranges_overlap(left_start: Any, left_end: Any, right_start: Any, right_end:
     if min(left_start, left_end, right_start, right_end) < 0:
         return False
     return not (left_end <= right_start or right_end <= left_start)
+
+
+_TRUNCATION_AMBIGUITY_MARKER = "exceeded the model's maximum"
+
+
+def _merge_into_truncation_ambiguity(container: Dict[str, Any], gap_summary: str) -> None:
+    """Fold a consolidated coverage-gap summary into the existing
+    truncation ambiguity string (identified by its stable marker phrase)
+    instead of appending it as a second, separate bullet. Keeps the
+    truncation cause and its affected line ranges as one report item.
+    Falls back to appending the summary on its own if the truncation
+    ambiguity isn't present in this container for some reason, so the
+    information is never silently dropped.
+    """
+    ambiguities = list(container.get("ambiguities", []) or [])
+    for index, item in enumerate(ambiguities):
+        if _TRUNCATION_AMBIGUITY_MARKER in str(item):
+            ambiguities[index] = f"{str(item).rstrip()} {gap_summary}"
+            container["ambiguities"] = ambiguities
+            return
+    ambiguities.append(gap_summary)
+    container["ambiguities"] = ambiguities
 
 
 def _annotate_decision_chain_provenance(
@@ -666,10 +689,26 @@ class LogicRulesExtractorPipeline:
             ],
         }
         if coverage_gaps:
-            gap_findings = [format_gap_for_ambiguity(gap) for gap in coverage_gaps]
-            merged_extraction["ambiguities"].extend(gap_findings)
-            synthesis.data["ambiguities"] = list(synthesis.data.get("ambiguities", []) or [])
-            synthesis.data["ambiguities"].extend(gap_findings)
+            # A truncated synthesis pass (finish_reason == "length") produces
+            # a *cause*, not N independent ambiguities: every gap after the
+            # cutoff point exists only because the model never got to that
+            # region, not because each one was individually reviewed and
+            # found ambiguous. In that case, fold one short "affected
+            # regions" fragment into the existing truncation ambiguity
+            # instead of adding 15-20+ near-duplicate "needs review" bullets
+            # - one bullet explains both the cause and the affected lines.
+            # Genuine (non-truncation) gaps keep their own bullet each, just
+            # shorter, since those were reviewed individually and each one
+            # is a distinct thing to check.
+            if getattr(synthesis, "truncated", False) and len(coverage_gaps) > 1:
+                gap_summary = format_consolidated_gap_ambiguity(coverage_gaps)
+                _merge_into_truncation_ambiguity(merged_extraction, gap_summary)
+                _merge_into_truncation_ambiguity(synthesis.data, gap_summary)
+            else:
+                gap_findings = [format_gap_for_ambiguity(gap) for gap in coverage_gaps]
+                merged_extraction["ambiguities"].extend(gap_findings)
+                synthesis.data["ambiguities"] = list(synthesis.data.get("ambiguities", []) or [])
+                synthesis.data["ambiguities"].extend(gap_findings)
 
         # Diagnostic-only inventory: this is deliberately built after
         # synthesis/revision so it can say what happened to each executable
