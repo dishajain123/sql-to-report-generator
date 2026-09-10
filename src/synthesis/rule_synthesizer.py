@@ -85,6 +85,13 @@ _SYNTHESIS_EVIDENCE_MAP_MAX_CHARS = int(
 _SYNTHESIS_EVIDENCE_TEXT_MAX_CHARS = int(
     os.environ.get("SYNTHESIS_EVIDENCE_TEXT_MAX_CHARS", "240")
 )
+# Secondary cap (alongside the decision-point budget below) on how much raw
+# source text a single synthesis *section* is allowed to accumulate when
+# `plan_synthesis_sections` groups extraction chunks together. Bounds the
+# prompt size for chunks that carry little/no decision logic (so they don't
+# consume any of the decision-point budget) but are still large in plain
+# character count.
+_SYNTHESIS_SECTION_MAX_CHARS = int(os.environ.get("SYNTHESIS_SECTION_MAX_CHARS", "24000"))
 
 
 class RuleSynthesizerAgent:
@@ -130,10 +137,214 @@ class RuleSynthesizerAgent:
         self.response_cache = response_cache
         self.max_tokens = max_tokens
 
-    def _output_token_budget(self, raw_source: str, requested: Optional[int] = None) -> int:
+    def _estimate_output_tokens(self, raw_source: str, requested: Optional[int] = None) -> int:
+        """Projected completion tokens a single synthesis call over
+        `raw_source` would need, *before* clamping to the hard per-call
+        ceiling. Exposed (via `requires_sectioned_synthesis`) so a caller can
+        detect ahead of time that a single pass is effectively guaranteed to
+        truncate mid-JSON, instead of only discovering it from a
+        `finish_reason == "length"` response after the call.
+        """
         points = len(find_decision_points(raw_source or ""))
         base = max(int(requested or self.max_tokens), _BASE_SYNTHESIS_TOKENS)
-        return min(_HARD_MAX_OUTPUT_TOKENS, base + points * _PER_DECISION_POINT_TOKENS)
+        return base + points * _PER_DECISION_POINT_TOKENS
+
+    def _output_token_budget(self, raw_source: str, requested: Optional[int] = None) -> int:
+        return min(_HARD_MAX_OUTPUT_TOKENS, self._estimate_output_tokens(raw_source, requested))
+
+    def requires_sectioned_synthesis(self, raw_source: str, requested: Optional[int] = None) -> bool:
+        """True when a single synthesis call over the whole `raw_source`
+        would need more completion tokens than the hard output ceiling
+        allows. In that case the call is not merely at risk of truncating -
+        it is virtually guaranteed to, because `_output_token_budget` will
+        clamp the request down to the ceiling regardless of how many rules
+        actually need to be produced. Callers should use
+        `plan_synthesis_sections` and one `synthesize()` call per section
+        instead of a single whole-object call.
+        """
+        return self._estimate_output_tokens(raw_source, requested) > _HARD_MAX_OUTPUT_TOKENS
+
+    def plan_synthesis_sections(
+        self,
+        chunks: Sequence[Any],
+        full_raw_source: str,
+        requested: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Group extraction chunks into contiguous synthesis sections.
+
+        `chunks` is the same ordered list of `src.ingestion.ingestion.CodeChunk`
+        objects (or chunk-shaped dicts) already produced for the extraction
+        stage - this reuses those boundaries rather than introducing a second,
+        independent split of the source. Each returned section is sized so its
+        own decision-point count stays comfortably under the hard output-token
+        ceiling (leaving headroom under `_HARD_MAX_OUTPUT_TOKENS` so the
+        section's own eventual `_output_token_budget` call never itself needs
+        to clamp), with a secondary character-count cap for chunks that carry
+        little decision logic but a lot of plain text. A chunk is never split
+        across two sections.
+
+        Returns a list of `{"chunk_ids": [...], "char_start": int|None,
+        "char_end": int|None}` dicts in source order. A source with no chunks
+        comes back as a single all-covering entry with an empty chunk-id list,
+        so callers can treat "no sectioning possible" and "one section is
+        enough" the same way.
+        """
+        chunk_list = list(chunks or [])
+        if not chunk_list:
+            return [{
+                "chunk_ids": [],
+                "char_start": 0,
+                "char_end": len(full_raw_source or ""),
+            }]
+
+        base = max(int(requested or self.max_tokens), _BASE_SYNTHESIS_TOKENS)
+        section_token_budget = max(_PER_DECISION_POINT_TOKENS, _HARD_MAX_OUTPUT_TOKENS - base)
+        section_point_budget = max(1, section_token_budget // max(1, _PER_DECISION_POINT_TOKENS))
+
+        sections: List[Dict[str, Any]] = []
+        current_ids: List[str] = []
+        current_start: Optional[int] = None
+        current_end: Optional[int] = None
+        current_points = 0
+        current_chars = 0
+
+        def _flush() -> None:
+            if current_ids:
+                sections.append({
+                    "chunk_ids": list(current_ids),
+                    "char_start": current_start,
+                    "char_end": current_end,
+                })
+
+        for chunk in chunk_list:
+            if isinstance(chunk, dict):
+                chunk_id = chunk.get("chunk_id")
+                chunk_text = chunk.get("text", "") or ""
+                char_start = chunk.get("source_char_start", -1)
+                char_end = chunk.get("source_char_end", -1)
+            else:
+                chunk_id = getattr(chunk, "chunk_id", None)
+                chunk_text = getattr(chunk, "text", "") or ""
+                char_start = getattr(chunk, "source_char_start", -1)
+                char_end = getattr(chunk, "source_char_end", -1)
+            chunk_points = max(1, len(find_decision_points(chunk_text)))
+            chunk_chars = len(chunk_text)
+
+            would_exceed_points = current_points + chunk_points > section_point_budget
+            would_exceed_chars = current_chars + chunk_chars > _SYNTHESIS_SECTION_MAX_CHARS
+            if current_ids and (would_exceed_points or would_exceed_chars):
+                _flush()
+                current_ids, current_start, current_end = [], None, None
+                current_points, current_chars = 0, 0
+
+            current_ids.append(chunk_id)
+            current_points += chunk_points
+            current_chars += chunk_chars
+            if isinstance(char_start, int) and char_start >= 0:
+                current_start = char_start if current_start is None else min(current_start, char_start)
+            if isinstance(char_end, int) and char_end >= 0:
+                current_end = char_end if current_end is None else max(current_end, char_end)
+
+        _flush()
+        return sections
+
+    @staticmethod
+    def merge_section_results(results: Sequence["SynthesisResult"]) -> "SynthesisResult":
+        """Combine the per-section `SynthesisResult`s produced by sectioned
+        synthesis (one call per `plan_synthesis_sections` entry) back into a
+        single whole-object result shaped exactly like a normal `synthesize()`
+        return value, so every downstream consumer (coverage-gap revision,
+        reconciliation, report formatting) keeps working against one
+        `SynthesisResult` without change.
+        """
+        usable = [item for item in results if isinstance(item, SynthesisResult)]
+        if not usable:
+            return SynthesisResult(data=dict(_EMPTY_SYNTHESIS))
+        if len(usable) == 1:
+            return usable[0]
+
+        def _dedup_preserve_order(values: Sequence[Any]) -> List[Any]:
+            seen: set = set()
+            ordered: List[Any] = []
+            for value in values:
+                key = value if isinstance(value, str) else json.dumps(value, sort_keys=True, default=str)
+                if key in seen:
+                    continue
+                seen.add(key)
+                ordered.append(value)
+            return ordered
+
+        purpose_summaries = [str(item.data.get("purpose_summary") or "").strip() for item in usable]
+        merged_purpose = " ".join(_dedup_preserve_order([text for text in purpose_summaries if text]))
+
+        exception_summaries = [
+            str(item.data.get("exception_handling_summary") or "").strip() for item in usable
+        ]
+        merged_exception_summary = " ".join(
+            _dedup_preserve_order([text for text in exception_summaries if text])
+        )
+
+        merged_steps: List[str] = []
+        for item in usable:
+            merged_steps.extend(
+                str(step) for step in (item.data.get("step_by_step_flow") or []) if str(step).strip()
+            )
+        merged_steps = _dedup_preserve_order(merged_steps)
+
+        merged_rules: List[Dict[str, Any]] = []
+        for item in usable:
+            merged_rules.extend(
+                rule for rule in (item.data.get("business_rules") or []) if isinstance(rule, dict)
+            )
+
+        merged_calculations: List[Dict[str, Any]] = []
+        for item in usable:
+            merged_calculations.extend(
+                calc for calc in (item.data.get("calculations") or []) if isinstance(calc, dict)
+            )
+
+        merged_ambiguities: List[str] = []
+        for item in usable:
+            merged_ambiguities.extend(
+                str(value) for value in (item.data.get("ambiguities") or []) if str(value).strip()
+            )
+        merged_ambiguities = _dedup_preserve_order(merged_ambiguities)
+
+        merged_data: Dict[str, Any] = dict(_EMPTY_SYNTHESIS)
+        merged_data["purpose_summary"] = merged_purpose
+        merged_data["exception_handling_summary"] = merged_exception_summary
+        merged_data["step_by_step_flow"] = merged_steps
+        merged_data["business_rules"] = merged_rules
+        merged_data["calculations"] = merged_calculations
+        merged_data["ambiguities"] = merged_ambiguities
+
+        merged_jargon: List[str] = []
+        for item in usable:
+            merged_jargon.extend(item.jargon_flags or [])
+        merged_jargon = _dedup_preserve_order(merged_jargon)
+
+        merged_warnings: List[str] = []
+        for item in usable:
+            merged_warnings.extend(item.guardrail_warnings or [])
+        merged_warnings = _dedup_preserve_order(merged_warnings)
+        merged_warnings.append(
+            f"Synthesized in {len(usable)} section(s) aligned to extraction chunk "
+            "boundaries because the object exceeded the single-call output-token "
+            "ceiling; sections were merged into this report."
+        )
+
+        merged_parse_error = "; ".join(
+            _dedup_preserve_order([item.parse_error for item in usable if item.parse_error])
+        )
+
+        return SynthesisResult(
+            data=merged_data,
+            raw_response=json.dumps(merged_data, separators=(",", ":"), default=str),
+            parse_error=merged_parse_error,
+            jargon_flags=merged_jargon,
+            guardrail_warnings=merged_warnings,
+            truncated=any(item.truncated for item in usable),
+        )
 
     def synthesize(
         self,

@@ -111,6 +111,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable verbose (INFO-level) pipeline logging.",
     )
+    parser.add_argument(
+        "--cache",
+        action="store_true",
+        help=(
+            "Enable the persistent LLM response cache (PersistentLLMResponseCache) "
+            "for this run. Off by default, same as the interactive app - turn it on "
+            "for batch/dev iteration (e.g. re-running the same procedures after a "
+            "prompt or logic tweak) so unchanged calls don't re-cost LLM spend every "
+            "run. Equivalent to setting LLM_RESPONSE_CACHE_ENABLED=true; the cache "
+            "itself lives at LLM_RESPONSE_CACHE_PATH / LLM_RESPONSE_CACHE_DIR "
+            "(default: runtime/llm_cache/llm_response_cache.sqlite3)."
+        ),
+    )
     return parser
 
 
@@ -153,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
             temperature=args.temperature,
             persist_directory=args.persist_dir,
             knowledge_base_dir=args.kb_dir,
+            response_cache_enabled=True if args.cache else None,
             dialect=args.dialect,
         )
         if args.rebuild_kb:
@@ -160,6 +174,10 @@ def main(argv: list[str] | None = None) -> int:
     except EnvironmentError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+
+    response_cache = getattr(pipeline, "response_cache", None)
+    if getattr(response_cache, "enabled", False):
+        print(f"LLM response cache enabled -> {getattr(response_cache, 'path', '')}")
 
     if len(sql_paths) > 1:
         if args.output:

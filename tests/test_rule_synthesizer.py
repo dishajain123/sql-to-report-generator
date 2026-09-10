@@ -450,6 +450,81 @@ def test_synthesize_handles_malformed_json():
     assert "manual review" in result.data["ambiguities"][0]
 
 
+class _QueuedFakeCompletions:
+    """Returns a different canned response/finish_reason on each successive
+    `create()` call, from a fixed queue - unlike `_FakeCompletions`, which
+    always returns the same response. Needed to simulate "first call comes
+    back malformed, retry comes back clean" without a real LLM.
+    """
+
+    def __init__(self, responses: list[tuple[str, str]]):
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+        self.last_call_kwargs = None
+
+    def create(self, **kwargs):
+        self.last_call_kwargs = kwargs
+        self.calls.append(kwargs)
+        index = min(len(self.calls) - 1, len(self._responses) - 1)
+        content, finish_reason = self._responses[index]
+        return _FakeCompletionResponse(content, finish_reason)
+
+
+class _QueuedFakeClient:
+    def __init__(self, responses: list[tuple[str, str]]):
+        self.chat = type("Chat", (), {})()
+        self.chat.completions = _QueuedFakeCompletions(responses)
+
+
+def test_synthesize_retries_and_recovers_from_non_truncated_malformed_json():
+    # `finish_reason="stop"` on both calls - the model reports it finished
+    # normally, it just returned invalid JSON the first time (a formatting
+    # slip, not a token-budget problem). Before the fix, only a truncated
+    # (`finish_reason == "length"`) response got a retry; anything else
+    # returned an empty result immediately, silently dropping every rule
+    # that call would otherwise have produced.
+    client = _QueuedFakeClient([
+        ("this is not valid json at all {{{", "stop"),
+        (VALID_SYNTHESIS_JSON, "stop"),
+    ])
+    agent = RuleSynthesizerAgent(client=client, model="m", temperature=0.1)
+
+    result = agent.synthesize(
+        object_name="obj",
+        object_type="PROCEDURE",
+        parameter_summary="none",
+        merged_extraction={},
+    )
+
+    assert len(client.chat.completions.calls) == 2  # one bounded same-request retry
+    assert result.parse_error == ""
+    assert result.truncated is False
+    assert len(result.data["business_rules"]) == 1
+    assert result.data["business_rules"][0]["action"].startswith("Classified as Standard")
+
+
+def test_synthesize_gives_up_after_one_retry_if_still_malformed():
+    # Both calls malformed: exactly one retry is attempted (not an
+    # unbounded loop), and the failure is still reported honestly rather
+    # than fabricating a result.
+    client = _QueuedFakeClient([
+        ("still not valid json {{{", "stop"),
+        ("also not valid json {{{", "stop"),
+    ])
+    agent = RuleSynthesizerAgent(client=client, model="m", temperature=0.1)
+
+    result = agent.synthesize(
+        object_name="obj",
+        object_type="PROCEDURE",
+        parameter_summary="none",
+        merged_extraction={},
+    )
+
+    assert len(client.chat.completions.calls) == 2
+    assert result.parse_error != ""
+    assert "manual review" in result.data["ambiguities"][0]
+
+
 def test_synthesize_recovers_json_wrapped_in_prose():
     wrapped = (
         "Here is the requested synthesis:\n"
@@ -1059,7 +1134,11 @@ def test_report_formatter_surfaces_provenance_fields():
     assert "## Important Business Updates" not in report
     assert "1. 1." not in report
     assert "business rules / validations" not in report.lower()
-    assert "**Dialect:** Oracle" in report
+    # Dialect is surfaced once, in the "At a Glance" table - the old
+    # duplicate "**Dialect:** ..." bold line directly under the title was
+    # removed since the table already carries it.
+    assert "| Dialect | Oracle |" in report
+    assert "**Dialect:**" not in report
 
 
 def test_report_formatter_prefers_canonical_business_rules_for_display():

@@ -543,9 +543,12 @@ def test_report_title_carries_identity_and_at_a_glance_omits_redundant_purpose_r
     })()
     title = fmt._title_block(ingestion, synthesis)
     glance = fmt._at_a_glance(ingestion, synthesis, [], [], [], {})
-    assert "**Procedure:** `Unrelated Process`" in title
-    assert "**Dialect:** Oracle" in title
-    assert "**Input:** None" in title
+    assert title == "# Unrelated Process — Business Logic Report"
+    # Procedure/Dialect/Input must not be repeated in the title block - the
+    # "At a Glance" table below is the single source for those facts now.
+    assert "**Procedure:**" not in title
+    assert "**Dialect:**" not in title
+    assert "**Input:**" not in title
     assert "| Purpose |" not in glance
     assert "| Procedure | `Unrelated Process` |" in glance
     assert "| Dialect | Oracle |" in glance

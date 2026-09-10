@@ -478,25 +478,13 @@ class ReportFormatterAgent:
     # ------------------------------------------------------------------
 
     def _title_block(self, ingestion: IngestionResult, synthesis: SynthesisResult) -> str:
+        # Procedure / Dialect / Input used to be repeated here as a bold
+        # summary line directly under the title, but the "At a Glance" table
+        # (`_at_a_glance`, immediately below this block in the assembled
+        # report) already carries those same three facts as its first rows -
+        # keeping both was a duplicate, so only the H1 title lives here now.
         object_name = self._display_object_name(ingestion)
-        schema = str(getattr(ingestion, "schema", "") or "").strip()
-        technical_name = f"{schema}.{getattr(ingestion, 'object_name', object_name)}" if schema else object_name
-        dialect = self._display_dialect(getattr(ingestion, "dialect", ""))
-        parameters = getattr(ingestion, "parameters", None) or []
-        if parameters:
-            input_display = ", ".join(
-                f"`{parameter.name}` ({parameter.datatype}"
-                + (", the processing day" if "timekey" in str(parameter.name).lower() else "")
-                + ")"
-                for parameter in parameters
-            )
-        else:
-            input_display = "None"
-        return (
-            f"# {object_name} — Business Logic Report\n\n"
-            f"**Procedure:** `{technical_name}`  ·  **Dialect:** {dialect}  ·  "
-            f"**Input:** {input_display}"
-        )
+        return f"# {object_name} — Business Logic Report"
 
     @staticmethod
     def _verification_pointer() -> str:
@@ -2304,7 +2292,7 @@ class ReportFormatterAgent:
             else:
                 suffix = f" ({chunk_kind})" if chunk_kind else ""
                 items.append(
-                    f"Chunk '{chunk_id}'{suffix} technical extraction returned malformed JSON and needs manual review."
+                    f"Chunk {chunk_id}{suffix} returned malformed JSON and needs manual review."
                 )
         items.extend(
             str(item).strip()
@@ -2320,7 +2308,7 @@ class ReportFormatterAgent:
             normalized = text.strip().lower()
             if normalized.startswith("automatic extraction for this chunk returned malformed json"):
                 return (0, 0)
-            if normalized.startswith("chunk '"):
+            if normalized.startswith("chunk "):
                 return (1, 0)
             return (2, 0)
 

@@ -335,6 +335,7 @@ class LogicRulesExtractorPipeline:
         synthesis_max_tokens: int = DEFAULT_SYNTHESIS_MAX_TOKENS,
         max_coverage_retries: int = DEFAULT_COVERAGE_RETRIES,
         single_pass_token_budget: Optional[int] = None,
+        response_cache_enabled: Optional[bool] = None,
     ):
         self.llm_config = llm_config or load_llm_config()
         self.max_coverage_retries = max_coverage_retries
@@ -357,9 +358,18 @@ class LogicRulesExtractorPipeline:
         self.project_root = Path(__file__).resolve().parent
         self.pipeline_version = PIPELINE_VERSION
         self.provider = self.llm_config.provider
-        # Keep the benchmark-facing handle for explicit opt-in runs, but do
-        # not enable persistent caching in the normal application pipeline.
-        self.response_cache = PersistentLLMResponseCache(enabled=False)
+        # Persistent response caching stays opt-in for the interactive
+        # application (app.py never passes `response_cache_enabled`, so it
+        # keeps making fresh calls run to run). Batch/dev iteration is where
+        # the cache earns its keep - re-running the same set of procedures
+        # after a prompt or logic tweak shouldn't re-cost the full LLM spend
+        # every time - so callers doing that (the CLI's `--cache` flag,
+        # `evaluate.py`, or any other batch/dev entry point) can pass
+        # `response_cache_enabled=True` explicitly, or set the
+        # `LLM_RESPONSE_CACHE_ENABLED` environment variable, which
+        # `PersistentLLMResponseCache` itself falls back to when this
+        # constructor argument is left as `None`.
+        self.response_cache = PersistentLLMResponseCache(enabled=response_cache_enabled)
         self.client = create_llm_client(self.llm_config)
 
         self.ingestion_agent = CodeIngestionAgent(max_chunk_chars=max_chunk_chars, dialect=dialect)
@@ -618,13 +628,12 @@ class LogicRulesExtractorPipeline:
         )
         synthesis_input = self._build_synthesis_input(merged_extraction)
         parameter_summary = self._summarize_parameters(ingestion)
-        synthesis = self.synthesizer_agent.synthesize(
-            object_name=ingestion.object_name,
-            object_type=ingestion.object_type,
+        synthesis = self._run_rule_synthesis(
+            ingestion=ingestion,
+            merged_extraction=merged_extraction,
+            synthesis_input=synthesis_input,
             parameter_summary=parameter_summary,
-            merged_extraction=synthesis_input,
             dialect=analysis_dialect or ingestion.dialect,
-            raw_source=ingestion.raw_code,
             telemetry_tracker=telemetry_tracker,
         )
         synthesis.data["run_metadata"] = run_metadata_to_dict(run_metadata)
@@ -1293,6 +1302,164 @@ class LogicRulesExtractorPipeline:
                     "extraction returned malformed JSON and needs manual review."
                 )
         return merged
+
+    # Technical-extraction sections whose items carry a reliable per-item
+    # `source_chunk_id` (set in `_merge_extractions` / `extract_table_
+    # operations_from_chunks`), and so can be safely restricted to just the
+    # chunks belonging to one synthesis section. Fields without that
+    # attribution (ambiguities, statement provenance/dependencies, semantic
+    # findings) are deliberately left out of this list and passed through to
+    # every section unfiltered instead - they are small and already
+    # deduplicated, so duplicating them across sections is harmless, whereas
+    # guessing at an attribution and dropping a genuine finding is not.
+    _CHUNK_SCOPED_SYNTHESIS_SECTIONS = (
+        "conditions",
+        "decision_chains",
+        "loops",
+        "calculations",
+        "exception_handling",
+        "tables_read",
+        "tables_written",
+        "table_operations",
+    )
+
+    @staticmethod
+    def _scope_extraction_to_chunks(merged_extraction: Dict[str, Any], chunk_ids: set) -> Dict[str, Any]:
+        """Return a shallow copy of `merged_extraction` restricted to the
+        technical evidence that belongs to `chunk_ids`, for one sectioned
+        synthesis call. `merged_extraction` itself is never mutated - the
+        full, unscoped evidence is still what reconciliation, the
+        verification report, and downstream formatting see.
+        """
+        scoped: Dict[str, Any] = dict(merged_extraction)
+        for key in LogicRulesExtractorPipeline._CHUNK_SCOPED_SYNTHESIS_SECTIONS:
+            items = merged_extraction.get(key)
+            if not isinstance(items, list):
+                continue
+            scoped[key] = [
+                item for item in items
+                if isinstance(item, dict) and item.get("source_chunk_id") in chunk_ids
+            ]
+        chunk_provenance = merged_extraction.get("chunk_provenance")
+        if isinstance(chunk_provenance, list):
+            scoped["chunk_provenance"] = [
+                item for item in chunk_provenance
+                if isinstance(item, dict) and item.get("chunk_id") in chunk_ids
+            ]
+        return scoped
+
+    def _run_rule_synthesis(
+        self,
+        ingestion: IngestionResult,
+        merged_extraction: Dict[str, Any],
+        synthesis_input: Dict[str, Any],
+        parameter_summary: str,
+        dialect: str,
+        telemetry_tracker: Optional[LLMTelemetryTracker],
+    ) -> SynthesisResult:
+        """Run business-rule synthesis for the object.
+
+        Small/medium objects take exactly the previous single-call path: one
+        `RuleSynthesizerAgent.synthesize()` call over the whole merged
+        extraction. Objects large enough that a single call is virtually
+        guaranteed to exceed the hard output-token ceiling (see
+        `RuleSynthesizerAgent.requires_sectioned_synthesis`) - `PRO.
+        SMA_MARKING` and several of the larger real procedures reliably hit
+        this - are instead synthesized per logical section, reusing the same
+        chunk boundaries the extraction stage already produced, and the
+        resulting per-section rule sets are merged into one result. This
+        avoids the truncation that otherwise silently drops business rules
+        and inflates Needs Review with gaps that only exist because
+        synthesis never reached that code.
+        """
+        raw_source = ingestion.raw_code
+
+        def _run_single_call() -> SynthesisResult:
+            return self.synthesizer_agent.synthesize(
+                object_name=ingestion.object_name,
+                object_type=ingestion.object_type,
+                parameter_summary=parameter_summary,
+                merged_extraction=synthesis_input,
+                dialect=dialect,
+                raw_source=raw_source,
+                telemetry_tracker=telemetry_tracker,
+            )
+
+        # Duck-typed defensively: some callers (tests, lightweight synthesizer
+        # stand-ins) swap in a `synthesizer_agent` that only implements the
+        # original `synthesize()`/`revise()` surface. Sectioning is an
+        # optimization, not a contract every synthesizer must honor, so its
+        # absence just means "run the single-call path exactly as before"
+        # rather than an error.
+        requires_sectioned_synthesis = getattr(self.synthesizer_agent, "requires_sectioned_synthesis", None)
+        plan_synthesis_sections = getattr(self.synthesizer_agent, "plan_synthesis_sections", None)
+        if (
+            requires_sectioned_synthesis is None
+            or plan_synthesis_sections is None
+            or not requires_sectioned_synthesis(raw_source)
+        ):
+            return _run_single_call()
+
+        sections = plan_synthesis_sections(ingestion.chunks, raw_source)
+        if len(sections) <= 1:
+            return _run_single_call()
+
+        logger.info(
+            "Synthesis: '%s' exceeds the single-call output-token budget; "
+            "running %d section(s) aligned to extraction chunk boundaries instead of one call.",
+            ingestion.object_name,
+            len(sections),
+        )
+        chunk_lookup = {
+            getattr(chunk, "chunk_id", None): chunk
+            for chunk in (ingestion.chunks or [])
+        }
+        section_results: List[SynthesisResult] = []
+        for section in sections:
+            chunk_id_list = list(section.get("chunk_ids") or [])
+            chunk_ids = set(chunk_id_list)
+            section_extraction = self._scope_extraction_to_chunks(merged_extraction, chunk_ids)
+            section_synthesis_input = self._build_synthesis_input(section_extraction)
+            start = section.get("char_start")
+            end = section.get("char_end")
+            if (
+                isinstance(start, int)
+                and isinstance(end, int)
+                and 0 <= start < end <= len(raw_source)
+            ):
+                section_raw_source = raw_source[start:end]
+            else:
+                # Character offsets aren't always available (e.g. batch-split
+                # T-SQL objects, where `CodeChunk.source_char_start/end` come
+                # back -1 - a pre-existing ingestion limitation, not
+                # something sectioning can assume away). Falling back to the
+                # *whole* raw source here would silently defeat sectioning:
+                # every section's own truncation-budget estimate is derived
+                # from the raw source it's given, so handing each one the
+                # full object would just reproduce the original truncation
+                # risk once per section instead of avoiding it. Reconstruct
+                # the section's text directly from its own chunks' text
+                # instead - this works whether or not offsets are available,
+                # and is the same "reuse the extraction boundaries" contract
+                # either way.
+                section_texts = [
+                    str(getattr(chunk_lookup[chunk_id], "text", "") or "")
+                    for chunk_id in chunk_id_list
+                    if chunk_id in chunk_lookup
+                ]
+                section_raw_source = "\n".join(text for text in section_texts if text) or raw_source
+            section_results.append(
+                self.synthesizer_agent.synthesize(
+                    object_name=ingestion.object_name,
+                    object_type=ingestion.object_type,
+                    parameter_summary=parameter_summary,
+                    merged_extraction=section_synthesis_input,
+                    dialect=dialect,
+                    raw_source=section_raw_source,
+                    telemetry_tracker=telemetry_tracker,
+                )
+            )
+        return RuleSynthesizerAgent.merge_section_results(section_results)
 
     @staticmethod
     def _build_synthesis_input(merged_extraction: Dict[str, Any]) -> Dict[str, Any]:
