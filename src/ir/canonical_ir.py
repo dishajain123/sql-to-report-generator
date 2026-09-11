@@ -639,15 +639,22 @@ def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[D
         return blocks
 
     def _condition_matches(source: Any, candidate: Any) -> bool:
-        source_text = str(source or "").strip()
-        candidate_text = str(candidate or "").strip()
-        if source_text.casefold() == candidate_text.casefold():
-            return True
-        source_tokens = _decision_chain_tokens(source_text)
-        candidate_tokens = _decision_chain_tokens(candidate_text)
-        return bool(source_tokens and candidate_tokens) and (
-            source_tokens <= candidate_tokens or candidate_tokens <= source_tokens
-        )
+        # Token overlap loses comparison operators and operand order. In a
+        # maximum ladder every branch has almost the same token set, but a
+        # different winner. Only match the actual expression (allow aliases
+        # and formatting differences); prose remains an independent rule.
+        def key(value: Any) -> str:
+            tokens = re.findall(r"'(?:''|[^'])*'|[A-Za-z_][\w$#]*|>=|<=|<>|!=|[^\s]", str(value or ""))
+            normalized = []
+            i = 0
+            while i < len(tokens):
+                if i + 2 < len(tokens) and re.fullmatch(r"[A-Za-z_][\w$#]*", tokens[i]) and tokens[i + 1] == ".":
+                    i += 2
+                token = tokens[i]
+                normalized.append(token if token.startswith("'") else token.casefold())
+                i += 1
+            return " ".join(normalized)
+        return bool(str(source or "").strip()) and key(source) == key(candidate)
 
     for chain_index, chain in enumerate(chains, start=1):
         branches = chain.get("branches") if isinstance(chain, dict) else None
@@ -664,13 +671,37 @@ def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[D
                 for row in rule.decision_logic_rows
                 if isinstance(row, dict)
             ]
-            candidates = [rule.condition, *row_conditions, *rule.evidence]
+            chain_fields = {
+                str(a.get("field") or "").split(".")[-1].casefold()
+                for branch in branches for a in (branch.get("assignments") or [])
+                if isinstance(a, dict)
+            }
+            rule_fields = {
+                value.split(".")[-1].casefold()
+                for value in [rule.output_field, *rule.fields_affected] if value
+            }
+            if chain_fields and rule_fields and not chain_fields.intersection(rule_fields):
+                continue
+            source_statement = str(chain.get("source_statement_id") or "")
+            if source_statement and rule.source_statements and source_statement not in rule.source_statements:
+                continue
+            explicit_chain = str(rule.extra.get("source_chain_id") or "")
+            if explicit_chain and explicit_chain != str(chain.get("chain_id") or ""):
+                continue
+            candidates = [rule.condition, *row_conditions]
             branch_matches = [
                 index
                 for index, condition in enumerate(conditions)
-                if any(_condition_matches(condition, candidate) for candidate in candidates)
+                if condition.strip().casefold() != "else"
+                and any(_condition_matches(condition, candidate) for candidate in candidates)
             ]
+            # ELSE has meaning only inside an already matched chain.
             if branch_matches:
+                branch_matches.extend(
+                    index for index, condition in enumerate(conditions)
+                    if condition.strip().casefold() == "else"
+                    and any(_condition_matches(condition, c) for c in row_conditions)
+                )
                 matched.append(rule)
                 rule_branch_matches[rule.rule_id] = branch_matches
         if not matched:
@@ -686,11 +717,27 @@ def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[D
         for branch_index, condition in enumerate(conditions):
             branch = branches[branch_index]
             results: List[Any] = []
-            for rule in matched:
+            recovered = [
+                rule for rule in matched
+                if rule.rule_type == "deterministic_decision_table"
+                and rule.extra.get("source_chain_id") == chain.get("chain_id")
+            ]
+            for rule in recovered or matched:
                 if branch_index not in rule_branch_matches[rule.rule_id]:
                     continue
                 row_results = []
-                for row in rule.decision_logic_rows:
+                candidate_rows = rule.decision_logic_rows
+                if recovered:
+                    # Conditions can repeat in successive UPDATEs or CASE
+                    # branches. Source occurrence, not text alone, selects
+                    # the recovered result for this row.
+                    field_key = rule.output_field.casefold()
+                    positions = [i for i, source_branch in enumerate(branches)
+                                 if any(str(a.get("field") or "").casefold() == field_key
+                                        for a in source_branch.get("assignments", []))]
+                    row_index = positions.index(branch_index) if branch_index in positions else -1
+                    candidate_rows = [candidate_rows[row_index]] if 0 <= row_index < len(candidate_rows) else []
+                for row in candidate_rows:
                     if not isinstance(row, dict):
                         continue
                     row_condition = str(row.get("condition") or "")
@@ -698,7 +745,10 @@ def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[D
                         continue
                     row_results.extend(row.get("assignments") or [])
                     if row.get("outcome") not in (None, ""):
-                        row_results.append(row.get("outcome"))
+                        row_results.append(
+                            {"field": rule.output_field, "value": row["outcome"]}
+                            if recovered and len(chain_fields) > 1 else row["outcome"]
+                        )
                 if row_results:
                     results.extend(row_results)
                 elif rule.action or rule.business_meaning:
@@ -729,6 +779,10 @@ def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[D
             rule.extra["decision_block_title"] = block_title
         blocks.append({
             "block_id": block_id,
+            "decision_role": str(chain.get("decision_role") or "assignment"),
+            "eligibility": list(chain.get("eligibility") or []),
+            "decision_context": list(chain.get("decision_context") or []),
+            "execution_semantics": str(chain.get("execution_semantics") or ""),
             "name": block_title,
             "rule_ids": [rule.rule_id for rule in matched],
             "branches": block_branches,
@@ -831,6 +885,8 @@ class CanonicalBusinessIR:
                 extract_nested_decision_chains(source_text),
                 extract_procedural_decision_chains(source_text),
             )
+            from src.parsing.decision_tables import enrich_decision_tables
+            chains = enrich_decision_tables(source_text, chains, dialect=getattr(ingestion, "dialect", "tsql") if getattr(ingestion, "dialect", "tsql") in {"tsql", "oracle"} else "tsql")
         decision_blocks = _build_decision_blocks(business_rules, chains)
         decision_chains = [
             {

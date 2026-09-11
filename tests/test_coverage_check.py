@@ -333,7 +333,22 @@ END"""
     synthesizer = pipeline.synthesizer_agent
     assert len(synthesizer.revise_calls) == 1
     assert synthesizer.revise_calls[0]["gaps"]
-    assert pipeline.formatter_agent.synthesis_data[-1]["business_rules"] == revised
+    final_rules = pipeline.formatter_agent.synthesis_data[-1]["business_rules"]
+    # The model's revised rule is passed through unchanged...
+    assert final_rules[0] == revised[0]
+    # ...and the pipeline's own deterministic guarantee
+    # (`RuleSynthesizerAgent.ensure_decision_chain_coverage`) appends a
+    # Decision Logic table for `risk_band` regardless of whether the model
+    # supplied one, because the source's CASE ladder is unambiguous
+    # (two explicit branches and the implicit NULL fallback) and the stubbed `revise()` here - unlike the real
+    # `RuleSynthesizerAgent` - never populates `decision_logic_rows` itself.
+    assert len(final_rules) == 2
+    assert final_rules[1]["output_field"] == "risk_band"
+    assert final_rules[1]["decision_logic_rows"] == [
+        {"condition": "score < 50", "outcome": "'LOW'"},
+        {"condition": "score >= 50", "outcome": "'HIGH'"},
+        {"condition": "ELSE", "outcome": "NULL"},
+    ]
     assert find_coverage_gaps(source, revised) == []
 
 

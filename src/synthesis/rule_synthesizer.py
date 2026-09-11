@@ -29,6 +29,8 @@ orchestration framework is involved.
 
 from __future__ import annotations
 
+from src.parsing.sql_comments import executable_sql
+
 import json
 import os
 import re
@@ -100,6 +102,34 @@ class RuleSynthesizerAgent:
     directly.
     """
 
+    # Matches a short run (2-24 chars) repeated back-to-back 6+ times, e.g.
+    # "SMA_SMA_SMA_SMA_SMA_SMA_" - the shape a small/rate-limited model
+    # produces when it degenerates into a token loop near its own output
+    # ceiling instead of stopping cleanly. This is a *literal* immediate
+    # repetition check (the same substring recurring with nothing else in
+    # between), so it does not fire on ordinary business/SQL text that
+    # happens to reuse the same word or column name several times with
+    # other content between occurrences (see `_is_degenerate_text`).
+    _DEGENERATE_REPEAT_PATTERN = re.compile(r"(.{2,24}?)\1{5,}")
+
+    @staticmethod
+    def _is_degenerate_text(text: Any) -> bool:
+        """True when `text` contains a long run of literal token repetition
+        characteristic of generation degeneration, not ordinary prose/SQL.
+
+        Guarded by two thresholds so a short, coincidental repeat inside
+        otherwise normal text is never flagged: the repeated run itself must
+        be at least 20 characters, and must make up at least a quarter of
+        the whole string.
+        """
+        if not isinstance(text, str) or not text:
+            return False
+        match = RuleSynthesizerAgent._DEGENERATE_REPEAT_PATTERN.search(text)
+        if not match:
+            return False
+        span = match.end() - match.start()
+        return span >= 20 and span / max(1, len(text)) >= 0.25
+
     def __init__(
         self,
         client,
@@ -109,6 +139,7 @@ class RuleSynthesizerAgent:
         provider: str = "openai",
         response_cache: Optional[PersistentLLMResponseCache] = None,
         max_tokens: int = 16000,
+        hard_max_output_tokens: Optional[int] = None,
     ):
         """
         Args:
@@ -128,6 +159,22 @@ class RuleSynthesizerAgent:
                 back to a degraded/empty result with no clear error. Passing
                 max_tokens on every call removes the ambiguity for both
                 providers instead of relying on a per-provider default.
+            hard_max_output_tokens: the REAL, server-enforced maximum
+                completion tokens for the configured provider/model (see
+                `llm_client.resolve_model_output_ceiling`), when known.
+                Every single-pass/sectioning budget decision below must be
+                bounded by this, not by the generic
+                `LLM_HARD_MAX_OUTPUT_TOKENS` module default (32768) - some
+                real Bedrock models (Amazon Nova Lite/Micro/Pro) cap
+                completions at 5000 tokens server-side regardless of what
+                `max_tokens` a caller requests. Sizing the single-pass/
+                sectioning budget against the generic default when the real
+                ceiling is smaller under-triggers sectioning and produces
+                sections still too large for the model to complete, so
+                truncation happens no matter how it's retried. Defaults to
+                the module-level `_HARD_MAX_OUTPUT_TOKENS` when not given
+                (unknown provider/model, or a caller that predates this
+                parameter).
         """
         self.client = client
         self.model = model
@@ -136,6 +183,9 @@ class RuleSynthesizerAgent:
         self.provider = provider
         self.response_cache = response_cache
         self.max_tokens = max_tokens
+        self.hard_max_output_tokens = (
+            int(hard_max_output_tokens) if hard_max_output_tokens else _HARD_MAX_OUTPUT_TOKENS
+        )
 
     def _estimate_output_tokens(self, raw_source: str, requested: Optional[int] = None) -> int:
         """Projected completion tokens a single synthesis call over
@@ -150,7 +200,7 @@ class RuleSynthesizerAgent:
         return base + points * _PER_DECISION_POINT_TOKENS
 
     def _output_token_budget(self, raw_source: str, requested: Optional[int] = None) -> int:
-        return min(_HARD_MAX_OUTPUT_TOKENS, self._estimate_output_tokens(raw_source, requested))
+        return min(self.hard_max_output_tokens, self._estimate_output_tokens(raw_source, requested))
 
     def requires_sectioned_synthesis(self, raw_source: str, requested: Optional[int] = None) -> bool:
         """True when a single synthesis call over the whole `raw_source`
@@ -162,7 +212,7 @@ class RuleSynthesizerAgent:
         `plan_synthesis_sections` and one `synthesize()` call per section
         instead of a single whole-object call.
         """
-        return self._estimate_output_tokens(raw_source, requested) > _HARD_MAX_OUTPUT_TOKENS
+        return self._estimate_output_tokens(raw_source, requested) > self.hard_max_output_tokens
 
     def plan_synthesis_sections(
         self,
@@ -198,7 +248,20 @@ class RuleSynthesizerAgent:
             }]
 
         base = max(int(requested or self.max_tokens), _BASE_SYNTHESIS_TOKENS)
-        section_token_budget = max(_PER_DECISION_POINT_TOKENS, _HARD_MAX_OUTPUT_TOKENS - base)
+        # `base` is the single-pass whole-object budget floor (16000 by
+        # default) - appropriate headroom to reserve when the real hard
+        # ceiling comfortably exceeds it, but nonsensical to subtract
+        # wholesale from a *per-model* ceiling that's smaller than `base`
+        # itself (e.g. Amazon Nova Lite's real 5000-token cap): that would
+        # make every section's budget collapse to the 1-decision-point
+        # floor, producing one synthesis call per chunk instead of sensibly
+        # grouped sections. Capping the reserved overhead at half the real
+        # ceiling keeps a meaningful chunk of the ceiling available for
+        # decision-point-driven content on every model, while leaving the
+        # existing large-ceiling behavior (`min(base, ceiling // 2) == base`
+        # whenever `ceiling >= 2 * base`) unchanged.
+        section_overhead = min(base, self.hard_max_output_tokens // 2)
+        section_token_budget = max(_PER_DECISION_POINT_TOKENS, self.hard_max_output_tokens - section_overhead)
         section_point_budget = max(1, section_token_budget // max(1, _PER_DECISION_POINT_TOKENS))
 
         sections: List[Dict[str, Any]] = []
@@ -275,7 +338,7 @@ class RuleSynthesizerAgent:
             return ordered
 
         purpose_summaries = [str(item.data.get("purpose_summary") or "").strip() for item in usable]
-        merged_purpose = " ".join(_dedup_preserve_order([text for text in purpose_summaries if text]))
+        merged_purpose = "\n\n".join(_dedup_preserve_order([text for text in purpose_summaries if text]))
 
         exception_summaries = [
             str(item.data.get("exception_handling_summary") or "").strip() for item in usable
@@ -284,18 +347,55 @@ class RuleSynthesizerAgent:
             _dedup_preserve_order([text for text in exception_summaries if text])
         )
 
-        merged_steps: List[str] = []
-        for item in usable:
-            merged_steps.extend(
-                str(step) for step in (item.data.get("step_by_step_flow") or []) if str(step).strip()
+        def _rule_identity_key(rule: Dict[str, Any]) -> Tuple[str, str, str, str]:
+            # Sectioning runs the same synthesis prompt once per section, and
+            # overlapping/duplicated evidence (e.g. a rule whose condition
+            # spans a boundary and gets re-derived by two adjacent sections)
+            # can produce the exact same rule twice. Identity on the
+            # business-meaning fields - not `rule_id` (regenerated per call)
+            # or any other volatile field - so only genuine duplicates
+            # collapse.
+            return (
+                str(rule.get("rule_name") or "").strip(),
+                str(rule.get("condition") or "").strip(),
+                str(rule.get("action") or "").strip(),
+                str(rule.get("output_field") or "").strip(),
             )
-        merged_steps = _dedup_preserve_order(merged_steps)
+
+        def _rule_has_degenerate_text(rule: Dict[str, Any]) -> bool:
+            return any(
+                RuleSynthesizerAgent._is_degenerate_text(rule.get(key))
+                for key in ("rule_name", "condition", "action", "business_meaning")
+            )
+
+        dropped_degenerate = False
+
+        merged_steps_raw: List[str] = []
+        for item in usable:
+            for step in item.data.get("step_by_step_flow") or []:
+                step_text = str(step)
+                if not step_text.strip():
+                    continue
+                if RuleSynthesizerAgent._is_degenerate_text(step_text):
+                    dropped_degenerate = True
+                    continue
+                merged_steps_raw.append(step_text)
+        merged_steps = _dedup_preserve_order(merged_steps_raw)
 
         merged_rules: List[Dict[str, Any]] = []
+        seen_rule_keys: set = set()
         for item in usable:
-            merged_rules.extend(
-                rule for rule in (item.data.get("business_rules") or []) if isinstance(rule, dict)
-            )
+            for rule in item.data.get("business_rules") or []:
+                if not isinstance(rule, dict):
+                    continue
+                if _rule_has_degenerate_text(rule):
+                    dropped_degenerate = True
+                    continue
+                key = _rule_identity_key(rule)
+                if key in seen_rule_keys:
+                    continue
+                seen_rule_keys.add(key)
+                merged_rules.append(rule)
 
         merged_calculations: List[Dict[str, Any]] = []
         for item in usable:
@@ -332,6 +432,13 @@ class RuleSynthesizerAgent:
             "boundaries because the object exceeded the single-call output-token "
             "ceiling; sections were merged into this report."
         )
+        if dropped_degenerate:
+            merged_warnings.append(
+                "One or more sections produced text with signs of "
+                "repetition-degeneration (a long run of the same short token "
+                "repeated verbatim, typical of a model running out of output "
+                "budget) and were dropped rather than included in the report."
+            )
 
         merged_parse_error = "; ".join(
             _dedup_preserve_order([item.parse_error for item in usable if item.parse_error])
@@ -498,6 +605,29 @@ class RuleSynthesizerAgent:
                         recovered = self._recover_partial_json(raw_response)
                         if recovered is not None:
                             data, error = recovered, ""
+        elif error:
+            # Malformed JSON with `finish_reason != "length"` means the model
+            # reported it finished normally - it just produced an invalid
+            # formatting slip, not a token-budget problem, so retrying with a
+            # larger ceiling (as the truncated branch above does) would ask
+            # for the same room the model already had. Before this, ANY
+            # non-truncated parse failure returned immediately with zero
+            # rules for the whole call - on a small/weak model (e.g. Amazon
+            # Nova Lite) this silently dropped entire sections' worth of
+            # business rules, including this codebase's own SMA_CLASS/
+            # SMA_REASON classification section on PRO.SMA_MARKING. One
+            # bounded retry of the identical request gives the model a
+            # second, independent attempt at valid JSON before giving up.
+            retry = self._retry_same_request(completion_kwargs, telemetry_tracker)
+            if retry is not None:
+                response, raw_response = retry
+                finish_reason = str(getattr(response.choices[0], "finish_reason", "") or "").lower()
+                truncated = finish_reason == "length"
+                data, error = self._parse_json(raw_response)
+                if truncated and error:
+                    recovered = self._recover_partial_json(raw_response)
+                    if recovered is not None:
+                        data, error = recovered, ""
         if error:
             jargon_flags = self._scan_for_jargon(data)
             return SynthesisResult(
@@ -673,8 +803,16 @@ class RuleSynthesizerAgent:
         return items
 
     def _retry_with_ceiling(self, completion_kwargs: Dict[str, Any], tracker) -> Optional[Tuple[Any, str]]:
-        ceiling = max(int(completion_kwargs.get("max_tokens", 0) or 0), _HARD_MAX_OUTPUT_TOKENS)
-        if ceiling <= int(completion_kwargs.get("max_tokens", 0) or 0):
+        # Retrying at `self.hard_max_output_tokens` (the real, per-model
+        # ceiling) rather than the generic module default: if the failed
+        # call already requested the model's true maximum (e.g. 5000 for
+        # Amazon Nova Lite), retrying at a larger generic ceiling would just
+        # get silently clamped back down to the same 5000 server-side and
+        # reproduce the identical truncation - a wasted call that looks like
+        # a retry but cannot possibly succeed differently.
+        current = int(completion_kwargs.get("max_tokens", 0) or 0)
+        ceiling = max(current, self.hard_max_output_tokens)
+        if ceiling <= current:
             return None
         retry_kwargs = dict(completion_kwargs)
         retry_kwargs["max_tokens"] = ceiling
@@ -690,6 +828,33 @@ class RuleSynthesizerAgent:
                         stage="synthesis_retry",
                         provider=self.provider,
                         model_name=retry_kwargs.get("model", self.model),
+                        response=response,
+                        latency_seconds=time.perf_counter() - start,
+                        success=response is not None,
+                        error=None,
+                    )
+                except Exception:
+                    pass
+
+    def _retry_same_request(self, completion_kwargs: Dict[str, Any], tracker) -> Optional[Tuple[Any, str]]:
+        """One bounded retry of the identical request, for a non-truncated
+        malformed-JSON response (see the `synthesize()` call site). Unlike
+        `_retry_with_ceiling`, `max_tokens` is unchanged - the first call
+        wasn't cut off, so a larger ceiling has no bearing on whether the
+        second attempt comes back valid.
+        """
+        response = None
+        start = time.perf_counter()
+        try:
+            response = self.client.chat.completions.create(**completion_kwargs)
+            return response, response.choices[0].message.content or ""
+        finally:
+            if tracker is not None:
+                try:
+                    tracker.record_call(
+                        stage="synthesis_retry",
+                        provider=self.provider,
+                        model_name=completion_kwargs.get("model", self.model),
                         response=response,
                         latency_seconds=time.perf_counter() - start,
                         success=response is not None,
@@ -932,7 +1097,7 @@ class RuleSynthesizerAgent:
         # deterministic fact view so the model can recover missing context
         # without changing the facts used by reconciliation.
         if str(raw_source or "").strip():
-            payload["source_sql"] = str(raw_source)
+            payload["source_sql"] = executable_sql(raw_source)
         return payload
 
     @staticmethod
@@ -1402,6 +1567,24 @@ class RuleSynthesizerAgent:
 
         This method intentionally does not infer missing business meaning,
         normalize terminology, merge rules, or alter any model-authored text.
+
+        The one exception is `decision_logic_rows`: when the model returns a
+        rule with an empty decision table, `_backfill_decision_logic_rows`
+        fills it in from `technical_context["decision_chains"]` -
+        deterministic, source-derived branch evidence extracted by
+        `pipeline._extract_deterministic_decision_chains` before synthesis
+        ever runs (see that function's docstring). This is a backfill of a
+        *representation* the model already reasoned about (it authored the
+        rule's `condition`/`action` text describing the same ladder), not an
+        invented fact: a small/rate-limited completion budget (e.g. Amazon
+        Nova Lite's real 5000-token cap - see `resolve_model_output_ceiling`
+        in `llm_client.py`) can leave no room for the model to also spell out
+        every branch as structured rows, especially once large objects are
+        synthesized section-by-section and each section's budget shrinks
+        further. Without this, every multi-branch classification rule (SMA
+        class thresholds, SMA reason precedence, etc.) silently loses its
+        "Decision Logic" table in the final report even though the source
+        evidence for it was extracted and available the whole time.
         """
         if not isinstance(raw_rules, list):
             return []
@@ -1418,6 +1601,12 @@ class RuleSynthesizerAgent:
         def as_dict_list(value: Any) -> List[Dict[str, Any]]:
             return [item for item in as_list(value) if isinstance(item, dict)]
 
+        decision_chains: List[Dict[str, Any]] = []
+        if isinstance(technical_context, dict):
+            raw_chains = technical_context.get("decision_chains")
+            if isinstance(raw_chains, list):
+                decision_chains = [chain for chain in raw_chains if isinstance(chain, dict)]
+
         normalized: List[Dict[str, Any]] = []
         for raw_rule in raw_rules:
             if not isinstance(raw_rule, dict):
@@ -1433,11 +1622,229 @@ class RuleSynthesizerAgent:
             ):
                 rule[key] = as_list(rule.get(key))
             rule["decision_logic_rows"] = as_dict_list(rule.get("decision_logic_rows"))
+            if not rule["decision_logic_rows"] and decision_chains:
+                rule["decision_logic_rows"] = RuleSynthesizerAgent._backfill_decision_logic_rows(
+                    rule, decision_chains
+                )
             for key in ("rule_type", "confidence", "validation_status", "rule_id", "ambiguity_id"):
                 value = rule.get(key, "")
                 rule[key] = value if isinstance(value, str) else ("" if value is None else str(value))
             normalized.append(rule)
         return normalized
+
+    @staticmethod
+    def _backfill_decision_logic_rows(
+        rule: Dict[str, Any], decision_chains: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Reconstruct `decision_logic_rows` for one rule from deterministic
+        decision-chain evidence, matched by the rule's own `output_field`.
+
+        A decision chain's branches carry `assignments` of `{field, value}`
+        pairs (one multi-branch ladder can assign several output fields at
+        once - e.g. SMA_CLASS and SMA_REASON from the same CASE ladder). Only
+        the branches that actually assign *this* rule's output field are
+        used, so a rule for one field never picks up rows that describe a
+        different field's outcomes from the same chain. A single matching
+        branch is not a decision table (nothing to choose between), so a
+        chain contributes rows only when it yields at least two.
+        """
+        output_field = str(rule.get("output_field") or "").strip()
+        if not output_field:
+            return []
+        output_field_key = output_field.lower()
+        matching_chains = [
+            chain for chain in decision_chains
+            if any(str(a.get("field") or "").strip().lower() == output_field_key
+                   for branch in (chain.get("branches") or [])
+                   for a in (branch.get("assignments") or []) if isinstance(a, dict))
+        ]
+        if len(matching_chains) != 1:
+            return []
+        # An unconditional reset is not the later classification ladder.
+        if re.search(r"\b(reset|initialize|initialise|clear)\b", str(rule.get("rule_name") or ""), re.I):
+            return []
+
+        for chain in decision_chains:
+            branches = chain.get("branches")
+            if not isinstance(branches, list):
+                continue
+            rows: List[Dict[str, Any]] = []
+            for branch in branches:
+                if not isinstance(branch, dict):
+                    continue
+                assignments = branch.get("assignments")
+                if not isinstance(assignments, list):
+                    continue
+                match = next(
+                    (
+                        assignment
+                        for assignment in assignments
+                        if isinstance(assignment, dict)
+                        # Case-insensitive: the model's own `output_field`
+                        # text ("SMA_Class") does not always match the
+                        # deterministic extractor's literal source casing
+                        # ("SMA_CLASS") verbatim, and a strict `==` here
+                        # silently drops the backfill for an otherwise
+                        # perfectly matched field.
+                        and str(assignment.get("field") or "").strip().lower() == output_field_key
+                    ),
+                    None,
+                )
+                if match is None:
+                    continue
+                condition = (
+                    "ELSE"
+                    if branch.get("is_catch_all")
+                    else str(branch.get("branch_condition") or "").strip()
+                )
+                rows.append({"condition": condition, "outcome": str(match.get("value") or "").strip()})
+            if len(rows) >= 2:
+                return rows
+        return []
+
+    @staticmethod
+    def ensure_decision_chain_coverage(
+        rules: List[Dict[str, Any]], decision_chains: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Guarantee a Decision Logic table for every deterministic
+        multi-branch decision chain found in the source, independent of
+        whether the model produced a matching rule for it.
+
+        `_backfill_decision_logic_rows` (used inside `_normalize_business_rules`)
+        fills in `decision_logic_rows` on a rule the model already authored,
+        matched by that rule's own `output_field` - but it has nothing to
+        attach to when the model never produced a rule for a field at all.
+        That happens more than it should on a small/weak model under a tight
+        completion budget: a whole section's response fails to parse, a
+        field gets folded into a different rule's prose instead of standing
+        on its own, or the model simply omits it on a given run. Call this as
+        the final step, once, after synthesis and every coverage-gap review
+        pass are done: any chain still missing its own table at that point
+        gets one synthesized directly from the same deterministic source
+        evidence the backfill uses - no LLM call, so it cannot fail to
+        parse, omit a branch, or vary from run to run. This is the
+        guarantee, not the best-effort: every real multi-branch CASE/IF
+        ladder in the source ends up with a rendered Decision Logic table.
+
+        Coverage is judged per CHAIN, by whether an existing rule's table
+        already represents its actual branch conditions - never by output
+        field name alone. A source can legitimately contain two independent
+        decision chains that assign the *same* field for entirely different
+        reasons (e.g. PRO.SMA_MARKING has both a DPD-threshold ladder
+        assigning SMA_CLASS and a separate, unrelated CASE mapping
+        SMA_CLASS text to an integer rank for aggregation) - "the field
+        already has a table" would incorrectly skip the second one, silently
+        dropping a real business rule the source actually contains.
+        """
+        if not decision_chains:
+            return rules
+
+        def _field_key(value: Any) -> str:
+            return str(value or "").strip().lower()
+
+        def _normalized_condition(value: Any) -> str:
+            from src.parsing.decision_identity import decision_text_key
+            return decision_text_key(value)
+
+        def _rows_key(rows: List[Dict[str, Any]]) -> list:
+            return [
+                (_normalized_condition(row.get("condition")),
+                 _normalized_condition(row.get("outcome")))
+                for row in rows if isinstance(row, dict)
+            ]
+
+        def _field_is_covered(chain: Dict[str, Any], field_key: str, rows: List[Dict[str, Any]]) -> bool:
+            expected = _rows_key(rows)
+            for rule in rules:
+                if _field_key(rule.get("output_field")) != field_key:
+                    continue
+                source_chain = rule.get("source_chain_id")
+                if source_chain and source_chain != chain.get("chain_id"):
+                    continue
+                if expected and expected == _rows_key(rule.get("decision_logic_rows") or []):
+                    return True
+            return False
+
+        synthetic_rules: List[Dict[str, Any]] = []
+        for chain in decision_chains:
+            if not isinstance(chain, dict):
+                continue
+            branches = chain.get("branches")
+            if not isinstance(branches, list):
+                continue
+
+            fields_in_chain: "OrderedDict[str, str]" = OrderedDict()
+            for branch in branches:
+                if not isinstance(branch, dict):
+                    continue
+                for assignment in branch.get("assignments") or []:
+                    if not isinstance(assignment, dict):
+                        continue
+                    field = str(assignment.get("field") or "").strip()
+                    if field:
+                        fields_in_chain.setdefault(_field_key(field), field)
+
+            for field_key, display_field in fields_in_chain.items():
+                rows: List[Dict[str, Any]] = []
+                for branch in branches:
+                    if not isinstance(branch, dict):
+                        continue
+                    match = next(
+                        (
+                            assignment
+                            for assignment in (branch.get("assignments") or [])
+                            if isinstance(assignment, dict)
+                            and _field_key(assignment.get("field")) == field_key
+                        ),
+                        None,
+                    )
+                    if match is None:
+                        continue
+                    condition = (
+                        "ELSE"
+                        if branch.get("is_catch_all")
+                        else str(branch.get("branch_condition") or "").strip()
+                    )
+                    rows.append({"condition": condition, "outcome": str(match.get("value") or "").strip()})
+                if len(rows) < 2 or _field_is_covered(chain, field_key, rows):
+                    continue
+                synthetic_rules.append({
+                    "rule_id": f"deterministic_{chain.get('chain_id') or 'chain'}_{field_key}",
+                    "source_chain_id": str(chain.get("chain_id") or ""),
+                    "decision_role": str(chain.get("decision_role") or "assignment"),
+                    "rule_name": (f"Determine inputs to {chain['aggregation']} for {display_field}"
+                                  if chain.get("aggregation") else f"Determine {display_field}"),
+                    "business_meaning": (
+                        f"The decision rows show per-row inputs to {chain['aggregation']}; "
+                        f"{display_field} is the aggregate of those inputs over the SQL grouping."
+                        if chain.get("aggregation") else str(chain.get("execution_semantics") or "")
+                    ),
+                    "condition": "",
+                    "action": (
+                        f"Sets {display_field} based on the decision logic below, "
+                        "reconstructed directly from the source's branching logic."
+                    ),
+                    "output_field": display_field,
+                    "eligibility": list(chain.get("eligibility") or []),
+                    "decision_context": list(chain.get("decision_context") or []),
+                    "execution_semantics": str(chain.get("execution_semantics") or ""),
+                    "decision_logic": [],
+                    "tie_priority_handling": [],
+                    "default": [],
+                    "when_not_eligible": [],
+                    "fields_affected": [display_field],
+                    "source_evidence": [],
+                    "source_chunks": [],
+                    "technical_references": [],
+                    "unresolved_ambiguities": [],
+                    "dependencies": [],
+                    "decision_logic_rows": rows,
+                    "rule_type": "deterministic_decision_table",
+                    "confidence": "deterministic",
+                    "validation_status": "",
+                    "ambiguity_id": "",
+                })
+        return rules + synthetic_rules
 
     @staticmethod
     def _scan_for_jargon(data: Dict[str, Any]) -> List[str]:

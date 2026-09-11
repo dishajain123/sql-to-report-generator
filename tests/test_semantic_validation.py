@@ -134,7 +134,8 @@ def test_case_expression_ignores_commented_out_when_branch():
     assert len(chains) == 1
     conditions = [branch["branch_condition"] for branch in chains[0]["branches"]]
     assert "PeakDPD>=A.REFPERIODOVERDUE" not in " ".join(conditions)
-    assert len(conditions) == 2
+    assert len(conditions) == 3
+    assert conditions[-1] == "ELSE"
 
 
 def test_case_expression_as_alias_target_is_captured():
@@ -175,12 +176,12 @@ def test_case_expression_nested_case_keeps_full_outer_and_inner_value_text():
     assert "'SMA_0'" in facility_branch_value and "'SMA_1'" in facility_branch_value
 
 
-def test_case_expression_single_when_without_else_is_not_a_ladder():
-    """A lone WHEN/THEN with no ELSE and no other branch is a conditional
-    default, not a multi-way decision ladder - must not be fabricated into
-    one."""
+def test_case_expression_single_when_retains_implicit_null_fallback():
     source = "A.FLAG = CASE WHEN A.STATUS = 'X' THEN 1 END"
-    assert extract_case_assignment_decision_chains(source) == []
+    chains = extract_case_assignment_decision_chains(source)
+    assert len(chains) == 1
+    assert chains[0]["branches"][-1]["assignments"][0]["value"] == "NULL"
+    assert chains[0]["branches"][-1]["implicit_default"] is True
 
 
 def test_merge_decision_chains_keeps_deterministic_first_and_drops_exact_duplicates():

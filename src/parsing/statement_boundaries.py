@@ -59,6 +59,7 @@ from typing import List, Optional, Tuple
 
 _KEYWORD_RE = re.compile(r"(?i)^(WITH|SELECT|INSERT|UPDATE|DELETE|MERGE|DECLARE|TRUNCATE)\b")
 _SET_RE = re.compile(r"(?i)^SET\b")
+_CONTROL_START_RE = re.compile(r"(?i)^(IF|ELSIF|BEGIN|WHILE|PRINT|EXEC(?:UTE)?|RETURN|DROP|CREATE)\b")
 _TERMINATOR_RE = re.compile(
     r"(?i)^(END(?:\s+(?:CATCH|TRY|IF|LOOP|WHILE|CASE))?|ELSE|EXCEPTION|GO)\b"
 )
@@ -116,7 +117,7 @@ def split_top_level_statement_spans(text: str, masked_text: str) -> List[Tuple[i
         stripped = line_masked.lstrip()
         indent = len(line_masked) - len(stripped)
         line_start = offset + indent
-        is_top_level = paren_depth <= 0
+        is_top_level = paren_depth <= 0 and case_depth <= 0
 
         keyword_match = _KEYWORD_RE.match(stripped) if is_top_level else None
         set_match = _SET_RE.match(stripped) if is_top_level else None
@@ -137,14 +138,18 @@ def split_top_level_statement_spans(text: str, masked_text: str) -> List[Tuple[i
         ):
             terminator_match = None
 
-        if terminator_match and have_open_statement:
+        control_match = _CONTROL_START_RE.match(stripped) if is_top_level else None
+        if terminator_match or control_match:
             # The terminator line (END/ELSE/EXCEPTION/GO) closes the
             # currently open statement. It is NOT recorded as a new
             # boundary - it stays attached to (is the tail end of) the
             # span that's already open, which is exactly where it
             # belongs. The next statement, if any, gets its own boundary
             # when a new keyword/content line is seen.
-            have_open_statement = False
+            # Keep wrappers in their own spans. Attaching END or a following
+            # IF to an UPDATE corrupts otherwise valid, semicolon-free SQL.
+            boundaries.append(line_start)
+            have_open_statement = bool(control_match)
             current_is_cte = False
             cte_main_consumed = False
             current_statement_kind = None

@@ -129,7 +129,7 @@ def extract_procedural_decision_chains(source: str) -> List[Dict[str, Any]]:
     This deliberately handles only a complete, unambiguous ladder. It does
     not guess through nested control flow, SQL statements, or dynamic code.
     """
-    source_text = str(source or "")
+    source_text = _strip_sql_comments(str(source or ""))
     records = _source_line_records(source_text)
     lines = [record["line"] for record in records]
     chains: List[Dict[str, Any]] = []
@@ -200,7 +200,7 @@ def extract_procedural_decision_chains(source: str) -> List[Dict[str, Any]]:
             for branch_index, branch in enumerate(branches):
                 if branch["branch_condition"].upper() == "ELSE":
                     branch["effective_condition"] = (
-                        "all preceding conditions are false: " + "; ".join(previous[:-1])
+                        "all preceding conditions are false or NULL: " + "; ".join(previous[:-1])
                     )
                 provenance = _line_provenance(
                     source_text,
@@ -233,7 +233,7 @@ def extract_nested_decision_chains(source: str) -> List[Dict[str, Any]]:
     parent path. It deliberately emits only ladders with at least two
     categorical outcomes and never interprets SQL statements as branches.
     """
-    source_text = str(source or "")
+    source_text = _strip_sql_comments(str(source or ""))
     source_records = _source_line_records(source_text)
     line_records = [record for record in source_records if record["line"].strip()]
     lines = [record["line"] for record in line_records]
@@ -370,54 +370,25 @@ _CASE_BODY_TOKEN_RE = re.compile(r"\bCASE\b|\bEND\b|\bWHEN\b|\bTHEN\b|\bELSE\b",
 _CASE_ASSIGN_TARGET_RE = re.compile(
     r"(?P<target>@?[A-Za-z_][A-Za-z0-9_$#]*(?:\.[A-Za-z_][A-Za-z0-9_$#]*)?)\s*(?::=|=)\s*\(?\s*$"
 )
-_CASE_ALIAS_RE = re.compile(r"^\s*\)?\s*AS\s+(?P<alias>[A-Za-z_][A-Za-z0-9_$#]*)\b", re.IGNORECASE)
+_CASE_ALIAS_RE = re.compile(
+    r"^\s*(?P<closing>\)?)\s*(?:AS\s+)?(?P<alias>[A-Za-z_][A-Za-z0-9_$#]*)\b"
+    r"(?=\s*(?:,|;|FROM\b|INTO\b|$))", re.IGNORECASE,
+)
+_CASE_ALIAS_STOPWORDS = {"FROM", "INTO", "WHERE", "GROUP", "ORDER", "HAVING", "AND", "OR", "WHEN", "THEN", "ELSE", "END", "AS"}
+
+
+def _case_scan_text(text: str) -> str:
+    # Keywords inside SQL literals and quoted identifiers are data. Preserve
+    # coordinates so branch expressions can still be sliced from real text.
+    return re.sub(
+        r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|\[(?:\]\]|[^\]])*\]",
+        lambda m: "".join(c if c in "\r\n" else " " for c in m.group()), text,
+    )
 
 
 def _strip_sql_comments(source: str) -> str:
-    """Return a same-length copy of `source` with `--` line comments and
-    `/* */` block comments blanked to spaces (newlines preserved) and
-    string literals left completely untouched.
-
-    Keyword scanning (CASE/WHEN/THEN/ELSE/END) is done on this text so a
-    commented-out branch can never be mistaken for live logic. Unlike a
-    full mask, string contents are preserved because branch *values*
-    (e.g. `'SMA_0'`) must remain intact for extraction.
-    """
-    text = str(source or "")
-    result = list(text)
-    n = len(text)
-    i = 0
-    while i < n:
-        two = text[i : i + 2]
-        if text[i] == "'":
-            j = i + 1
-            while j < n:
-                if text[j : j + 2] == "''":
-                    j += 2
-                    continue
-                if text[j] == "'":
-                    j += 1
-                    break
-                j += 1
-            i = j
-            continue
-        if two == "--":
-            j = text.find("\n", i)
-            j = n if j == -1 else j
-            for k in range(i, j):
-                result[k] = " "
-            i = j
-            continue
-        if two == "/*":
-            j = text.find("*/", i + 2)
-            j = n if j == -1 else j + 2
-            for k in range(i, min(j, n)):
-                if text[k] != "\n":
-                    result[k] = " "
-            i = j
-            continue
-        i += 1
-    return "".join(result)
+    from src.parsing.sql_comments import executable_sql
+    return executable_sql(source)
 
 
 def _find_outer_case_spans(text: str) -> List[Tuple[int, int]]:
@@ -428,7 +399,7 @@ def _find_outer_case_spans(text: str) -> List[Tuple[int, int]]:
     """
     spans: List[Tuple[int, int]] = []
     stack: List[int] = []
-    for match in _CASE_KEYWORD_RE.finditer(text):
+    for match in _CASE_KEYWORD_RE.finditer(_case_scan_text(text)):
         token = match.group(0).upper()
         if token == "CASE":
             stack.append(match.start())
@@ -470,7 +441,7 @@ def _split_top_level_case_branches(
 
     boundaries: List[Tuple[str, int, int]] = []
     depth = 0
-    for match in _CASE_BODY_TOKEN_RE.finditer(body):
+    for match in _CASE_BODY_TOKEN_RE.finditer(_case_scan_text(body)):
         token = match.group(0).upper()
         if token == "CASE":
             depth += 1
@@ -493,6 +464,9 @@ def _split_top_level_case_branches(
                 index += 1
                 continue
             condition = body[end : boundaries[then_index][1]].strip()
+            operand = body[:boundaries[0][1]].strip()
+            if operand:
+                condition = f"{operand} = {condition}"
             value_stop = boundaries[then_index + 1][1] if then_index + 1 < total else len(body)
             value = body[boundaries[then_index][2] : value_stop].strip()
             if condition and value:
@@ -548,12 +522,20 @@ def extract_case_assignment_decision_chains(source: str) -> List[Dict[str, Any]]
     chains: List[Dict[str, Any]] = []
     for case_start, case_end in _find_outer_case_spans(text):
         target: Optional[str] = None
+        aggregation = ""
         preceding_match = _CASE_ASSIGN_TARGET_RE.search(text[:case_start])
         if preceding_match:
             target = preceding_match.group("target").strip()
         else:
             alias_match = _CASE_ALIAS_RE.match(text[case_end : case_end + 200])
-            if alias_match:
+            if alias_match and alias_match.group("alias").upper() not in _CASE_ALIAS_STOPWORDS:
+                wrapper = re.search(r"\b([A-Za-z_][\w$#]*)\s*\(\s*$", text[:case_start])
+                if wrapper:
+                    # The branch produces an input to an aggregate, not the
+                    # final grouped result. Preserve that distinction.
+                    if wrapper.group(1).upper() not in {"MAX", "MIN", "SUM", "AVG"} or not alias_match.group("closing"):
+                        continue
+                    aggregation = wrapper.group(1).upper()
                 target = alias_match.group("alias").strip()
         if not target:
             continue
@@ -562,6 +544,9 @@ def extract_case_assignment_decision_chains(source: str) -> List[Dict[str, Any]]
             continue
 
         branches_raw, else_value = _split_top_level_case_branches(text, case_start, case_end)
+        implicit_default = bool(branches_raw) and else_value is None
+        if implicit_default:
+            else_value = {"value": "NULL", "source_start": case_end - 3, "source_end": case_end}
         total_branches = len(branches_raw) + (1 if else_value is not None else 0)
         if total_branches < 2:
             continue
@@ -582,6 +567,7 @@ def extract_case_assignment_decision_chains(source: str) -> List[Dict[str, Any]]
         if else_value is not None:
             else_branch: Dict[str, Any] = {
                 "branch_condition": "ELSE",
+                "implicit_default": implicit_default,
                 "assignments": [{"field": field_name, "value": else_value["value"]}],
                 "_provenance": _source_provenance(
                     str(source or ""), else_value["source_start"], else_value["source_end"]
@@ -589,13 +575,13 @@ def extract_case_assignment_decision_chains(source: str) -> List[Dict[str, Any]]
             }
             if conditions_so_far:
                 else_branch["effective_condition"] = (
-                    "all preceding conditions are false: " + "; ".join(conditions_so_far)
+                    "all preceding conditions are false or NULL: " + "; ".join(conditions_so_far)
                 )
             branches.append(else_branch)
 
         subject_match = re.match(r"[A-Za-z_][A-Za-z0-9_$#]*", branches_raw[0]["condition"]) if branches_raw else None
         subject = subject_match.group(0) if subject_match else field_name
-        chain_id = f"case_{text.count(chr(10), 0, case_start) + 1:04d}_{text.count(chr(10), 0, case_end) + 1:04d}"
+        chain_id = f"case_{text.count(chr(10), 0, case_start) + 1:04d}_{text.count(chr(10), 0, case_end) + 1:04d}_{case_start}"
         for branch_index, branch in enumerate(branches):
             provenance = branch.pop("_provenance", _source_provenance(str(source or ""), -1, -1))
             branches[branch_index] = _apply_branch_provenance(
@@ -604,6 +590,7 @@ def extract_case_assignment_decision_chains(source: str) -> List[Dict[str, Any]]
         chains.append(
             {
                 "chain_type": "CASE_EXPRESSION",
+                "aggregation": aggregation,
                 "subject": subject,
                 "branches": branches,
                 "chain_id": chain_id,
@@ -634,7 +621,8 @@ def _decision_chain_signature(chain: Any) -> Optional[str]:
     for branch_index, branch in enumerate(branches):
         if not isinstance(branch, dict):
             continue
-        condition = re.sub(r"\s+", " ", str(branch.get("branch_condition") or "")).strip().lower()
+        from src.parsing.decision_identity import decision_text_key
+        condition = decision_text_key(branch.get("branch_condition"))
         # The nested extractor represents a flat ladder's final ELSE as the
         # effective predicate ``NOT(A) AND NOT(B)``. The procedural ladder
         # extractor represents the same branch as literal ELSE. Normalize
@@ -659,7 +647,7 @@ def _decision_chain_signature(chain: Any) -> Optional[str]:
         normalized_branches.append([condition, sorted(pairs)])
     if not normalized_branches:
         return None
-    return json.dumps(sorted(normalized_branches, key=str), sort_keys=True, default=str)
+    return json.dumps([str(chain.get("aggregation") or ""), normalized_branches], sort_keys=True, default=str)
 
 
 def merge_decision_chains(*chain_lists: List[Any]) -> List[Dict[str, Any]]:
@@ -682,7 +670,7 @@ def merge_decision_chains(*chain_lists: List[Any]) -> List[Dict[str, Any]]:
     fields the deterministic pass did not cover.
     """
     merged: List[Dict[str, Any]] = []
-    seen_signatures: set[str] = set()
+    seen_signatures: Dict[str, List[Dict[str, Any]]] = {}
     for chains in chain_lists:
         if not isinstance(chains, list):
             continue
@@ -691,9 +679,15 @@ def merge_decision_chains(*chain_lists: List[Any]) -> List[Dict[str, Any]]:
                 continue
             signature = _decision_chain_signature(chain)
             if signature is not None:
-                if signature in seen_signatures:
+                earlier = seen_signatures.setdefault(signature, [])
+                def distinct_occurrence(previous):
+                    start = chain.get("source_char_start", -1)
+                    previous_start = previous.get("source_char_start", -1)
+                    return (isinstance(start, int) and isinstance(previous_start, int)
+                            and start >= 0 and previous_start >= 0 and start != previous_start)
+                if any(not distinct_occurrence(previous) for previous in earlier):
                     continue
-                seen_signatures.add(signature)
+                earlier.append(chain)
             merged.append(chain)
     return merged
 

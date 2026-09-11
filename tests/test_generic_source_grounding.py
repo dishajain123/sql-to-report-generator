@@ -164,10 +164,9 @@ def test_business_rule_labels_have_markdown_boundaries_and_no_redundant_prose():
         "decision_logic_rows": [{"condition": "input_code = 1", "outcome": "READY"}],
     }])
     assert "**Affected Field:** `state_code`" in report
-    # No "eligibility" was supplied, so the report must say so explicitly
-    # rather than silently omitting the line - "unconditional" is itself a
-    # material fact, not an absence of one.
-    assert "**Applies to:** all rows (no additional conditions found in the source)\n\n**Summary:**" in report
+    # Missing eligibility metadata must not be treated as proof that the
+    # source is unconditional (this fixture even contains a condition).
+    assert "**Applies to:** eligibility not documented.\n\n**Summary:**" in report
     assert "**Condition:**" not in report
     assert "**Then:**" not in report
     assert "| input_code = 1 | READY |" in report

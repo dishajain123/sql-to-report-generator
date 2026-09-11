@@ -175,7 +175,9 @@ class ReportFormatterAgent:
         """
         ctx = self._prepare(ingestion, merged_extraction, synthesis, canonical_ir, run_metadata)
         synthesis = ctx["synthesis"]
-        business_rules_for_display = ctx["business_rules_for_display"]
+        business_rules_for_display = self._project_decision_rules(
+            ctx["business_rules_for_display"], ctx["decision_blocks"]
+        )
         consolidated_reads = ctx["consolidated_reads"]
         consolidated_writes = ctx["consolidated_writes"]
         resolved_merged_extraction = ctx["merged_extraction"]
@@ -209,7 +211,7 @@ class ReportFormatterAgent:
             self._business_rule_overview_table(business_rules_for_display),
             self._business_rules_section(
                 business_rules_for_display,
-                decision_blocks=ctx["decision_blocks"],
+                decision_blocks=None,
             ),
             self._calculations(synthesis, resolved_merged_extraction),
             self._data_touched_section(consolidated_reads, consolidated_writes, business_rules_for_display),
@@ -907,6 +909,53 @@ class ReportFormatterAgent:
     # 5. Business Rules
     # ------------------------------------------------------------------
 
+    def _project_decision_rules(self, rules, decision_blocks):
+        """One display projection shared by counts, overview and rule detail."""
+        by_id = {str(rule.get("rule_id") or ""): rule for rule in rules}
+        replacements = {}
+        consumed = set()
+        for block in decision_blocks or []:
+            members = [by_id[rid] for rid in block.get("rule_ids", []) if rid in by_id]
+            if not members:
+                continue
+            first_id = str(members[0].get("rule_id") or "")
+            projected = dict(members[0])
+            projected["rule_id"] = str(block.get("block_id") or first_id)
+            projected["rule_name"] = block.get("name") or projected.get("rule_name")
+            projected["decision_block_title"] = projected["rule_name"]
+            projected["decision_block_id"] = projected["rule_id"]
+            projected["fields_affected"] = self._distinct_text([
+                field for rule in members for field in rule.get("fields_affected", [])
+            ])
+            projected["output_field"] = ", ".join(self._distinct_text([
+                rule.get("output_field", "") for rule in members
+            ]))
+            projected["eligibility"] = self._distinct_text([
+                item for rule in members for item in self._rule_text_lines(rule.get("eligibility"))
+            ])
+            projected["decision_logic_rows"] = [
+                {"condition": branch.get("condition", ""),
+                 "outcome": "; ".join(self._distinct_text([
+                     self._assignment_text(item) for item in branch.get("results", [])
+                 ]))}
+                for branch in block.get("branches", [])
+            ]
+            projected["action"] = ""
+            if block.get("eligibility"):
+                projected["eligibility"] = list(block["eligibility"])
+            projected["decision_role"] = str(block.get("decision_role") or "assignment")
+            projected["decision_context"] = list(block.get("decision_context") or [])
+            projected["execution_semantics"] = str(block.get("execution_semantics") or "")
+            replacements.setdefault(first_id, []).append(projected)
+            consumed.update(str(rule.get("rule_id") or "") for rule in members)
+        displayed = []
+        for rule in rules:
+            rid = str(rule.get("rule_id") or "")
+            displayed.extend(replacements.get(rid, []))
+            if rid not in consumed:
+                displayed.append(rule)
+        return displayed
+
     def _business_rules_section(
         self,
         rules: List[Dict[str, Any]],
@@ -917,68 +966,7 @@ class ReportFormatterAgent:
             lines.append("_No business rules were identified from the extracted source._")
             return "\n".join(lines)
         if decision_blocks:
-            rule_by_id = {
-                str(rule.get("rule_id") or ""): rule
-                for rule in rules
-                if str(rule.get("rule_id") or "")
-            }
-            consumed_ids: set[str] = set()
-            rendered_index = 1
-            for block in decision_blocks:
-                if not isinstance(block, dict):
-                    continue
-                block_rules = [
-                    rule_by_id[rule_id]
-                    for rule_id in block.get("rule_ids", []) or []
-                    if rule_id in rule_by_id
-                ]
-                branches = block.get("branches") or []
-                if not block_rules or not isinstance(branches, list):
-                    continue
-                if all(str(rule.get("rule_id") or "") in consumed_ids for rule in block_rules):
-                    continue
-                # Canonical branches are the structural source of truth. The
-                # renderer does not regroup rules by whichever chain happened
-                # to be processed last, which can split multi-output CASEs.
-                block_rule = dict(block_rules[0])
-                block_rule["decision_block_title"] = block.get("name") or block_rule.get("decision_block_title")
-                block_rule["decision_logic_rows"] = [
-                    {
-                        "condition": branch.get("condition", ""),
-                        "outcome": "; ".join(
-                            self._distinct_text(
-                                [self._assignment_text(item) for item in (branch.get("results") or [])]
-                            )
-                        ),
-                    }
-                    for branch in branches
-                    if isinstance(branch, dict)
-                ]
-                if branches and all(
-                    isinstance(branch, dict) and branch.get("results")
-                    for branch in branches
-                ):
-                    # Canonical branch results already contain the authored
-                    # action; rendering it again creates a blank-condition
-                    # duplicate row in the decision table.
-                    block_rule["action"] = ""
-                # The canonical block already contains the authoritative
-                # ordered branch rows. Rendering the original matched rules
-                # alongside it duplicates every branch in the same table.
-                lines.extend(self._render_decision_block(rendered_index, [block_rule]))
-                lines.append("")
-                consumed_ids.update(str(rule.get("rule_id") or "") for rule in block_rules)
-                rendered_index += 1
-
-            # Anything not attached to a canonical structural block remains
-            # an independent LLM-authored rule and is rendered unchanged.
-            for rule in rules:
-                if str(rule.get("rule_id") or "") in consumed_ids:
-                    continue
-                lines.extend(self._render_business_rule_block(rendered_index, rule))
-                lines.append("")
-                rendered_index += 1
-            return "\n".join(lines).strip()
+            return self._business_rules_section(self._project_decision_rules(rules, decision_blocks))
         groups: List[List[Dict[str, Any]]] = []
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for rule in rules:
@@ -1052,13 +1040,30 @@ class ReportFormatterAgent:
         table_content = [value for row in table_rows for value in row]
         explanations = self._decision_block_explanations(rules, table_content)
         lines = [f"### R{idx} — {title}", ""]
+        field_label = "Decision output" if all(rule.get("decision_role") == "predicate" for rule in rules) else "Affected Field"
         lines.extend([
-            f"**Affected Field:** `{', '.join(affected)}`" if affected and affected[0] != "Not specified" else "**Affected Field:** Not specified",
+            f"**{field_label}:** `{', '.join(affected)}`" if affected and affected[0] != "Not specified" else "**Affected Field:** Not specified",
             "",
             "**Summary:**",
             "",
         ])
         lines.extend(f"- {value}" for value in explanations)
+        eligibility = self._distinct_text([
+            item for rule in rules for item in self._rule_text_lines(rule.get("eligibility"))
+        ])
+        if eligibility:
+            lines.extend(["", "**Applies to:**", ""])
+            lines.extend(f"- {item}" for item in eligibility)
+        context = self._distinct_text([
+            item for rule in rules for item in (rule.get("decision_context") or [])
+        ])
+        semantics = self._distinct_text([rule.get("execution_semantics", "") for rule in rules])
+        if context:
+            lines.extend(["", "**Source context:**", ""])
+            lines.extend(f"- {item}" for item in context)
+        if semantics:
+            lines.extend(["", "**Evaluation order:**", ""])
+            lines.extend(f"- {item}" for item in semantics)
         lines.extend(["", "### Decision Logic", ""])
         lines.extend(self._decision_logic_block([
             {"condition": condition, "outcome": outcome}
@@ -1123,10 +1128,8 @@ class ReportFormatterAgent:
             lines.append("")
             lines.extend(f"- {item}" for item in eligibility_items)
         else:
-            # An empty "eligibility" list means the source showed no gating
-            # condition at all - that is itself a material fact (the rule
-            # runs unconditionally) and must be stated, not left silent.
-            lines.append("**Applies to:** all rows (no additional conditions found in the source)")
+            # Missing model metadata is not evidence of an unconditional write.
+            lines.append("**Applies to:** eligibility not documented.")
         lines.append("")
         lines.append("**Summary:**")
         lines.append("")
@@ -1723,6 +1726,18 @@ class ReportFormatterAgent:
         merged_extraction: Optional[Dict[str, Any]] = None,
     ) -> str:
         calcs = list(synthesis.data.get("calculations", []) or [])
+        known_expressions = {
+            re.sub(r"\s+", "", str(c.get("expression") or c.get("formula") or "")).casefold()
+            for c in calcs if isinstance(c, dict)
+        }
+        for calculation in (merged_extraction or {}).get("calculations", []) or []:
+            if not isinstance(calculation, dict):
+                continue
+            expression = str(calculation.get("expression") or calculation.get("formula") or "")
+            key = re.sub(r"\s+", "", expression).casefold()
+            if key and key not in known_expressions:
+                calcs.append(calculation)
+                known_expressions.add(key)
         if not calcs:
             return "## Calculations\n\n_None identified._"
         lines = []

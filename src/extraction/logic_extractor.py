@@ -44,6 +44,8 @@ Python method calling `client.chat.completions.create(...)`.
 
 from __future__ import annotations
 
+from src.parsing.sql_comments import executable_sql
+
 import json
 import os
 import re
@@ -107,6 +109,7 @@ class LogicExtractionAgent:
         telemetry_tracker: Optional[LLMTelemetryTracker] = None,
         response_cache: Optional[PersistentLLMResponseCache] = None,
         max_tokens: int = 6000,
+        hard_max_output_tokens: Optional[int] = None,
     ):
         """
         Args:
@@ -119,6 +122,17 @@ class LogicExtractionAgent:
                 the Bedrock-backed client defaults to 1024 output tokens when
                 this isn't passed explicitly, silently truncating extraction
                 JSON for any code chunk whose extracted facts exceed that.
+            hard_max_output_tokens: the REAL, server-enforced maximum
+                completion tokens for the configured provider/model (see
+                `llm_client.resolve_model_output_ceiling`), when known.
+                Some Bedrock models (Amazon Nova Lite/Micro/Pro) cap
+                completions at 5000 tokens server-side regardless of what
+                `max_tokens` is requested - sizing budgets and retries
+                against the generic `LLM_HARD_MAX_OUTPUT_TOKENS` default
+                (32768) instead of this real ceiling makes a "retry at the
+                ceiling" request get silently clamped back down and
+                reproduce the same truncation. Defaults to the module-level
+                `_HARD_MAX_OUTPUT_TOKENS` when not given.
         """
         self.client = client
         self.model = model
@@ -128,11 +142,14 @@ class LogicExtractionAgent:
         self.telemetry_tracker = telemetry_tracker
         self.response_cache = response_cache
         self.max_tokens = max_tokens
+        self.hard_max_output_tokens = (
+            int(hard_max_output_tokens) if hard_max_output_tokens else _HARD_MAX_OUTPUT_TOKENS
+        )
 
     def _output_token_budget(self, code_chunk: str, requested: Optional[int] = None) -> int:
         points = len(find_decision_points(code_chunk or ""))
         base = max(int(requested or self.max_tokens), _BASE_EXTRACTION_TOKENS)
-        return min(_HARD_MAX_OUTPUT_TOKENS, base + points * _PER_DECISION_POINT_EXTRACTION_TOKENS)
+        return min(self.hard_max_output_tokens, base + points * _PER_DECISION_POINT_EXTRACTION_TOKENS)
 
     def extract(
         self,
@@ -152,6 +169,8 @@ class LogicExtractionAgent:
         just this call - lets callers pick a different model per run
         without re-constructing the agent.
         """
+        code_chunk = executable_sql(code_chunk)
+        embedded_sql = [executable_sql(stmt) for stmt in (embedded_sql or [])]
         prompt_set = get_prompt_set("logic_extraction.yaml", dialect=dialect)
         context_path = chunk_context or []
         embedded_sql_context = embedded_sql or []
@@ -254,9 +273,9 @@ class LogicExtractionAgent:
             recovered = self._recover_partial_json(raw_response)
             if recovered is not None:
                 data, error = recovered, ""
-            elif effective_max_tokens < _HARD_MAX_OUTPUT_TOKENS:
+            elif effective_max_tokens < self.hard_max_output_tokens:
                 retry_kwargs = dict(completion_kwargs)
-                retry_kwargs["max_tokens"] = _HARD_MAX_OUTPUT_TOKENS
+                retry_kwargs["max_tokens"] = self.hard_max_output_tokens
                 retry_response = self.client.chat.completions.create(**retry_kwargs)
                 retry_reason = str(
                     getattr(retry_response.choices[0], "finish_reason", "") or ""

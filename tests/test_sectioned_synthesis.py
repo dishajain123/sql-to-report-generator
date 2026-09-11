@@ -31,11 +31,75 @@ _CASE_BLOCK = (
 )
 
 
-def _make_agent(max_tokens: int = 16000) -> RuleSynthesizerAgent:
+def _make_agent(max_tokens: int = 16000, hard_max_output_tokens=None) -> RuleSynthesizerAgent:
     # `client` is never called by the methods under test here - the tests
     # either exercise pure planning/merging logic, or monkeypatch
     # `synthesize` itself - so a plain sentinel object is enough.
-    return RuleSynthesizerAgent(client=object(), model="test-model", max_tokens=max_tokens)
+    return RuleSynthesizerAgent(
+        client=object(),
+        model="test-model",
+        max_tokens=max_tokens,
+        hard_max_output_tokens=hard_max_output_tokens,
+    )
+
+
+# --------------------------------------------------------------------------
+# Real per-model output ceilings (e.g. Amazon Nova Lite on Bedrock caps
+# completions at 5000 tokens server-side) must drive sectioning, not the
+# generic 32768 default - see `llm_client.resolve_model_output_ceiling` and
+# the matching `hard_max_output_tokens` wiring in `RuleSynthesizerAgent`.
+# --------------------------------------------------------------------------
+
+
+def test_resolve_model_output_ceiling_returns_real_bedrock_cap():
+    from src.core.llm_client import resolve_model_output_ceiling
+
+    assert resolve_model_output_ceiling("bedrock", "amazon.nova-lite-v1:0") == 5000
+    assert resolve_model_output_ceiling("bedrock", "anthropic.claude-3-haiku") == 4096
+    # Unknown provider/model: no known ceiling, caller keeps its own default.
+    assert resolve_model_output_ceiling("openai", "gpt-4o") is None
+    assert resolve_model_output_ceiling("bedrock", "some-unlisted-model") is None or isinstance(
+        resolve_model_output_ceiling("bedrock", "some-unlisted-model"), int
+    )
+
+
+def test_small_model_ceiling_forces_sectioning_at_a_much_lower_threshold():
+    # A source that fits comfortably under the generic 32768 default must
+    # still be routed to sectioning once the agent knows the real per-model
+    # cap is small (5000, e.g. Amazon Nova Lite) - otherwise a single-pass
+    # call is guaranteed to request more than the model will ever return,
+    # and the server-side clamp truncates it no matter what was requested.
+    huge_source = "\n".join(_CASE_BLOCK for _ in range(10))
+    generic_agent = _make_agent(max_tokens=8192)
+    small_cap_agent = _make_agent(max_tokens=8192, hard_max_output_tokens=5000)
+
+    assert generic_agent.requires_sectioned_synthesis(huge_source) is False
+    assert small_cap_agent.requires_sectioned_synthesis(huge_source) is True
+
+
+def test_plan_synthesis_sections_stays_within_a_small_real_ceiling():
+    # Regression for the exact PRO.SMA_MARKING failure mode: under the old
+    # (generic-ceiling) planning, several sections were still budgeted at
+    # 16000-32768 requested tokens even though Bedrock silently clamps every
+    # Nova Lite completion to 5000 server-side - so most sections were
+    # guaranteed to truncate mid-JSON regardless of retries. Every section's
+    # own eventual `_output_token_budget` call must never exceed the real
+    # per-model ceiling once that ceiling is wired in.
+    agent = _make_agent(max_tokens=8192, hard_max_output_tokens=5000)
+    chunks = []
+    cursor = 0
+    for i in range(12):
+        text = _CASE_BLOCK
+        chunks.append(_chunk(f"{i:02d}_main_body", text, cursor, cursor + len(text)))
+        cursor += len(text) + 1
+    raw_source = "\n".join(_CASE_BLOCK for _ in range(12))
+
+    sections = agent.plan_synthesis_sections(chunks, raw_source)
+    assert len(sections) > 1
+    for section in sections:
+        start, end = section["char_start"], section["char_end"]
+        section_text = raw_source[start:end] if start is not None else raw_source
+        assert agent._output_token_budget(section_text) <= 5000
 
 
 # --------------------------------------------------------------------------
@@ -498,6 +562,43 @@ def test_normalize_business_rules_backfill_requires_at_least_two_rows():
         [raw_rule], technical_context=technical_context
     )
     assert normalized[0]["decision_logic_rows"] == []
+
+
+def test_normalize_business_rules_backfill_only_picks_matching_field_from_shared_chain():
+    # Regression for PRO.SMA_MARKING: one CASE ladder assigns SMA_CLASS while
+    # a separate CASE ladder assigns SMA_REASON. A rule for SMA_REASON must
+    # never pick up SMA_CLASS's outcomes (or vice versa) even though both
+    # chains are visible in the same technical_context.
+    sma_class_rule = {"rule_name": "Assign SMA class", "output_field": "SMA_CLASS", "decision_logic_rows": []}
+    sma_reason_rule = {"rule_name": "Assign SMA reason", "output_field": "SMA_REASON", "decision_logic_rows": []}
+    technical_context = {
+        "decision_chains": [
+            {
+                "chain_id": "class_ladder",
+                "branches": [
+                    {"branch_condition": "DPD_Max BETWEEN 1 AND 30", "assignments": [{"field": "SMA_CLASS", "value": "'SMA_0'"}]},
+                    {"branch_condition": "DPD_Max BETWEEN 31 AND 60", "assignments": [{"field": "SMA_CLASS", "value": "'SMA_1'"}]},
+                    {"branch_condition": "ELSE", "is_catch_all": True, "assignments": [{"field": "SMA_CLASS", "value": "'SMA_2'"}]},
+                ],
+            },
+            {
+                "chain_id": "reason_ladder",
+                "branches": [
+                    {"branch_condition": "FACILITYTYPE IN ('CC','OD') AND ...", "assignments": [{"field": "SMA_REASON", "value": "'DEGRADE BY NO CREDIT'"}]},
+                    {"branch_condition": "ELSE", "is_catch_all": True, "assignments": [{"field": "SMA_REASON", "value": "'OTHER'"}]},
+                ],
+            },
+        ]
+    }
+    normalized = RuleSynthesizerAgent._normalize_business_rules(
+        [sma_class_rule, sma_reason_rule], technical_context=technical_context
+    )
+    class_rows = normalized[0]["decision_logic_rows"]
+    reason_rows = normalized[1]["decision_logic_rows"]
+    assert [r["outcome"] for r in class_rows] == ["'SMA_0'", "'SMA_1'", "'SMA_2'"]
+    assert [r["outcome"] for r in reason_rows] == ["'DEGRADE BY NO CREDIT'", "'OTHER'"]
+    assert all("DEGRADE" not in r["outcome"] for r in class_rows)
+    assert all(r["outcome"] not in {"'SMA_0'", "'SMA_1'", "'SMA_2'"} for r in reason_rows)
 
 
 def test_normalize_business_rules_backfill_ignores_unrelated_field():

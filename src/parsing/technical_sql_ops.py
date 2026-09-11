@@ -318,10 +318,9 @@ def _infer_evidence_type(source_label: str, statement_text: str) -> str:
     return "TABLE_REFERENCE"
 
 
-def _strip_sql_comments(text: str) -> str:
-    stripped = re.sub(r"/\*.*?\*/", " ", text, flags=re.DOTALL)
-    stripped = re.sub(r"--[^\n]*", " ", stripped)
-    return stripped
+def _strip_sql_comments(source: str) -> str:
+    from src.parsing.sql_comments import executable_sql
+    return executable_sql(source)
 
 
 def _select_has_update_lock(tree: exp.Expression) -> bool:
@@ -412,6 +411,11 @@ def _extract_table_ops_from_tree(
                     join_predicates=join_predicates,
                     exists_predicates=exists_predicates,
                     constants=constants,
+                    assigned_values=[
+                        {"column": projection.alias_or_name,
+                         "expression": (projection.this if isinstance(projection, exp.Alias) else projection).sql(dialect=dialect)}
+                        for projection in tree.expressions if projection.alias_or_name
+                    ],
                     statement_kind="SELECT_INTO",
                     statement_text=statement_text,
                     statement_id=statement_id,

@@ -59,6 +59,25 @@ def _max_output_tokens_for_model(model_id: str) -> int:
     return BEDROCK_MAX_OUTPUT_TOKENS
 
 
+def resolve_model_output_ceiling(provider: str, model_name: str) -> Optional[int]:
+    """Return the real, server-enforced maximum completion tokens for the
+    configured provider/model, or `None` when no such ceiling is known.
+
+    This is the single source of truth `_BedrockChatCompletions.create`
+    already clamps every request against (`safe_max_tokens = min(max_tokens,
+    _max_output_tokens_for_model(model_id))`). Extraction/synthesis budget
+    planning (`RuleSynthesizerAgent`, `LogicExtractionAgent`) must be built
+    against this same ceiling - not the generic `LLM_HARD_MAX_OUTPUT_TOKENS`
+    default (32768) - or their single-pass/sectioning decisions silently
+    request more completion tokens than the model will ever return (e.g.
+    Amazon Nova Lite's real cap is 5000), guaranteeing truncated JSON no
+    matter how large a budget the caller asks for.
+    """
+    if str(provider or "").strip().lower() != "bedrock":
+        return None
+    return _max_output_tokens_for_model(model_name)
+
+
 # Nova models: sending temperature=0 alone does NOT guarantee deterministic,
 # run-to-run-stable output on Bedrock - topP and topK keep their (non-greedy)
 # model defaults unless explicitly pinned. The synthesis prompt spends ~20

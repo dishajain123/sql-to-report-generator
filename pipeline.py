@@ -43,9 +43,10 @@ from src.extraction.logic_extractor import LogicExtractionAgent, ChunkExtraction
 from src.synthesis.rule_synthesizer import RuleSynthesizerAgent, SynthesisResult
 from src.output.report_formatter import ReportFormatterAgent
 from src.parsing.technical_sql_ops import extract_table_operations_from_chunks, split_table_operations
+from src.parsing.calculations import calculations_from_operations
 from src.ingestion.guardrails import InputGuardrailError, run_input_guardrails, strip_inactive_code_for_llm
 from src.dialect.detector import UnsupportedDialectError, detect_dialect
-from src.core.llm_client import LLMConfig, create_llm_client, load_llm_config
+from src.core.llm_client import LLMConfig, create_llm_client, load_llm_config, resolve_model_output_ceiling
 from src.core.llm_response_cache import PersistentLLMResponseCache
 from src.validation.confidence import derive_chunk_support_confidence
 from src.validation.reconciliation import reconcile_deterministic_evidence
@@ -138,18 +139,20 @@ def supported_analysis_dialect(ingestion: IngestionResult) -> Optional[str]:
     return None
 
 
-def _extract_deterministic_decision_chains(source: str) -> List[Dict[str, Any]]:
+def _extract_deterministic_decision_chains(source: str, dialect: str = "tsql") -> List[Dict[str, Any]]:
     """Run every deterministic chain extractor before canonical merging.
 
     The extractors cover complementary procedural shapes.  In particular,
     nested extraction must not suppress the flat PL/SQL ladder extractor;
     ``merge_decision_chains`` remains the single deduplication boundary.
     """
-    return merge_decision_chains(
+    from src.parsing.decision_tables import enrich_decision_tables
+    chains = merge_decision_chains(
         extract_case_assignment_decision_chains(source),
         extract_nested_decision_chains(source),
         extract_procedural_decision_chains(source),
     )
+    return enrich_decision_tables(source, chains, dialect=dialect)
 
 
 def _ranges_overlap(left_start: Any, left_end: Any, right_start: Any, right_end: Any) -> bool:
@@ -371,6 +374,15 @@ class LogicRulesExtractorPipeline:
         # constructor argument is left as `None`.
         self.response_cache = PersistentLLMResponseCache(enabled=response_cache_enabled)
         self.client = create_llm_client(self.llm_config)
+        # The real, server-enforced maximum completion tokens for this
+        # provider/model (e.g. 5000 for Amazon Nova Lite on Bedrock), when
+        # known - see `resolve_model_output_ceiling`. Both LLM-calling agents
+        # MUST size their single-pass/sectioning/retry budgets against this,
+        # not the generic 32768 default: a budget computed against a ceiling
+        # larger than what the model will actually return under-triggers
+        # sectioning and produces sections still too big to complete,
+        # guaranteeing truncated JSON no matter how a caller retries.
+        self.model_output_ceiling = resolve_model_output_ceiling(self.provider, self.model_name)
 
         self.ingestion_agent = CodeIngestionAgent(max_chunk_chars=max_chunk_chars, dialect=dialect)
         self.retrieval_agent = PatternRetrievalAgent(
@@ -385,6 +397,7 @@ class LogicRulesExtractorPipeline:
             provider=self.provider,
             response_cache=self.response_cache,
             max_tokens=extraction_max_tokens,
+            hard_max_output_tokens=self.model_output_ceiling,
         )
 
         self.synthesizer_agent = RuleSynthesizerAgent(
@@ -395,6 +408,7 @@ class LogicRulesExtractorPipeline:
             provider=self.provider,
             response_cache=self.response_cache,
             max_tokens=synthesis_max_tokens,
+            hard_max_output_tokens=self.model_output_ceiling,
         )
         self.formatter_agent = ReportFormatterAgent()
 
@@ -593,7 +607,7 @@ class LogicRulesExtractorPipeline:
         # single check covers both dialects). Neither firing does not mean
         # the object has no decision logic - it means this deterministic
         # pass found no *unambiguous, single-target* ladder to anchor on.
-        deterministic_chains = _extract_deterministic_decision_chains(ingestion.raw_code)
+        deterministic_chains = _extract_deterministic_decision_chains(ingestion.raw_code, analysis_dialect or "tsql")
         if deterministic_chains:
             # Keep deterministic chains as structured technical context for
             # the model; they never replace or rewrite synthesized rules.
@@ -622,6 +636,10 @@ class LogicRulesExtractorPipeline:
             merged_extraction["tables_read"], merged_extraction["tables_written"] = (
                 split_table_operations(table_operations)
             )
+        merged_extraction["calculations"] = (
+            list(merged_extraction.get("calculations", []))
+            + calculations_from_operations(table_operations)
+        )
         merged_extraction["statement_dependencies"] = build_statement_dependencies(
             merged_extraction.get("table_operations", []),
             merged_extraction.get("statement_provenance", []),
@@ -718,6 +736,19 @@ class LogicRulesExtractorPipeline:
                 merged_extraction["ambiguities"].extend(gap_findings)
                 synthesis.data["ambiguities"] = list(synthesis.data.get("ambiguities", []) or [])
                 synthesis.data["ambiguities"].extend(gap_findings)
+
+        # Guarantee, not best-effort: every deterministic multi-branch
+        # decision chain the source actually contains (SMA_CLASS thresholds,
+        # SMA_REASON precedence, etc.) gets a rendered Decision Logic table
+        # in the final report, regardless of whether the model produced a
+        # matching rule for it this run. Runs once, after synthesis and every
+        # coverage-gap review pass are done, and only adds a rule for a field
+        # no existing rule already covers - see
+        # `RuleSynthesizerAgent.ensure_decision_chain_coverage`.
+        synthesis.data["business_rules"] = RuleSynthesizerAgent.ensure_decision_chain_coverage(
+            synthesis.data.get("business_rules", []),
+            merged_extraction.get("decision_chains", []),
+        )
 
         # Diagnostic-only inventory: this is deliberately built after
         # synthesis/revision so it can say what happened to each executable
