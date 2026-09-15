@@ -30,6 +30,7 @@ orchestration framework is involved.
 from __future__ import annotations
 
 from src.parsing.sql_comments import executable_sql
+from src.ir.rule_identity import unique_rule_ids
 
 import json
 import os
@@ -129,6 +130,67 @@ class RuleSynthesizerAgent:
             return False
         span = match.end() - match.start()
         return span >= 20 and span / max(1, len(text)) >= 0.25
+
+    # Matches the deterministic chunk/full-source parse-error housekeeping
+    # templates this pipeline itself generates (see `pipeline.py`'s
+    # `_merge_extractions`/`_single_pass_extraction_payload`) - not a
+    # general "mentions malformed JSON" filter, so a genuine model-authored
+    # ambiguity about validation/parsing elsewhere in the source is never
+    # caught by this.
+    _PARSE_ERROR_HOUSEKEEPING_RE = re.compile(
+        r"malformed json.{0,40}(needs? (manual )?review|need(s)? manual review)", re.IGNORECASE
+    )
+
+    @staticmethod
+    def _is_parse_error_housekeeping_ambiguity(text: Any) -> bool:
+        return bool(isinstance(text, str) and RuleSynthesizerAgent._PARSE_ERROR_HOUSEKEEPING_RE.search(text))
+
+    @staticmethod
+    def _clean_ambiguities(data: Dict[str, Any]) -> bool:
+        """Drop degenerate-repetition and truncated-fragment garbage from
+        `data["ambiguities"]` in place (same screen `merge_section_results`
+        applies across sections, applied here to a single call's own
+        response so a single-pass/cache-hit/revision result gets the same
+        protection). Returns True if anything was dropped.
+        """
+        raw = data.get("ambiguities")
+        if not isinstance(raw, list) or not raw:
+            return False
+        cleaned: List[str] = []
+        dropped = False
+        for value in raw:
+            text = str(value)
+            if not text.strip():
+                continue
+            if RuleSynthesizerAgent._is_degenerate_text(text) or RuleSynthesizerAgent._looks_truncated(text):
+                dropped = True
+                continue
+            cleaned.append(text)
+        data["ambiguities"] = cleaned
+        return dropped
+
+    # A truncated array item (the JSON cut off mid-string, e.g. finish_reason
+    # == "length" landing inside an "ambiguities" entry) does not always fail
+    # `_recover_partial_json`'s per-item `raw_decode` cleanly in every
+    # position - an odd number of unescaped quote characters is a cheap,
+    # reliable sign the string itself is an incomplete fragment rather than
+    # a real, closed sentence (observed for real: "Chunk '00_main_body"
+    # reaching the final report with no closing quote and no rest of the
+    # sentence).
+    @staticmethod
+    def _looks_truncated(text: Any) -> bool:
+        if not isinstance(text, str) or not text:
+            return False
+        stripped = text.strip()
+        if not stripped:
+            return False
+        if stripped.count("'") % 2 == 1 or stripped.count('"') % 2 == 1:
+            return True
+        # A short fragment with no sentence-ending punctuation and no
+        # trailing closing bracket/quote reads as cut off mid-thought.
+        if len(stripped) <= 40 and stripped[-1] not in ".!?)]}'\"" and " " in stripped:
+            return True
+        return False
 
     def __init__(
         self,
@@ -337,8 +399,22 @@ class RuleSynthesizerAgent:
                 ordered.append(value)
             return ordered
 
+        # Each section is synthesized with the *same* whole-object prompt
+        # (`purpose_summary` asks for "the purpose of this procedure", not
+        # "the purpose of this slice"), so every section independently
+        # writes its own full-procedure summary from whatever partial
+        # evidence it was scoped to - producing several genuinely different
+        # *paraphrases* of the same one-sentence idea, not several distinct
+        # ideas. Exact-string dedup does not catch paraphrases, so joining
+        # every section's attempt produced 2-3 near-duplicate paragraphs
+        # under "What This Does" in a live report. `purpose_summary` is a
+        # single holistic field, not a per-section-contributed list like
+        # `business_rules`, so the correct merge is to keep the single most
+        # complete attempt (the longest one, as a simple, deterministic
+        # proxy for "the section that had the fullest picture") rather than
+        # concatenating every section's restatement of the same idea.
         purpose_summaries = [str(item.data.get("purpose_summary") or "").strip() for item in usable]
-        merged_purpose = "\n\n".join(_dedup_preserve_order([text for text in purpose_summaries if text]))
+        merged_purpose = max((text for text in purpose_summaries if text), key=len, default="")
 
         exception_summaries = [
             str(item.data.get("exception_handling_summary") or "").strip() for item in usable
@@ -347,7 +423,7 @@ class RuleSynthesizerAgent:
             _dedup_preserve_order([text for text in exception_summaries if text])
         )
 
-        def _rule_identity_key(rule: Dict[str, Any]) -> Tuple[str, str, str, str]:
+        def _rule_identity_key(rule: Dict[str, Any]) -> Tuple[str, ...]:
             # Sectioning runs the same synthesis prompt once per section, and
             # overlapping/duplicated evidence (e.g. a rule whose condition
             # spans a boundary and gets re-derived by two adjacent sections)
@@ -360,6 +436,9 @@ class RuleSynthesizerAgent:
                 str(rule.get("condition") or "").strip(),
                 str(rule.get("action") or "").strip(),
                 str(rule.get("output_field") or "").strip(),
+                json.dumps({key: value for key, value in rule.items()
+                            if key not in {"rule_id", "original_rule_id", "rule_name", "condition", "action", "output_field"}},
+                           sort_keys=True, default=str),
             )
 
         def _rule_has_degenerate_text(rule: Dict[str, Any]) -> bool:
@@ -370,8 +449,25 @@ class RuleSynthesizerAgent:
 
         dropped_degenerate = False
 
-        merged_steps_raw: List[str] = []
+        # Same root cause and same fix shape as `purpose_summary` above:
+        # every section is asked for "the step-by-step flow" of the whole
+        # procedure, not just the steps visible in its own slice, so each
+        # section independently reconstructs its own full-procedure flow
+        # from partial evidence. Unlike `purpose_summary` this produces
+        # several *steps* rather than one paragraph, and because the
+        # wording differs per section (e.g. "Update the DpdDays field..."
+        # vs "Calculate the number of days past due...", describing the
+        # same statement) exact-string dedup only catches the rare
+        # byte-identical repeat - a live report showed 16 steps where two
+        # runs of 6-7 steps each substantially re-narrated the same
+        # statements. Keeping only the single section with the most steps
+        # (the one that evidently had the fullest picture) avoids that
+        # near-total duplication; it can drop a genuinely unique step that
+        # only a smaller section captured, but that is a far better
+        # trade-off than presenting the same step to the reader twice.
+        per_section_steps: List[List[str]] = []
         for item in usable:
+            section_steps: List[str] = []
             for step in item.data.get("step_by_step_flow") or []:
                 step_text = str(step)
                 if not step_text.strip():
@@ -379,8 +475,10 @@ class RuleSynthesizerAgent:
                 if RuleSynthesizerAgent._is_degenerate_text(step_text):
                     dropped_degenerate = True
                     continue
-                merged_steps_raw.append(step_text)
-        merged_steps = _dedup_preserve_order(merged_steps_raw)
+                section_steps.append(step_text)
+            if section_steps:
+                per_section_steps.append(section_steps)
+        merged_steps = _dedup_preserve_order(max(per_section_steps, key=len, default=[]))
 
         merged_rules: List[Dict[str, Any]] = []
         seen_rule_keys: set = set()
@@ -397,24 +495,109 @@ class RuleSynthesizerAgent:
                 seen_rule_keys.add(key)
                 merged_rules.append(rule)
 
-        merged_calculations: List[Dict[str, Any]] = []
-        for item in usable:
-            merged_calculations.extend(
-                calc for calc in (item.data.get("calculations") or []) if isinstance(calc, dict)
+        def _calculation_identity_key(calc: Dict[str, Any]) -> Tuple[str, str, str]:
+            # Sections independently re-derive a calculation whose source
+            # statement they can each see (e.g. a formula near a section
+            # boundary), producing near-duplicate expressions that differ
+            # only in incidental formatting: one section wraps the formula
+            # in an outer `(...)` the other doesn't, or paraphrases
+            # `ISNULL(...)` as `COALESCE(...)` (the same null-coalescing
+            # function) - a plain string/dict-identity check misses both,
+            # which is why "PenalInterestAmount" and "RunCount" were each
+            # observed twice in the same live report. Field references
+            # inside the expression are also reduced to their bare
+            # trailing segment so an alias/schema-qualified restatement of
+            # the same formula from a different section still collapses.
+            #
+            # The *target* is split into (table_part, field_part): two
+            # calculations that share an identical formula but write to two
+            # different, both-*qualified* tables (e.g. the same
+            # `DATEADD(...)` formula for both `AccountHistory.
+            # MovementToDate` and `CustomerHistory.MovementToDate`) are
+            # genuinely distinct and must not collapse - but one section
+            # rendering a bare, unqualified target ("RunCount") for the
+            # exact same field another section fully qualified
+            # ("PRO.RunStatus.RunCount") is the same field with a missing
+            # qualifier, not a different one, so an empty table_part
+            # matches any table (see the comparison loop below).
+            target = str(
+                calc.get("output_field") or calc.get("name") or calc.get("result")
+                or calc.get("field") or calc.get("metric") or ""
             )
+            target = re.sub(r"\s+", "", target).strip()
+            if "." in target:
+                table_part, _, field_part = target.rpartition(".")
+                table_part, field_part = table_part.casefold(), field_part.casefold()
+            else:
+                table_part, field_part = "", target.casefold()
+            expression = str(calc.get("expression") or calc.get("formula") or "")
+            dotted_path = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*\.)+[A-Za-z_][A-Za-z0-9_]*")
+            bare = dotted_path.sub(lambda match: match.group(0).split(".")[-1], expression)
+            bare = re.sub(r"(?i)\bISNULL\s*\(", "COALESCE(", bare)
+            collapsed = re.sub(r"\s+", " ", bare).strip()
+            while len(collapsed) >= 2 and collapsed[0] == "(" and collapsed[-1] == ")":
+                depth = 0
+                fully_wrapped = True
+                for index, char in enumerate(collapsed):
+                    if char == "(":
+                        depth += 1
+                    elif char == ")":
+                        depth -= 1
+                        if depth == 0 and index != len(collapsed) - 1:
+                            fully_wrapped = False
+                            break
+                if not fully_wrapped:
+                    break
+                collapsed = collapsed[1:-1].strip()
+            return (table_part, field_part, collapsed.casefold())
+
+        def _calculation_matches(known: List[Tuple[str, str, str]], candidate: Tuple[str, str, str]) -> bool:
+            table_part, field_part, expression_key = candidate
+            for known_table, known_field, known_expression in known:
+                if known_expression != expression_key or known_field != field_part:
+                    continue
+                if known_table and table_part and known_table != table_part:
+                    continue
+                return True
+            return False
+
+        merged_calculations: List[Dict[str, Any]] = []
+        seen_calculation_keys: List[Tuple[str, str, str]] = []
+        for item in usable:
+            for calc in item.data.get("calculations") or []:
+                if not isinstance(calc, dict):
+                    continue
+                key = _calculation_identity_key(calc)
+                has_expression = bool(key[2])
+                if has_expression and _calculation_matches(seen_calculation_keys, key):
+                    continue
+                if has_expression:
+                    seen_calculation_keys.append(key)
+                merged_calculations.append(calc)
 
         merged_ambiguities: List[str] = []
         for item in usable:
-            merged_ambiguities.extend(
-                str(value) for value in (item.data.get("ambiguities") or []) if str(value).strip()
-            )
+            for value in item.data.get("ambiguities") or []:
+                text = str(value)
+                if not text.strip():
+                    continue
+                # Same degenerate-repetition screen already applied to rules
+                # and step_by_step_flow, plus a truncation check specific to
+                # ambiguities: an unclosed quote or a short fragment with no
+                # closing punctuation is a cut-off string, not a genuine
+                # finding (observed for real: "Chunk '00_main_body" reaching
+                # the report with no closing quote or rest of sentence).
+                if RuleSynthesizerAgent._is_degenerate_text(text) or RuleSynthesizerAgent._looks_truncated(text):
+                    dropped_degenerate = True
+                    continue
+                merged_ambiguities.append(text)
         merged_ambiguities = _dedup_preserve_order(merged_ambiguities)
 
         merged_data: Dict[str, Any] = dict(_EMPTY_SYNTHESIS)
         merged_data["purpose_summary"] = merged_purpose
         merged_data["exception_handling_summary"] = merged_exception_summary
         merged_data["step_by_step_flow"] = merged_steps
-        merged_data["business_rules"] = merged_rules
+        merged_data["business_rules"] = unique_rule_ids(merged_rules)
         merged_data["calculations"] = merged_calculations
         merged_data["ambiguities"] = merged_ambiguities
 
@@ -513,6 +696,12 @@ class RuleSynthesizerAgent:
                     guardrail_warnings: List[str] = []
                     data, shape_warnings = validate_synthesis_shape(data)
                     guardrail_warnings.extend(shape_warnings)
+                    if self._clean_ambiguities(data):
+                        guardrail_warnings.append(
+                            "One or more ambiguities showed signs of repetition-degeneration "
+                            "or mid-sentence truncation and were dropped rather than included "
+                            "in the report."
+                        )
                     data["business_rules"] = self._normalize_business_rules(
                         data.get("business_rules"),
                         source_text=raw_source,
@@ -658,6 +847,12 @@ class RuleSynthesizerAgent:
             ]
         data, shape_warnings = validate_synthesis_shape(data)
         guardrail_warnings.extend(shape_warnings)
+        if self._clean_ambiguities(data):
+            guardrail_warnings.append(
+                "One or more ambiguities showed signs of repetition-degeneration "
+                "or mid-sentence truncation and were dropped rather than included "
+                "in the report."
+            )
         data["business_rules"] = self._normalize_business_rules(
             data.get("business_rules"),
             source_text=raw_source,
@@ -1005,6 +1200,12 @@ class RuleSynthesizerAgent:
         guardrail_warnings: List[str] = []
         data, shape_warnings = validate_synthesis_shape(data)
         guardrail_warnings.extend(shape_warnings)
+        if self._clean_ambiguities(data):
+            guardrail_warnings.append(
+                "One or more ambiguities showed signs of repetition-degeneration "
+                "or mid-sentence truncation and were dropped rather than included "
+                "in the report."
+            )
         data["business_rules"] = self._normalize_business_rules(
             data.get("business_rules"),
             source_text=raw_source,
@@ -1091,7 +1292,25 @@ class RuleSynthesizerAgent:
 
         payload["calculations"] = merged_extraction.get("calculations", []) or []
         payload["exception_handling"] = merged_extraction.get("exception_handling", []) or []
-        payload["ambiguities"] = merged_extraction.get("ambiguities", []) or []
+        # Deterministic chunk/full-source parse-error housekeeping ("Chunk
+        # 'X' (kind) technical extraction returned malformed JSON and needs
+        # manual review.", "Full-source technical extraction returned
+        # malformed JSON...") is already tracked and will reach the final
+        # report's Findings section regardless of what the model says - it
+        # never needs the model to re-derive or repeat it. Sending it as
+        # input "ambiguities" anyway invited the model to paraphrase it back
+        # out in its own "ambiguities" output (observed for real: the same
+        # fact reported 3-4 times with different wording - "Chunk
+        # '00_main_body_1' ... malformed JSON", "Several chunks ... need
+        # manual review", "The technical extraction for chunks '...',
+        # '...' returned malformed JSON" - none of which added new
+        # information over the one deterministic message per chunk).
+        # Genuine extraction-derived ambiguities (anything not matching this
+        # specific housekeeping shape) still reach the model unchanged.
+        payload["ambiguities"] = [
+            item for item in (merged_extraction.get("ambiguities", []) or [])
+            if not RuleSynthesizerAgent._is_parse_error_housekeeping_ambiguity(item)
+        ]
         # Nested procedural chunks can be structurally incomplete while the
         # original source remains available. Keep it separate from the
         # deterministic fact view so the model can recover missing context
@@ -1308,6 +1527,9 @@ class RuleSynthesizerAgent:
         }
         if not status_tables:
             return list(rules or [])
+        status_table_bare_names = {
+            table.split(".")[-1].strip("#") for table in status_tables if table
+        }
 
         filtered: List[Dict[str, Any]] = []
         for rule in rules or []:
@@ -1321,12 +1543,38 @@ class RuleSynthesizerAgent:
                 token.strip().upper().split(".")[-1]
                 for token in raw_fields or []
             }
-            is_status_rule = bool(fields & status_fields) and any(
+            # Three independent signals, any one of which is enough on its
+            # own: (1) the rule names one of the status columns directly -
+            # the strongest, structural signal; (2) the rule's own
+            # condition/evidence text names the status table itself (its
+            # bare name, e.g. `ACLRUNNINGPROCESSSTATUS`) or the
+            # `RUNNINGPROCESSNAME` scoping column - equally structural, and
+            # catches a rule `ensure_decision_chain_coverage` synthesized
+            # straight from a deterministic chain whose OTHER fields
+            # (`ERRORDATE`, `ERRORDESCRIPTION`, ...) don't happen to be
+            # this rule's own `fields_affected` value but still appear
+            # verbatim in its condition text (e.g. `IF EXISTS (SELECT 1
+            # FROM ACLRUNNINGPROCESSSTATUS WHERE RUNNINGPROCESSNAME = ...)`
+            # guarding a CATCH-block bookkeeping write); (3) a plain
+            # phrase-marker match, used only as a last resort when the rule
+            # carries no resolved fields at all (a model-authored "Update
+            # Process Status on Success/Failure" with an empty field list)
+            # - never on its own when real fields ARE present, so it can
+            # never misfire on an unrelated business rule that merely
+            # mentions "completion" in prose.
+            table_reference_match = bool(status_table_bare_names) and (
+                any(name and name in text for name in status_table_bare_names)
+                or "RUNNINGPROCESSNAME" in text
+            )
+            marker_match = any(
                 marker in text
                 for marker in (
                     "PROCESS STATUS", "RUNNING PROCESS", "ERROR DESCRIPTION",
                     "COMPLETION", "COMPLETED",
                 )
+            )
+            is_status_rule = table_reference_match or (
+                marker_match and (bool(fields & status_fields) or not fields)
             )
             if not is_status_rule:
                 filtered.append(rule)
@@ -1593,7 +1841,22 @@ class RuleSynthesizerAgent:
             if value is None:
                 return []
             if isinstance(value, list):
-                return list(value)
+                # A model occasionally returns a list with a NESTED list as
+                # one of its own items (e.g. `fields_affected: ["SeverityTier",
+                # ["FeedName", "Outcome", "ReconciledOn"]]`) instead of a flat
+                # list of field names. Left as-is, that inner list survives
+                # all the way to display and renders as a literal Python
+                # repr (`['FeedName', 'Outcome', 'ReconciledOn']`) in the
+                # report text. Flatten one level so every item downstream
+                # can keep assuming a flat list of scalars, which every
+                # existing caller already does.
+                flattened: List[Any] = []
+                for item in value:
+                    if isinstance(item, list):
+                        flattened.extend(item)
+                    else:
+                        flattened.append(item)
+                return flattened
             if isinstance(value, str):
                 return [value]
             return []
@@ -1626,11 +1889,223 @@ class RuleSynthesizerAgent:
                 rule["decision_logic_rows"] = RuleSynthesizerAgent._backfill_decision_logic_rows(
                     rule, decision_chains
                 )
+                if rule["decision_logic_rows"]:
+                    # Every row came straight from deterministic chain
+                    # evidence (the model supplied none of its own) - report
+                    # formatting's duplicate-suppression passes treat this
+                    # the same as a canonical `decision_block_id` rule when
+                    # deciding which of two overlapping tables is authoritative.
+                    rule["decision_rows_grounded"] = True
+            elif decision_chains and RuleSynthesizerAgent._decision_logic_rows_look_incomplete(
+                rule["decision_logic_rows"]
+            ):
+                # The rule already has its OWN rows (so the "no rows at
+                # all" backfill above never runs), but at least one row's
+                # outcome (or condition) is blank - observed for real: the
+                # model reproduced every condition in a multi-branch chain
+                # correctly but left the final ELSE row's outcome text
+                # empty, apparently running low on budget right at the end
+                # of its own response. Repair just the blank cell(s) from a
+                # deterministic decision chain whose branch conditions line
+                # up with this rule's own rows one-for-one - a direct
+                # structural match, not the output_field-name-plus-evidence
+                # heuristic `_backfill_decision_logic_rows` needs to trust a
+                # *whole* replacement table, so it still works even when
+                # the rule's own `source_evidence` doesn't literally quote
+                # the chain's SQL.
+                rule["decision_logic_rows"] = RuleSynthesizerAgent._repair_blank_decision_outcomes(
+                    rule["decision_logic_rows"], rule.get("output_field", ""), decision_chains
+                )
             for key in ("rule_type", "confidence", "validation_status", "rule_id", "ambiguity_id"):
                 value = rule.get(key, "")
                 rule[key] = value if isinstance(value, str) else ("" if value is None else str(value))
             normalized.append(rule)
-        return normalized
+        return unique_rule_ids(normalized)
+
+    @staticmethod
+    def _decision_logic_rows_look_incomplete(rows: List[Dict[str, Any]]) -> bool:
+        """True when any row's `outcome` (or `condition`) is blank after
+        stripping. A model response that ran low on its own output budget
+        right at the last branch has been observed to reproduce every
+        condition correctly but leave that branch's outcome text empty -
+        the row is present, so this isn't caught by "no rows at all", but
+        it is exactly the shape `_backfill_decision_logic_rows` exists to
+        repair from the deterministic decision chain when one matches.
+        """
+        for row in rows:
+            if not isinstance(row, dict):
+                return True
+            if not str(row.get("outcome") or "").strip():
+                return True
+            if not str(row.get("condition") or "").strip():
+                return True
+        return False
+
+    @staticmethod
+    def _decision_condition_key(text: Any) -> str:
+        """Reduce a branch/row condition to a comparison key: dotted field
+        references collapsed to their bare trailing segment (`A.DpdDays`,
+        `PRO.LoanAccountCal.DpdDays`, and a bare `DpdDays` all become
+        `DpdDays`), whitespace collapsed, casefolded. Used only to line up
+        a rule's own condition text against a decision chain's branch
+        condition text one-for-one - never for display.
+        """
+        text = str(text or "")
+        dotted_path = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*\.)+[A-Za-z_][A-Za-z0-9_]*")
+        bare = dotted_path.sub(lambda match: match.group(0).split(".")[-1], text)
+        return re.sub(r"\s+", "", bare).strip().casefold()
+
+    @staticmethod
+    def _repair_blank_decision_outcomes(
+        rows: List[Dict[str, Any]], output_field: Any, decision_chains: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Fill blank outcome cells in `rows` from whichever decision chain's
+        branch conditions match `rows`' own conditions one-for-one, in
+        order. Matching structurally on the condition sequence itself - not
+        `output_field` name plus an evidence-text heuristic, which
+        `_backfill_decision_logic_rows` needs in order to trust replacing a
+        rule's entire table - is a strictly stronger correspondence signal
+        here: rows whose conditions already line up perfectly with a
+        chain's branches are, for practical purposes, never a coincidence,
+        so their few blank cells can be safely filled without needing the
+        rule to have recorded matching source_evidence text at all.
+        Returns `rows` unchanged if no chain lines up or nothing was blank.
+        """
+        if not rows:
+            return rows
+        row_keys = [
+            RuleSynthesizerAgent._decision_condition_key(row.get("condition", ""))
+            for row in rows if isinstance(row, dict)
+        ]
+        if len(row_keys) != len(rows) or not any(row_keys):
+            return rows
+        output_field_key = RuleSynthesizerAgent._bare_field_key(output_field)
+        if not output_field_key:
+            return rows
+        for chain in decision_chains:
+            branches = chain.get("branches")
+            if not isinstance(branches, list) or len(branches) != len(rows):
+                continue
+            branch_keys: List[str] = []
+            branch_values: List[str] = []
+            matched_every_branch = True
+            for branch in branches:
+                if not isinstance(branch, dict):
+                    matched_every_branch = False
+                    break
+                condition = (
+                    "ELSE" if branch.get("is_catch_all")
+                    else str(branch.get("branch_condition") or "").strip()
+                )
+                assignments = branch.get("assignments")
+                match = next(
+                    (
+                        a for a in (assignments or [])
+                        if isinstance(a, dict)
+                        and RuleSynthesizerAgent._bare_field_key(a.get("field")) == output_field_key
+                    ),
+                    None,
+                )
+                if match is None:
+                    matched_every_branch = False
+                    break
+                branch_keys.append(RuleSynthesizerAgent._decision_condition_key(condition))
+                branch_values.append(str(match.get("value") or "").strip())
+            if not matched_every_branch or branch_keys != row_keys:
+                continue
+            repaired: List[Dict[str, Any]] = []
+            changed = False
+            for row, value in zip(rows, branch_values):
+                if not isinstance(row, dict):
+                    repaired.append(row)
+                    continue
+                if not str(row.get("outcome") or "").strip() and value:
+                    new_row = dict(row)
+                    new_row["outcome"] = value
+                    repaired.append(new_row)
+                    changed = True
+                else:
+                    repaired.append(row)
+            if changed:
+                return repaired
+        return rows
+
+    _IS_NULL_RE = re.compile(r"(?i)^\s*(?P<col>[\w.#$@]+)\s+IS\s+NULL\s*$")
+    _IS_NOT_NULL_RE = re.compile(r"(?i)^\s*(?P<col>[\w.#$@]+)\s+IS\s+NOT\s+NULL\s*$")
+    _NOT_IS_NULL_RE = re.compile(r"(?i)^\s*NOT\s+(?P<col>[\w.#$@]+)\s+IS\s+NULL\s*$")
+
+    @staticmethod
+    def _bare_column_name(text: str) -> str:
+        return str(text or "").strip().split(".")[-1].strip().upper()
+
+    @staticmethod
+    def _bare_field_key(text: Any) -> str:
+        """Reduce a field reference to a comparison key: a qualified
+        reference (`PRO.LoanAccountCal.DpdBucket`, `A.DpdBucket`) and its
+        bare form (`DpdBucket`) both collapse to the same key. A model-
+        authored `output_field` is schema-qualified far more often than a
+        deterministic decision chain's own `assignment["field"]` (always
+        the bare source column) - comparing the two with a strict
+        lowercase `==` silently fails the match and skips repair/backfill
+        entirely for every qualified `output_field`.
+        """
+        return str(text or "").strip().split(".")[-1].strip().casefold()
+
+    @classmethod
+    def _branch_is_unreachable(cls, eligibility: Any, branch_condition: str) -> bool:
+        """True when `branch_condition` can be *proven* to never hold for
+        any row the enclosing statement's own WHERE clause (`eligibility`)
+        already restricts to - currently: a plain `IS NULL` branch on a
+        column the statement's WHERE already requires `IS NOT NULL` (or
+        `NOT ... IS NULL`) on. Observed for real: `WHERE A.DpdDays IS NOT
+        NULL` gating an UPDATE whose own CASE still carries a `WHEN A.
+        DpdDays IS NULL THEN ...` branch - dead code the source keeps
+        (defensively, or left over from an earlier version) that a report
+        must not present with the same confidence as a branch that can
+        actually execute.
+
+        Deliberately narrow: this is not general boolean satisfiability -
+        only a contradiction this certain (and this cheap) to prove is
+        flagged; anything less certain is left alone rather than guessed
+        at.
+        """
+        branch_null = cls._IS_NULL_RE.match(str(branch_condition or ""))
+        if not branch_null:
+            return False
+        branch_col = cls._bare_column_name(branch_null.group("col"))
+        for clause in eligibility or []:
+            clause_text = str(clause or "")
+            not_null = cls._NOT_IS_NULL_RE.match(clause_text) or cls._IS_NOT_NULL_RE.match(clause_text)
+            if not_null and cls._bare_column_name(not_null.group("col")) == branch_col:
+                return True
+        return False
+
+    @staticmethod
+    def _annotate_row_condition_with_filter(condition: str, branch: Dict[str, Any], chain_type: Any) -> str:
+        """Append a branch's own row-level WHERE filter to its rendered
+        condition text, clearly labeled and visually separate from the
+        branch-selection condition itself - the two answer different
+        questions ("does this branch run at all" vs "which rows does it
+        act on once it does") and merging them into one condition string
+        with no label would silently lose that distinction (a real gap:
+        a T-SQL `IF EXISTS(...) BEGIN UPDATE ... WHERE <row filter> END`
+        ladder's per-branch row filter was previously dropped entirely).
+
+        Only meaningful for `TSQL_IF_ELSE` chains, where each branch is
+        its own separate UPDATE/INSERT statement and the row filter
+        genuinely varies branch to branch (including a branch with NO
+        filter at all, which must say so explicitly - "not shown" reads
+        as "unknown", not as "applies to every row"). A `CASE`-expression
+        chain's single enclosing statement WHERE is already surfaced
+        once, for the whole rule, via `eligibility`/"Applies to" -
+        repeating it on every row here would be pure noise.
+        """
+        if chain_type != "TSQL_IF_ELSE" or not isinstance(branch, dict):
+            return condition
+        row_filter = str(branch.get("row_filter") or "").strip()
+        if row_filter:
+            return f"{condition} — row filter: {row_filter}"
+        return f"{condition} — applies to all rows (no additional filter)"
 
     @staticmethod
     def _backfill_decision_logic_rows(
@@ -1651,14 +2126,22 @@ class RuleSynthesizerAgent:
         output_field = str(rule.get("output_field") or "").strip()
         if not output_field:
             return []
-        output_field_key = output_field.lower()
+        output_field_key = RuleSynthesizerAgent._bare_field_key(output_field)
         matching_chains = [
             chain for chain in decision_chains
-            if any(str(a.get("field") or "").strip().lower() == output_field_key
+            if any(RuleSynthesizerAgent._bare_field_key(a.get("field")) == output_field_key
                    for branch in (chain.get("branches") or [])
                    for a in (branch.get("assignments") or []) if isinstance(a, dict))
         ]
         if len(matching_chains) != 1:
+            return []
+        from src.parsing.decision_identity import decision_text_key
+        source_key = decision_text_key(matching_chains[0].get("source_sql", ""))
+        evidence = rule.get("source_evidence") or []
+        if isinstance(evidence, str):
+            evidence = [evidence]
+        if (not rule.get("source_chain_id") and source_key
+                and not any(source_key in decision_text_key(item) for item in evidence)):
             return []
         # An unconditional reset is not the later classification ladder.
         if re.search(r"\b(reset|initialize|initialise|clear)\b", str(rule.get("rule_name") or ""), re.I):
@@ -1680,13 +2163,14 @@ class RuleSynthesizerAgent:
                         assignment
                         for assignment in assignments
                         if isinstance(assignment, dict)
-                        # Case-insensitive: the model's own `output_field`
-                        # text ("SMA_Class") does not always match the
-                        # deterministic extractor's literal source casing
-                        # ("SMA_CLASS") verbatim, and a strict `==` here
-                        # silently drops the backfill for an otherwise
-                        # perfectly matched field.
-                        and str(assignment.get("field") or "").strip().lower() == output_field_key
+                        # Case- and qualification-insensitive: the model's
+                        # own `output_field` text ("SMA_Class", or a fully
+                        # qualified "PRO.Table.SMA_Class") does not always
+                        # match the deterministic extractor's literal bare
+                        # source casing ("SMA_CLASS") verbatim, and a strict
+                        # `==` here silently drops the backfill for an
+                        # otherwise perfectly matched field.
+                        and RuleSynthesizerAgent._bare_field_key(assignment.get("field")) == output_field_key
                     ),
                     None,
                 )
@@ -1696,6 +2180,14 @@ class RuleSynthesizerAgent:
                     "ELSE"
                     if branch.get("is_catch_all")
                     else str(branch.get("branch_condition") or "").strip()
+                )
+                if RuleSynthesizerAgent._branch_is_unreachable(chain.get("eligibility"), condition):
+                    condition = (
+                        f"{condition} [UNREACHABLE — contradicts this statement's own WHERE "
+                        "clause; never executes for any row it touches]"
+                    )
+                condition = RuleSynthesizerAgent._annotate_row_condition_with_filter(
+                    condition, branch, chain.get("chain_type")
                 )
                 rows.append({"condition": condition, "outcome": str(match.get("value") or "").strip()})
             if len(rows) >= 2:
@@ -1736,11 +2228,12 @@ class RuleSynthesizerAgent:
         already has a table" would incorrectly skip the second one, silently
         dropping a real business rule the source actually contains.
         """
+        rules = unique_rule_ids(rules)
         if not decision_chains:
             return rules
 
         def _field_key(value: Any) -> str:
-            return str(value or "").strip().lower()
+            return RuleSynthesizerAgent._bare_field_key(value)
 
         def _normalized_condition(value: Any) -> str:
             from src.parsing.decision_identity import decision_text_key
@@ -1765,6 +2258,35 @@ class RuleSynthesizerAgent:
                     return True
             return False
 
+        def _sanitize_covering_rule_name(chain: Dict[str, Any], field_key: str, display_field: str) -> None:
+            """When a model-authored rule already covers a chain's rows, its
+            `rule_name` is kept (it may carry genuine business framing this
+            deterministic path cannot invent). But the model sometimes copies
+            the evaluation-order/execution-semantics sentence verbatim into
+            `rule_name` instead of writing a short business label - that
+            sentence is meant as procedural commentary, not a title, and
+            reusing it produces near-duplicate rule titles across unrelated
+            fields/tables in the report. Replace only that specific failure
+            mode with the same deterministic naming convention used for
+            synthesized rules; never touch a rule_name that isn't a copy of
+            the execution semantics text.
+            """
+            semantics = str(chain.get("execution_semantics") or "").strip().casefold()
+            if not semantics:
+                return
+            for rule in rules:
+                if _field_key(rule.get("output_field")) != field_key:
+                    continue
+                source_chain = rule.get("source_chain_id")
+                if source_chain and source_chain != chain.get("chain_id"):
+                    continue
+                existing_name = str(rule.get("rule_name") or "").strip()
+                if existing_name.casefold() == semantics:
+                    rule["rule_name"] = (
+                        f"Determine inputs to {chain['aggregation']} for {display_field}"
+                        if chain.get("aggregation") else f"Determine {display_field}"
+                    )
+
         synthetic_rules: List[Dict[str, Any]] = []
         for chain in decision_chains:
             if not isinstance(chain, dict):
@@ -1786,6 +2308,7 @@ class RuleSynthesizerAgent:
 
             for field_key, display_field in fields_in_chain.items():
                 rows: List[Dict[str, Any]] = []
+                row_branches: List[Dict[str, Any]] = []
                 for branch in branches:
                     if not isinstance(branch, dict):
                         continue
@@ -1806,11 +2329,43 @@ class RuleSynthesizerAgent:
                         else str(branch.get("branch_condition") or "").strip()
                     )
                     rows.append({"condition": condition, "outcome": str(match.get("value") or "").strip()})
-                if len(rows) < 2 or _field_is_covered(chain, field_key, rows):
+                    row_branches.append(branch)
+                if len(rows) < 2:
                     continue
+                # Coverage/dedup matching (`_field_is_covered`) must compare
+                # against the SAME condition text a model-authored rule
+                # would plausibly produce - it never invents a "row filter:
+                # ..." annotation, so comparing annotated rows here would
+                # make every TSQL_IF_ELSE-sourced field register as
+                # "never covered" even when a model rule already matches
+                # it, silently duplicating the rule. Only annotate for
+                # DISPLAY, after the coverage check, using the branch each
+                # row was built from (tracked alongside it, not re-derived).
+                if _field_is_covered(chain, field_key, rows):
+                    _sanitize_covering_rule_name(chain, field_key, display_field)
+                    continue
+                def _display_condition(row: Dict[str, Any], branch: Dict[str, Any]) -> str:
+                    text = str(row["condition"])
+                    if RuleSynthesizerAgent._branch_is_unreachable(chain.get("eligibility"), text):
+                        text = (
+                            f"{text} [UNREACHABLE — contradicts this statement's own WHERE "
+                            "clause; never executes for any row it touches]"
+                        )
+                    return RuleSynthesizerAgent._annotate_row_condition_with_filter(
+                        text, branch, chain.get("chain_type")
+                    )
+
+                rows = [
+                    {**row, "condition": _display_condition(row, branch)}
+                    for row, branch in zip(rows, row_branches)
+                ]
                 synthetic_rules.append({
                     "rule_id": f"deterministic_{chain.get('chain_id') or 'chain'}_{field_key}",
                     "source_chain_id": str(chain.get("chain_id") or ""),
+                    "evidence_spans": [{"line_start": chain.get("source_line_start", -1),
+                                        "line_end": chain.get("source_line_end", -1),
+                                        "char_start": chain.get("source_char_start", -1),
+                                        "char_end": chain.get("source_char_end", -1)}],
                     "decision_role": str(chain.get("decision_role") or "assignment"),
                     "rule_name": (f"Determine inputs to {chain['aggregation']} for {display_field}"
                                   if chain.get("aggregation") else f"Determine {display_field}"),
@@ -1841,10 +2396,19 @@ class RuleSynthesizerAgent:
                     "decision_logic_rows": rows,
                     "rule_type": "deterministic_decision_table",
                     "confidence": "deterministic",
-                    "validation_status": "",
+                    # This rule was built directly from the parsed source
+                    # chain (`rows` above, and `source_chain_id` linking it
+                    # back to that exact chain) with no LLM step at all - it
+                    # cannot be "unverified" in the sense that label means
+                    # for a model claim. Leaving this "" made every such
+                    # rule display as "Needs Review" in the Source
+                    # Traceability table (the empty string fell through to
+                    # that default) despite being the most, not least,
+                    # trustworthy rule kind in the report.
+                    "validation_status": "verified",
                     "ambiguity_id": "",
                 })
-        return rules + synthetic_rules
+        return unique_rule_ids(rules + synthetic_rules)
 
     @staticmethod
     def _scan_for_jargon(data: Dict[str, Any]) -> List[str]:

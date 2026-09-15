@@ -18,7 +18,9 @@ from src.validation.reconciliation import (
     ContradictionFinding,
     ReconciliationRecord,
     _build_quality_assessment,
+    _condition_space,
     _gather_contradictions,
+    _spaces_overlap,
     reconcile_deterministic_evidence,
 )
 
@@ -540,6 +542,91 @@ def test_outcome_conflict_is_detected():
     record = _find_record(result, kind="rule", status="CONFLICT")
     assert record.comparison["outcome_status"] == "CONFLICT"
     assert "SMA-1" in str(record.deterministic_evidence["assigned_values"])
+
+
+def test_evidence_free_fabricated_toggle_is_caught_via_field_name_fallback():
+    """A rule with NO evidence trail at all (no chunk id, no statement id,
+    no evidence_spans, no source_evidence quote) but a real decision table
+    (2+ rows) claiming a field toggles between two literal values, when the
+    only deterministic write of that field is a single, unconditional
+    literal assignment - must still be caught as a CONFLICT via the
+    field-name fallback in `_rule_candidate_rows`, not silently pass through
+    as LLM_ONLY just because it cited nothing for the stronger match tiers
+    to search against.
+    """
+    ingestion = _make_ingestion()
+    merged = {
+        "tables_read": [],
+        "tables_written": [
+            _table_row(
+                "ACCOUNT",
+                "UPDATE",
+                columns=["STATUS_FLAG"],
+                assigned_values=[{"column": "STATUS_FLAG", "expression": "'Y'"}],
+            )
+        ],
+        "llm_tables_read": [],
+        "llm_tables_written": [],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            fields_affected=["STATUS_FLAG"],
+            decision_logic_rows=[
+                {"condition": "STATUS_FLAG = 'Y'", "outcome": "'N'"},
+                {"condition": "STATUS_FLAG = 'N'", "outcome": "'Y'"},
+            ],
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    record = _find_record(result, kind="rule", status="CONFLICT")
+    assert record.comparison["outcome_status"] == "CONFLICT"
+
+
+def test_evidence_free_rule_matching_the_single_literal_is_not_flagged():
+    """The field-name fallback must not manufacture false conflicts: a
+    zero-evidence rule whose claimed outcome actually IS the deterministic
+    literal should reconcile as MATCHED (or at least not CONFLICT), so the
+    fallback only ever adds scrutiny, never punishes a correct claim purely
+    for lacking a citation.
+    """
+    ingestion = _make_ingestion()
+    merged = {
+        "tables_read": [],
+        "tables_written": [
+            _table_row(
+                "ACCOUNT",
+                "UPDATE",
+                columns=["STATUS_FLAG"],
+                assigned_values=[{"column": "STATUS_FLAG", "expression": "'Y'"}],
+            )
+        ],
+        "llm_tables_read": [],
+        "llm_tables_written": [],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            fields_affected=["STATUS_FLAG"],
+            decision_logic_rows=[
+                {"condition": "some account qualifies", "outcome": "'Y'"},
+                {"condition": "ELSE", "outcome": "'Y'"},
+            ],
+        )
+    ])
+
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+
+    record = _find_record(result, kind="rule")
+    assert record.status != "CONFLICT"
 
 
 def _semantic_table_result(*, filter_condition=None, columns=None, assigned_values=None, rule_condition=None, action=None, fields=None):
@@ -2463,3 +2550,195 @@ def test_quality_score_handles_zero_denominators():
     record = _find_record(result, kind="rule", status="MATCHED")
     assert record.comparison["outcome_status"] != "CONFLICT"
     assert record.comparison["condition_status"] != "CONFLICT"
+
+
+def test_condition_space_numeric_point_matches_operator_conventions():
+    """Regression for a live crash: `_condition_space` numeric-converts the
+    RHS for `>`, `>=`, `<`, `<=`, and `BETWEEN` (storing `lower`/`upper` as
+    `int`/`float`), but for `=` it stored the raw string unconditionally.
+    A column compared with `= 0` in one branch and `BETWEEN 1 AND 30` in a
+    sibling branch (e.g. `WHEN DpdDays = 0 THEN ... WHEN DpdDays BETWEEN 1
+    AND 30 THEN ...`) then produced one numeric space and one string space
+    on the same lhs, and `_spaces_overlap`'s bound comparison (`left_lb >
+    right_ub`) raised `TypeError: '>' not supported between instances of
+    'int' and 'str'` instead of returning a clean True/False.
+    """
+    point_space = _condition_space({"lhs": "DpdDays", "op": "=", "rhs": "0", "raw": "DpdDays = 0"})
+    assert point_space["lower"] == 0
+    assert isinstance(point_space["lower"], int)
+
+    non_numeric_point = _condition_space({"lhs": "Status", "op": "=", "rhs": "ACTIVE", "raw": "Status = 'ACTIVE'"})
+    assert non_numeric_point["lower"] == "ACTIVE"
+
+
+def test_spaces_overlap_does_not_crash_on_point_vs_range_same_column():
+    """Direct reproduction of the crash: a point condition (`= 0`) and a
+    range condition (`BETWEEN 1 AND 30`) on the same column must be
+    comparable without raising, and must correctly report no overlap."""
+    point_space = _condition_space({"lhs": "DpdDays", "op": "=", "rhs": "0", "raw": "DpdDays = 0"})
+    range_space = _condition_space({"lhs": "DpdDays", "op": "BETWEEN", "rhs": "1 AND 30", "raw": "DpdDays BETWEEN 1 AND 30"})
+
+    assert _spaces_overlap(point_space, range_space) is False
+    assert _spaces_overlap(range_space, point_space) is False
+
+
+def test_spaces_overlap_handles_mixed_numeric_and_non_numeric_point_defensively():
+    """A non-numeric point (e.g. `Status = 'ACTIVE'`) compared against a
+    numeric range on the same column name is a mismatched/unusual case,
+    but must still report "no overlap" rather than crash."""
+    non_numeric_point = _condition_space({"lhs": "X", "op": "=", "rhs": "N/A", "raw": "X = 'N/A'"})
+    numeric_range = _condition_space({"lhs": "X", "op": ">", "rhs": "100", "raw": "X > 100"})
+
+    assert _spaces_overlap(non_numeric_point, numeric_range) is False
+
+
+def test_dpd_bucket_style_decision_chain_reconciles_without_crashing():
+    """End-to-end regression: a CASE expression whose first branch uses
+    `= 0` (a point condition) and whose next branch uses `BETWEEN 1 AND
+    30` (a range condition) on the same subject column - exactly the
+    shape in samples/07_DPD_Bucket_Classification.sql's DpdBucket
+    classification - must reconcile without `reconcile_deterministic_evidence`
+    raising a TypeError."""
+    ingestion = _make_ingestion(dialect="TSQL")
+    merged = {
+        "tables_read": [],
+        "tables_written": [],
+        "llm_tables_read": [],
+        "llm_tables_written": [],
+        "decision_chains": [
+            _decision_chain(
+                "A.DpdDays",
+                [
+                    {"branch_condition": "A.DpdDays = 0", "assignments": [{"field": "DpdBucket", "value": "'CURRENT'"}]},
+                    {"branch_condition": "A.DpdDays BETWEEN 1 AND 30", "assignments": [{"field": "DpdBucket", "value": "'BUCKET_1_30'"}]},
+                    {"branch_condition": "ELSE", "assignments": [{"field": "DpdBucket", "value": "'BUCKET_90_PLUS'"}]},
+                ],
+            )
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            fields_affected=["DpdBucket"],
+            condition=None,
+            action=None,
+            source_evidence=["A.DpdDays = 0", "A.DpdDays BETWEEN 1 AND 30"],
+            decision_logic_rows=[
+                {"condition": "A.DpdDays = 0", "outcome": "'CURRENT'"},
+                {"condition": "A.DpdDays BETWEEN 1 AND 30", "outcome": "'BUCKET_1_30'"},
+                {"condition": "ELSE", "outcome": "'BUCKET_90_PLUS'"},
+            ],
+        )
+    ])
+
+    # Must not raise TypeError.
+    result = reconcile_deterministic_evidence(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+    )
+    assert result is not None
+
+
+def test_main_report_excludes_a_conflicting_rule_but_keeps_a_matched_one():
+    """Regression for a real live-generated report
+    (`samples/07_DPD_Bucket_Classification.sql`'s "DPD Bucket
+    Classification" report): the model fabricated a rule ("Classify DPD
+    bucket") using a bucket scheme (`'0-30'`, `'31-60'`, `'91-120'`,
+    `'121+'`) that does not exist anywhere in the actual SQL.
+    Reconciliation correctly flagged it `CONFLICT`. An earlier version of
+    this fix kept the fabricated rule visible with a "needs review"
+    warning banner and the literal proof quoted underneath it - but that
+    still put a demonstrably wrong decision table in front of a business
+    reader, and cluttered the report with pipeline-status language it is
+    not supposed to carry. `format()` must now drop a `CONFLICT` rule
+    from the main report entirely rather than showing it with a caveat,
+    while a normally-matched rule is unaffected and no "needs review"/
+    pipeline-status text appears anywhere in the document.
+    """
+    ingestion = _make_ingestion(dialect="TSQL")
+    merged = {
+        "tables_read": [],
+        "tables_written": [
+            _table_row("ACCOUNT", "UPDATE", columns=["DPD_BUCKET"], filter_condition="DPD > 30"),
+            _table_row("ACCOUNT", "UPDATE", columns=["SMA_STATUS"], filter_condition="DPD > 60"),
+        ],
+        "llm_tables_read": [],
+        "llm_tables_written": [
+            _table_row("ACCOUNT", "UPDATE", columns=["DPD_BUCKET"], filter_condition="DPD > 30"),
+            _table_row("ACCOUNT", "UPDATE", columns=["SMA_STATUS"], filter_condition="DPD > 60"),
+        ],
+    }
+    synthesis = _make_synthesis([
+        _rule(
+            rule_id="rule_conflict",
+            rule_name="Classify DPD bucket",
+            source_chunks=["chunk_1"],
+            technical_references=["stmt_1"],
+            fields_affected=["DPD_BUCKET"],
+            condition="DPD >= 30",  # deliberately mismatched vs the deterministic "DPD > 30"
+            action="Set DPD_BUCKET.",
+            business_meaning="Classifies the account into a DPD bucket.",
+        ),
+        _rule(
+            rule_id="rule_matched",
+            rule_name="Update SMA status",
+            source_chunks=["chunk_1"],
+            technical_references=["stmt_1"],
+            fields_affected=["SMA_STATUS"],
+            condition="DPD > 60",  # matches the deterministic evidence exactly
+            action="Set SMA_STATUS.",
+            business_meaning="Updates the SMA status.",
+        ),
+    ])
+
+    reconcile_deterministic_evidence(ingestion=ingestion, merged_extraction=merged, synthesis=synthesis)
+
+    report = ReportFormatterAgent().format(ingestion=ingestion, merged_extraction=merged, synthesis=synthesis)
+
+    # The conflicting rule is gone entirely - not flagged, not present.
+    assert "Classify DPD bucket" not in report
+    assert "DPD >= 30" not in report
+    # The matched rule is completely unaffected.
+    assert "Update SMA status" in report
+
+    # No "needs review"/pipeline-status language anywhere in the main report.
+    assert "Needs review" not in report
+    assert "needs review" not in report
+    assert "What the source SQL actually shows" not in report
+    assert "CONFLICT" not in report
+    assert "rule_conflict" not in report
+
+    # The exclusion is still surfaced once, in plain language, under
+    # Findings - not silently dropped without a trace.
+    findings = report[report.index("## Findings"):]
+    assert "1 claim" in findings
+    assert "could not be confirmed against the SQL" in findings
+
+
+def test_llm_only_rule_is_shown_normally_with_no_exclusion_or_flag():
+    """An `LLM_ONLY` rule (the model wrote a rule but the deterministic
+    parser found nothing at all to check it against) is a fundamentally
+    different case from `CONFLICT`: there is no proof it's wrong, only an
+    absence of evidence either way. It must still appear in the main
+    report, completely normally - no exclusion, no "needs review" marker,
+    no pipeline-status language - since `_exclude_conflicting_rules` only
+    ever acts on `CONFLICT`."""
+    ingestion = _make_ingestion(dialect="TSQL")
+    merged = {"tables_read": [], "tables_written": [], "llm_tables_read": [], "llm_tables_written": []}
+    synthesis = _make_synthesis([
+        _rule(
+            rule_id="rule_llm_only",
+            rule_name="Invented rule with no SQL backing",
+            fields_affected=["SOME_FIELD"],
+            condition="SOME_FIELD IS NOT NULL",
+            action="Do something.",
+            business_meaning="A claim with nothing behind it in the source.",
+        ),
+    ])
+
+    reconcile_deterministic_evidence(ingestion=ingestion, merged_extraction=merged, synthesis=synthesis)
+    report = ReportFormatterAgent().format(ingestion=ingestion, merged_extraction=merged, synthesis=synthesis)
+
+    assert "Invented rule with no SQL backing" in report
+    assert "Needs review" not in report
+    assert "What the source SQL actually shows" not in report

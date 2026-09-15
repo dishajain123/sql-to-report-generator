@@ -116,6 +116,88 @@ def test_tracker_records_multiple_calls_and_stage_breakdown():
     assert telemetry.stage_breakdown["synthesis"]["token_usage"]["total_tokens"] == 27
 
 
+def test_extraction_retry_call_is_recorded_in_telemetry():
+    """Regression for a real gap traced against the live SMA verification
+    report: `LogicExtractionAgent.extract()`'s own retry-on-truncation call
+    (a second, real `client.chat.completions.create(...)` invocation made
+    when the first response was truncated and partial-JSON recovery
+    failed) was made directly with no telemetry tracking at all - unlike
+    `RuleSynthesizerAgent`'s equivalent retries, which are already recorded
+    under their own "synthesis_retry" stage. The retry call's real tokens
+    and even its existence were invisible to the telemetry table, silently
+    undercounting both call count and token totals for exactly the runs
+    where extraction struggled most (truncated responses needing a retry).
+    """
+    import json as json_module
+    from src.extraction.logic_extractor import LogicExtractionAgent
+
+    class _Message:
+        def __init__(self, content):
+            self.content = content
+
+    class _Choice:
+        def __init__(self, content, finish_reason):
+            self.message = _Message(content)
+            self.finish_reason = finish_reason
+
+    class _Resp:
+        def __init__(self, content, usage, finish_reason):
+            self.choices = [_Choice(content, finish_reason)]
+            self.usage = usage
+
+    complete_json = json_module.dumps({
+        "conditions": [], "decision_chains": [], "loops": [],
+        "tables_read": [], "tables_written": [], "calculations": [],
+        "exception_handling": [], "ambiguities": [],
+    })
+
+    class _Completions:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                # Truncated mid-object: max_tokens requested equals the
+                # agent's own (small) effective_max_tokens, so the retry
+                # path (not partial-JSON recovery) is what fires.
+                return _Resp(
+                    '{"conditions": [], "decision_chains": [{"subject": "x"',
+                    _UsageObject(500, 100, 600),
+                    "length",
+                )
+            return _Resp(complete_json, _UsageObject(400, 80, 480), "stop")
+
+    class _Chat:
+        def __init__(self):
+            self.completions = _Completions()
+
+    class _Client:
+        def __init__(self):
+            self.chat = _Chat()
+
+    client = _Client()
+    tracker = LLMTelemetryTracker()
+    agent = LogicExtractionAgent(
+        client=client, model="demo-model", temperature=0.1, seed=0, provider="openai",
+        telemetry_tracker=tracker, max_tokens=50, hard_max_output_tokens=20000,
+    )
+
+    result = agent.extract(
+        chunk_id="chunk_1", chunk_kind="main_body", code_chunk="UPDATE t SET x=1",
+        rag_context="", object_type="PROCEDURE", object_name="demo", dialect="tsql",
+    )
+
+    assert result.parse_error == ""
+    assert client.chat.completions.calls == 2, "the retry must be a second real API call"
+    snapshot = tracker.snapshot("run_1").to_dict()
+    assert snapshot["call_count"] == 2, "both the original and retry call must be counted"
+    stages = snapshot["stage_breakdown"]
+    assert stages["extraction"]["call_count"] == 1
+    assert stages["extraction_retry"]["call_count"] == 1
+    assert stages["extraction_retry"]["token_usage"]["total_tokens"] == 480
+
+
 def test_tracker_is_thread_safe_for_concurrent_calls():
     tracker = LLMTelemetryTracker()
 

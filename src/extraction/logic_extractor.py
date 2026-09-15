@@ -276,7 +276,38 @@ class LogicExtractionAgent:
             elif effective_max_tokens < self.hard_max_output_tokens:
                 retry_kwargs = dict(completion_kwargs)
                 retry_kwargs["max_tokens"] = self.hard_max_output_tokens
-                retry_response = self.client.chat.completions.create(**retry_kwargs)
+                # This is a second real API call - it must be recorded the
+                # same way the first one is, under its own stage (matching
+                # the "synthesis_retry" convention `rule_synthesizer.py`
+                # already uses for its equivalent retry). Before this fix,
+                # this call was made directly with no surrounding tracker
+                # call at all: its tokens and even its existence were
+                # invisible to telemetry - a real cost silently uncounted,
+                # not merely mis-labeled.
+                retry_response = None
+                retry_success = False
+                retry_error: Exception | None = None
+                retry_start = time.perf_counter()
+                try:
+                    retry_response = self.client.chat.completions.create(**retry_kwargs)
+                    retry_success = True
+                except Exception as exc:  # noqa: BLE001
+                    retry_error = exc
+                    raise
+                finally:
+                    if tracker is not None:
+                        try:
+                            tracker.record_call(
+                                stage="extraction_retry",
+                                provider=self.provider,
+                                model_name=model or self.model,
+                                response=retry_response,
+                                latency_seconds=time.perf_counter() - retry_start,
+                                success=retry_success,
+                                error=retry_error,
+                            )
+                        except Exception:
+                            pass
                 retry_reason = str(
                     getattr(retry_response.choices[0], "finish_reason", "") or ""
                 ).lower()

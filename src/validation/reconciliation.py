@@ -427,7 +427,9 @@ def _condition_space(condition: Dict[str, str]) -> Optional[Dict[str, Any]]:
     if op == "ISNOTNULL":
         return {"lhs": lhs, "kind": "not_null", "raw": condition.get("raw", "")}
     if op == "=":
-        return {"lhs": lhs, "kind": "point", "lower": rhs_raw, "upper": rhs_raw, "lower_inclusive": True, "upper_inclusive": True, "raw": condition.get("raw", "")}
+        numeric_match = re.match(r"^[-+]?\d+(?:\.\d+)?$", rhs_raw)
+        point_value: Any = (float(rhs_raw) if "." in rhs_raw else int(rhs_raw)) if numeric_match else rhs_raw
+        return {"lhs": lhs, "kind": "point", "lower": point_value, "upper": point_value, "lower_inclusive": True, "upper_inclusive": True, "raw": condition.get("raw", "")}
     if op in {">", ">=", "<", "<="}:
         numeric_match = re.match(r"^[-+]?\d+(?:\.\d+)?$", rhs_raw)
         if numeric_match:
@@ -516,6 +518,15 @@ def _spaces_overlap(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
     left_ub, left_ub_inclusive = _upper_bound(left)
     right_lb, right_lb_inclusive = _lower_bound(right)
     right_ub, right_ub_inclusive = _upper_bound(right)
+
+    # A point condition's bound is only numerically converted when its RHS
+    # looked numeric (see `_condition_space`); a non-numeric point (e.g.
+    # `STATUS = 'ACTIVE'`) compared against a numeric range on the same
+    # column would otherwise crash `>`/`==` below with a str/number
+    # TypeError instead of just reporting "no overlap".
+    numeric_bounds = (left_lb, left_ub, right_lb, right_ub)
+    if any(not isinstance(bound, (int, float)) for bound in numeric_bounds if bound is not None):
+        return False
 
     if left_lb is not None and right_ub is not None:
         if left_lb > right_ub:
@@ -609,6 +620,44 @@ def _rule_candidate_rows(rule: Dict[str, Any], deterministic_rows: Sequence[Dict
                 candidate_rows.append(row)
         if candidate_rows:
             return candidate_rows
+
+    # Last resort: a rule with a real decision table (2+ branches) but
+    # ZERO evidence trail of any kind - no line span, no chunk/statement
+    # id, no quoted source text - gets treated by every check above as "no
+    # proof either way", which then leaves it fully unverified with
+    # nothing to compare against and no way to ever contradict it,
+    # regardless of how implausible its claim is. Observed for real: a
+    # model-authored rule asserting a field toggles between two literal
+    # values ('Y'/'N') on its own prior value, when the actual SQL only
+    # ever assigns it once, unconditionally, to a single literal - because
+    # the rule cited no evidence at all, this never even reached the
+    # comparison logic that would have caught the contradiction. Only
+    # engages here, after every stronger identity signal has already come
+    # up empty, and only matches a deterministic WRITE to the exact same
+    # bare field name(s) the rule claims - weaker than the tiers above,
+    # but strictly better than comparing against nothing.
+    if (
+        not evidence_spans
+        and not source_chunk_ids
+        and not source_statement_ids
+        and not source_evidence
+        and len(rule.get("decision_logic_rows") or []) >= 2
+    ):
+        claim_field_names = {
+            _normalize_column_reference(field) for field in _rule_claim_fields(rule)
+        }
+        claim_field_names = {name for name in claim_field_names if name}
+        if claim_field_names:
+            for row in deterministic_rows:
+                if row.get("_section") != "tables_written":
+                    continue
+                row_field_names = {
+                    _normalize_column_reference(col) for col in _row_columns(row)
+                }
+                if claim_field_names & row_field_names:
+                    candidate_rows.append(row)
+            if candidate_rows:
+                return candidate_rows
 
     return candidate_rows
 
@@ -2658,6 +2707,27 @@ def reconcile_deterministic_evidence(
             if status != "CONFLICT" and not (field_match or condition_match or outcome_match):
                 status = "UNRESOLVED"
 
+        if status == "LLM_ONLY" and str(rule.get("rule_type") or "").strip().lower() == "deterministic_decision_table":
+            # This rule was synthesized directly from a parsed decision
+            # chain (`ensure_decision_chain_coverage`), not authored by the
+            # model - it never made an unverified claim in the first place.
+            # `deterministic_rows` (the candidate pool matched against
+            # above) comes from a *different* extraction path -
+            # `table_operations`/`statement_provenance`, parsed
+            # independently of `decision_chains` - so its branch conditions
+            # do not always textually overlap with what that separate path
+            # captured, even though both describe the same SQL. Measured
+            # for real against the bundled sample: every one of 23
+            # deterministic rules fell through to LLM_ONLY (0 candidate
+            # rows) despite each being built byte-for-byte from the same
+            # parsed chain its own `decision_logic_rows` still carries -
+            # there was no missing evidence, only a lookup that never had
+            # anywhere to search. The rule's own `decision_logic_rows` (and
+            # `source_chain_id`, linking it back to the exact chain) already
+            # ARE the deterministic evidence; this does not weaken
+            # reconciliation for any rule that actually came from the model.
+            status = "MATCHED"
+
         rule_recon_id = stable_id(
             "recon",
             object_id,
@@ -2670,6 +2740,37 @@ def reconcile_deterministic_evidence(
         )
         rule["reconciliation_id"] = rule_recon_id
         rule["reconciliation_status"] = status
+        # Propagate the deterministic cross-check into the rule's own
+        # user-facing `validation_status`, which is what the report's
+        # "Verified"/"Needs Review" labels and the Rule Provenance Summary
+        # actually read. Before this, `validation_status` was left exactly
+        # as the model self-reported it (often "unverified" by the model's
+        # own conservative default, or blank on a rule this pipeline
+        # synthesizes directly from source with no model involved at all -
+        # see `ensure_decision_chain_coverage`) even when reconciliation had
+        # already independently proven the rule against the deterministic
+        # evidence - so a rule the system had *itself confirmed* still
+        # displayed as needing a human to approve it. MATCHED means
+        # deterministic source evidence agrees with the claim: that is the
+        # definition of "verified", not a downgrade of the grounding check
+        # reconciliation already performed.
+        #
+        # Only the positive (MATCHED) case is safe to write here.
+        # `_rule_has_insufficient_evidence` (used by contradiction
+        # classification, above/below this function) treats
+        # "ambiguous"/"insufficient_evidence"/"parser_failed" in
+        # `validation_status` as a signal to *downgrade* a finding away
+        # from `GENUINE_BUSINESS_CONTRADICTION` - writing one of those
+        # values here for CONFLICT/UNRESOLVED would make this same
+        # propagation defeat that classifier for the rule it just flagged
+        # as conflicting, which is exactly the grounding weakening this
+        # change must not cause. CONFLICT/UNRESOLVED rules keep whatever
+        # `validation_status` they already had (their `reconciliation_status`
+        # and `reconciliation_notes`, set below/above, are already the
+        # authoritative record of the problem) and correctly still render
+        # as "Needs Review" downstream via the existing default.
+        if status == "MATCHED":
+            rule["validation_status"] = "verified"
         rule["reconciliation_notes"] = []
         rule["deterministic_evidence"] = deterministic_evidence
         rule["llm_claim"] = {

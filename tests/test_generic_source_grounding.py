@@ -220,7 +220,7 @@ def test_rendering_strips_alias_segments_from_affected_fields_and_outputs():
         }]
     })
     calc_report = formatter._calculations(calculation)
-    assert "**Output:**\nPRO.AccountCal.AddlProvision" in calc_report
+    assert "**Output:**\n`PRO.AccountCal.AddlProvision`" in calc_report
     assert "PRO.AccountCal.A.AddlProvision" not in calc_report
 
 
@@ -252,8 +252,8 @@ def test_each_calculation_renders_its_own_output_field():
     }))
     first = report.index("### Calculation — first_total")
     second = report.index("### Calculation — second_total")
-    assert "**Output:**\ntarget.first_total" in report[first:second]
-    assert "**Output:**\ntarget.second_total" in report[second:]
+    assert "**Output:**\n`target.first_total`" in report[first:second]
+    assert "**Output:**\n`target.second_total`" in report[second:]
     assert "target.second_total" not in report[first:second]
 
 
@@ -280,8 +280,8 @@ def test_calculations_render_expression_output_and_evidence_separately():
     })
     report = ReportFormatterAgent()._calculations(synthesis)
     assert "### Calculation — net_value" in report
-    assert "**Expression:**\ngross_value - adjustment_value" in report
-    assert "**Output:**\nnet_value" in report
+    assert "```sql\ngross_value - adjustment_value\n```" in report
+    assert "**Output:**\n`net_value`" in report
     assert "**Used By:**\nNot specified" in report
     assert "**Source Evidence:**" not in report
 
@@ -297,7 +297,7 @@ def test_calculation_report_resolves_generic_dml_output_and_used_by():
             "assigned_values": [{"column": "total_value", "expression": "base_value * rate_value"}],
         }]
     })
-    assert "**Output:**\noutput_table.total_value" in report
+    assert "**Output:**\n`output_table.total_value`" in report
     assert "**Used By:**\nINSERT INTO output_table" in report
 
 
@@ -305,7 +305,7 @@ def test_unknown_calculation_destination_is_not_invented():
     report = ReportFormatterAgent()._calculations(SynthesisResult(data={
         "calculations": [{"result": "derived_value", "formula": "opaque_function(input_value)"}]
     }))
-    assert "**Output:**\nNot specified" in report
+    assert "**Output:**\n`Not specified`" in report
 
 
 def test_canonical_calculation_retains_generic_dml_destination_provenance():

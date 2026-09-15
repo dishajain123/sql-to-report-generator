@@ -139,7 +139,15 @@ def test_full_report_counts_and_all_source_decision_tables_agree_for_bundled_sam
         ingestion, {'decision_chains': chains}, SynthesisResult(data={'business_rules': rules})
     )
     count = int(re.search(r'\| Business rules \| (\d+) \|', report).group(1))
-    assert count == len(re.findall(r'^### R\d+ —', report, re.M)) == len(chains)
+    # Same-statement/same-eligibility chains are grouped into one displayed
+    # rule with a per-field sub-table each, so the displayed rule count can
+    # be lower than the raw chain count - but the total number of rendered
+    # decision tables (top-level "### Decision Logic" plus grouped
+    # "#### Decision Logic - <field>") must still equal it exactly: every
+    # chain's table is rendered exactly once, never dropped or duplicated.
+    assert count == len(re.findall(r'^### R\d+ —', report, re.M)) <= len(chains)
+    assert (len(re.findall(r'^### Decision Logic$', report, re.M))
+            + len(re.findall(r'^#### Decision Logic', report, re.M))) == len(chains)
     assert "'OTHER'; SMA_CLASS" not in report
     assert 'BETWEEN 1 AND 30' in report
     assert 'DEGRADE BY CONTI EXCESS' in report

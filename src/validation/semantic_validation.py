@@ -365,6 +365,418 @@ def extract_nested_decision_chains(source: str) -> List[Dict[str, Any]]:
     return chains
 
 
+# --------------------------------------------------------------------------
+# T-SQL procedural IF / ELSE IF / ELSE ladders
+#
+# `extract_procedural_decision_chains` and `extract_nested_decision_chains`
+# above only recognize Oracle PL/SQL's `IF ... THEN` / `ELSIF ... THEN` /
+# `END IF` keywords (`_IF_RE`/`_ELSIF_RE`/`_END_IF_RE`). T-SQL's control
+# flow - `IF <cond> BEGIN ... END ELSE IF <cond> BEGIN ... END ELSE BEGIN
+# ... END` - never matches any of those (no `THEN`, "ELSE IF" is two
+# tokens not `ELSIF`, blocks close on bare `END` not `END IF`), so a
+# T-SQL procedure's sequential/nested IF ladders had ZERO deterministic
+# decision-chain coverage: no counter-evidence for reconciliation to
+# check a synthesized rule's condition/outcome against, and no source
+# for `ensure_decision_chain_coverage` to backfill a table from at all.
+# This is the T-SQL-syntax counterpart, mirroring the same conservative
+# posture (a complete, >=2-branch ladder only, never guessing through
+# ambiguous or dynamic code) but recognizing T-SQL's actual keywords and
+# its `UPDATE ... SET col = val, ...` / `SET @var = val` assignment forms
+# (T-SQL has no bare `field := value` procedural assignment for a table
+# column - it always goes through UPDATE).
+# --------------------------------------------------------------------------
+
+_TSQL_IF_RE = re.compile(r"^\s*IF\s+(.+\S)\s*$", re.IGNORECASE)
+_TSQL_ELSEIF_RE = re.compile(r"^\s*ELSE\s+IF\s+(.+\S)\s*$", re.IGNORECASE)
+_TSQL_ELSE_RE = re.compile(r"^\s*ELSE\s*$", re.IGNORECASE)
+_TSQL_BEGIN_RE = re.compile(r"^\s*BEGIN\s*$", re.IGNORECASE)
+_TSQL_END_RE = re.compile(r"^\s*END\s*;?\s*$", re.IGNORECASE)
+_TSQL_SET_VAR_RE = re.compile(
+    r"^\s*SET\s+(?P<field>@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>.+?)\s*;?\s*$", re.IGNORECASE
+)
+_TSQL_UPDATE_SET_RE = re.compile(
+    r"\bUPDATE\s+\S+\s+SET\s+(?P<set_body>.*?)(?=\bFROM\b|\bWHERE\b|;|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _split_top_level_commas(text: str) -> List[str]:
+    """Split `text` on commas that are not inside parentheses or a quoted
+    string/identifier - so a comma inside a function call argument list
+    (`ISNULL(a, b)`) never breaks one `col = expr` pair into two."""
+    parts: List[str] = []
+    depth = 0
+    current: List[str] = []
+    in_quote: Optional[str] = None
+    for char in text:
+        if in_quote:
+            current.append(char)
+            if char == in_quote:
+                in_quote = None
+            continue
+        if char in "'\"[":
+            in_quote = "]" if char == "[" else char
+            current.append(char)
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        if char == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    if current:
+        parts.append("".join(current))
+    return parts
+
+
+def _find_top_level_where(text: str) -> int:
+    """Return the character index of a `WHERE` keyword in `text` that is
+    not inside parentheses or a quoted string/identifier (so a WHERE
+    clause nested in a subquery inside the SET/VALUES list is never
+    mistaken for the enclosing statement's own row filter), or -1 if
+    there is none."""
+    depth = 0
+    in_quote: Optional[str] = None
+    i = 0
+    length = len(text)
+    while i < length:
+        char = text[i]
+        if in_quote:
+            if char == in_quote:
+                in_quote = None
+            i += 1
+            continue
+        if char in "'\"[":
+            in_quote = "]" if char == "[" else char
+            i += 1
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        if (
+            depth == 0
+            and text[i:i + 5].upper() == "WHERE"
+            and (i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_"))
+            and (i + 5 >= length or not (text[i + 5].isalnum() or text[i + 5] == "_"))
+        ):
+            return i
+        i += 1
+    return -1
+
+
+def _extract_tsql_branch_row_filter(branch_text: str) -> str:
+    """Return the row-level `WHERE` clause of the branch's own UPDATE/
+    INSERT/DELETE statement - which rows this branch's action actually
+    touches - kept deliberately separate from the branch's own IF/ELSE-IF
+    selection condition (the two answer different questions: "does this
+    branch run at all" vs "which rows does it act on once it does").
+    Returns "" when the statement has no WHERE clause at all - meaning it
+    is unconditional and touches every row it can see, NOT "unknown".
+    """
+    where_index = _find_top_level_where(branch_text)
+    if where_index == -1:
+        return ""
+    rest = branch_text[where_index + 5:]
+    end_match = re.search(r"(?i);|\bUPDATE\b|\bINSERT\b|\bDELETE\b|\bMERGE\b|\bEND\b", rest)
+    if end_match:
+        rest = rest[:end_match.start()]
+    return re.sub(r"\s+", " ", rest).strip()
+
+
+def _extract_tsql_branch_assignments(branch_text: str) -> List[Dict[str, str]]:
+    """Pull `(field, value)` pairs out of one T-SQL IF-branch's body:
+    `SET @var = value` variable assignments, and every column assigned by
+    an `UPDATE ... SET col = value, ...` statement in the branch. A value
+    that itself contains a `CASE` expression is skipped - that expression
+    is `extract_case_assignment_decision_chains`'s evidence to own, not a
+    single per-branch literal this ladder-level extractor should claim.
+
+    If the branch itself contains a nested `IF`, this returns no
+    assignments at all rather than risk misattributing the nested IF's own
+    conditional assignments to the *outer*, unconditional-within-this-
+    branch ladder - the exact class of error this whole extractor exists
+    to prevent elsewhere. A flat line scan cannot tell "this SET applies
+    whenever the outer condition holds" from "this SET only applies when
+    the outer condition AND some nested condition both hold", and
+    asserting the former when the truth is the latter is a hallucinated
+    condition, not a captured one. The nested IF's own ladder (if it
+    qualifies on its own) is a separate concern this extractor does not
+    currently discover as its own chain - see the module comment for this
+    known limitation.
+    """
+    if any(_TSQL_IF_RE.match(line) for line in branch_text.splitlines()):
+        return []
+    assignments: List[Dict[str, str]] = []
+    for line in branch_text.splitlines():
+        match = _TSQL_SET_VAR_RE.match(line)
+        if match:
+            assignments.append({
+                "field": match.group("field").strip(),
+                "value": match.group("value").strip().rstrip(";").strip(),
+            })
+    for update_match in _TSQL_UPDATE_SET_RE.finditer(branch_text):
+        for piece in _split_top_level_commas(update_match.group("set_body")):
+            if "=" not in piece:
+                continue
+            field, _, value = piece.partition("=")
+            field = field.strip().split(".")[-1].strip()
+            value = value.strip().rstrip(";").strip()
+            if not field or not value or re.search(r"(?i)\bCASE\b", value):
+                continue
+            assignments.append({"field": field, "value": value})
+    assignments.extend(_extract_tsql_insert_assignments(branch_text))
+    return assignments
+
+
+_TSQL_INSERT_HEAD_RE = re.compile(
+    r"\bINSERT\s+INTO\s+\S+\s*\((?P<columns>[^)]*)\)\s*VALUES\s*\(", re.IGNORECASE
+)
+
+
+def _extract_tsql_insert_assignments(branch_text: str) -> List[Dict[str, str]]:
+    """Pull `(column, value)` pairs out of every `INSERT INTO table (col1,
+    col2, ...) VALUES (val1, val2, ...)` in `branch_text`, positionally
+    zipping the column list against the value list. This is what makes a
+    branch whose action is queuing a notification/audit row (not an
+    UPDATE) - a common T-SQL pattern (e.g. escalating to a queue table
+    inside a cursor loop's nested IF) - visible to this extractor at all;
+    without it, an entire class of real branch actions had no deterministic
+    evidence, identical in spirit to the gap this module exists to close
+    for `SET`/`UPDATE` actions.
+    """
+    assignments: List[Dict[str, str]] = []
+    for head_match in _TSQL_INSERT_HEAD_RE.finditer(branch_text):
+        columns = [c.strip().split(".")[-1] for c in _split_top_level_commas(head_match.group("columns"))]
+        depth = 1
+        i = head_match.end()
+        while i < len(branch_text) and depth > 0:
+            if branch_text[i] == "(":
+                depth += 1
+            elif branch_text[i] == ")":
+                depth -= 1
+            i += 1
+        values_text = branch_text[head_match.end():max(head_match.end(), i - 1)]
+        values = _split_top_level_commas(values_text)
+        for column, value in zip(columns, values):
+            column = column.strip()
+            value = value.strip()
+            if not column or not value or re.search(r"(?i)\bCASE\b", value):
+                continue
+            assignments.append({"field": column, "value": value})
+    return assignments
+
+
+def _shift_positions(record: Dict[str, Any], char_offset: int, line_offset: int) -> Dict[str, Any]:
+    """Shift every char/line position key on a shallow copy of `record` by
+    the given offsets, leaving unavailable (`-1` or non-int) positions
+    alone. Used to correct a recursively-extracted nested chain's
+    provenance from "relative to the branch snippet passed to the
+    recursive call" back to "relative to the real source file".
+    """
+    shifted = dict(record)
+    for key, offset in (
+        ("source_char_start", char_offset), ("source_char_end", char_offset),
+        ("char_start", char_offset), ("char_end", char_offset),
+        ("source_line_start", line_offset), ("source_line_end", line_offset),
+        ("line_start", line_offset), ("line_end", line_offset),
+    ):
+        value = shifted.get(key)
+        if isinstance(value, int) and value >= 0:
+            shifted[key] = value + offset
+    return shifted
+
+
+def _shift_chain_provenance(chain: Dict[str, Any], char_offset: int, line_offset: int) -> Dict[str, Any]:
+    shifted = _shift_positions(chain, char_offset, line_offset)
+    # `chain_id`/`branch_id` were computed by the recursive call from ITS
+    # OWN local (branch-snippet-relative) line numbers, which restart at 1
+    # for every recursive call - two nested ladders recovered from two
+    # different outer branches could otherwise end up with the identical
+    # id string despite being genuinely different chains at different real
+    # locations. Rebuild both ids from the now-corrected, real (shifted)
+    # line numbers, which are unique per source location.
+    old_chain_id = shifted.get("chain_id", "")
+    new_chain_id = f"tsql_if_{shifted.get('source_line_start', 0):04d}_{shifted.get('source_line_end', 0):04d}"
+    shifted["chain_id"] = new_chain_id
+    shifted["branches"] = [
+        {
+            **_shift_positions(branch, char_offset, line_offset),
+            "chain_id": new_chain_id,
+            "branch_id": str(branch.get("branch_id", "")).replace(old_chain_id, new_chain_id, 1),
+            "evidence_spans": [
+                {
+                    **_shift_positions(span, char_offset, line_offset),
+                    "chain_id": new_chain_id,
+                    "branch_id": str(span.get("branch_id", "")).replace(old_chain_id, new_chain_id, 1),
+                }
+                for span in (branch.get("evidence_spans") or []) if isinstance(span, dict)
+            ],
+        }
+        for branch in chain.get("branches", []) if isinstance(branch, dict)
+    ]
+    return shifted
+
+
+def extract_tsql_if_elseif_chains(source: str) -> List[Dict[str, Any]]:
+    """Extract T-SQL `IF ... [BEGIN...END] [ELSE IF ...]* [ELSE ...]`
+    decision ladders deterministically - see the module comment above this
+    function for why this exists alongside the Oracle-only extractors.
+
+    Only a complete ladder (2+ branches, at least one field taking 2+
+    distinct values across branches - the same dedup-worthiness bar
+    `extract_nested_decision_chains` uses) is emitted; a single
+    unconditional `IF` with no `ELSE`/`ELSE IF` never qualifies.
+    """
+    source_text = _strip_sql_comments(str(source or ""))
+    records = _source_line_records(source_text)
+    lines = [record["line"] for record in records]
+
+    def _skip_block(start: int) -> int:
+        pos = start
+        while pos < len(lines) and not lines[pos].strip():
+            pos += 1
+        if pos < len(lines) and _TSQL_BEGIN_RE.match(lines[pos]):
+            depth = 1
+            pos += 1
+            while pos < len(lines) and depth > 0:
+                if _TSQL_BEGIN_RE.match(lines[pos]):
+                    depth += 1
+                elif _TSQL_END_RE.match(lines[pos]):
+                    depth -= 1
+                pos += 1
+            return pos
+        # Single-statement branch (no BEGIN/END): consume lines until one
+        # that looks like the next ladder keyword or a blank separator -
+        # the statement itself may still span several lines.
+        if pos < len(lines):
+            pos += 1
+        while pos < len(lines):
+            stripped = lines[pos].strip()
+            if not stripped or _TSQL_ELSEIF_RE.match(lines[pos]) or _TSQL_ELSE_RE.match(lines[pos]):
+                break
+            pos += 1
+        return pos
+
+    chains: List[Dict[str, Any]] = []
+    nested_chains: List[Dict[str, Any]] = []
+    index = 0
+    while index < len(lines):
+        match = _TSQL_IF_RE.match(lines[index])
+        if not match:
+            index += 1
+            continue
+        chain_start = index
+        condition = match.group(1).strip()
+        branches: List[Dict[str, Any]] = []
+        pos = index + 1
+        while True:
+            branch_start = pos
+            branch_end = _skip_block(pos)
+            branch_text = "\n".join(lines[branch_start:branch_end])
+            # A branch containing its own nested IF gets no assignments
+            # attributed to *this* ladder (see `_extract_tsql_branch_
+            # assignments`'s docstring - attributing them here would
+            # assert the outer condition alone was sufficient, which is
+            # false). Recovering that logic instead of silently dropping
+            # it: recurse into the branch's own text and surface whatever
+            # complete ladder it contains as its OWN, independently
+            # correctly-scoped chain (its conditions say nothing about the
+            # outer branch, which is exactly right - they only apply
+            # given this outer condition already held, and this recursive
+            # call has no way to add that back in, so it is left implicit
+            # rather than guessed at).
+            if any(_TSQL_IF_RE.match(line) for line in branch_text.splitlines()):
+                char_offset = records[branch_start]["char_start"] if branch_start < len(records) else 0
+                line_offset = (records[branch_start]["line_number"] - 1) if branch_start < len(records) else 0
+                nested_chains.extend(
+                    _shift_chain_provenance(nested_chain, char_offset, line_offset)
+                    for nested_chain in extract_tsql_if_elseif_chains(branch_text)
+                )
+            has_nested_if = any(_TSQL_IF_RE.match(line) for line in branch_text.splitlines())
+            branches.append({
+                "branch_condition": condition,
+                "assignments": _extract_tsql_branch_assignments(branch_text),
+                # The row-level filter of this branch's OWN UPDATE/INSERT -
+                # deliberately separate from `branch_condition` (the
+                # IF/ELSE-IF test that selects this branch at all). "" means
+                # genuinely no WHERE clause (every row this branch's target
+                # can see is touched), not "not captured" - skipped (left
+                # absent) rather than guessed at when the branch contains a
+                # nested IF, for the same reason `_extract_tsql_branch_
+                # assignments` refuses to attribute assignments there.
+                "row_filter": "" if has_nested_if else _extract_tsql_branch_row_filter(branch_text),
+                "_start_index": branch_start,
+                "_end_index": max(branch_start, branch_end - 1),
+            })
+            pos = branch_end
+            while pos < len(lines) and not lines[pos].strip():
+                pos += 1
+            if pos < len(lines) and _TSQL_ELSEIF_RE.match(lines[pos]):
+                condition = _TSQL_ELSEIF_RE.match(lines[pos]).group(1).strip()
+                pos += 1
+                continue
+            if pos < len(lines) and _TSQL_ELSE_RE.match(lines[pos]):
+                condition = "ELSE"
+                pos += 1
+                continue
+            break
+        index = pos
+
+        # Qualify on the same bar `RuleSynthesizerAgent._backfill_decision_logic_rows`
+        # applies when it later turns a chain into a rendered decision
+        # table (`len(rows) >= 2`, gathered PER FIELD): at least one field
+        # must be assigned in 2+ *different* branches. A chain-wide
+        # aggregate check (any field, any 2 distinct values anywhere
+        # across the whole chain) is not equivalent - two branches that
+        # between them assign two DIFFERENT fields once each would pass an
+        # aggregate check but produce zero rendered tables downstream
+        # (neither field individually reaches 2 rows), silently leaving a
+        # chain this extractor "found" completely invisible in the report.
+        field_branch_counts: Dict[str, int] = {}
+        for branch in branches:
+            for field in {item["field"] for item in branch["assignments"] if item.get("field")}:
+                field_branch_counts[field] = field_branch_counts.get(field, 0) + 1
+        if len(branches) < 2 or not field_branch_counts or max(field_branch_counts.values()) < 2:
+            continue
+
+        last_line_index = min(max(index - 1, chain_start), len(records) - 1)
+        chain_id = (
+            f"tsql_if_{records[chain_start]['line_number']:04d}_"
+            f"{records[last_line_index]['line_number']:04d}"
+        )
+        previous_conditions: List[str] = []
+        for branch_index, branch in enumerate(branches):
+            branch_condition = branch["branch_condition"]
+            if branch_condition.upper() == "ELSE":
+                branch["effective_condition"] = (
+                    "all preceding conditions are false or NULL: " + "; ".join(previous_conditions)
+                )
+            else:
+                previous_conditions.append(branch_condition)
+            start_i = branch.pop("_start_index")
+            end_i = branch.pop("_end_index")
+            provenance = _line_provenance(source_text, records, start_i, end_i)
+            branches[branch_index] = _apply_branch_provenance(
+                branch, provenance, chain_id=chain_id, branch_index=branch_index
+            )
+        chains.append({
+            "chain_type": "TSQL_IF_ELSE",
+            "subject": "",
+            "branches": branches,
+            "chain_id": chain_id,
+            "source_char_start": records[chain_start]["char_start"],
+            "source_char_end": records[last_line_index]["char_end"],
+            "source_line_start": chain_start + 1,
+            "source_line_end": last_line_index + 1,
+            "source_location_status": "available",
+        })
+    return chains + nested_chains
+
+
 _CASE_KEYWORD_RE = re.compile(r"\bCASE\b|\bEND\b", re.IGNORECASE)
 _CASE_BODY_TOKEN_RE = re.compile(r"\bCASE\b|\bEND\b|\bWHEN\b|\bTHEN\b|\bELSE\b", re.IGNORECASE)
 _CASE_ASSIGN_TARGET_RE = re.compile(

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-04T02:20:33.399654+00:00",
+  "generated_at": "2026-09-15T15:44:56.117560+00:00",
   "mode": "deterministic",
   "results": [
     {
@@ -342,7 +342,9 @@
       "checks": {
         "ambiguities": {
           "actual": [
-            "could not deterministically identify the database object type from the raw source."
+            "could not deterministically identify the database object type from the raw source.",
+            "could not fully structurally parse embedded sql statement (non-fatal, passed through as raw text): merge into npa_provision np using (select rec.account_id as account_id from dual) src on (np.account_id = src.ac...",
+            "could not fully structurally parse embedded sql statement (non-fatal, passed through as raw text): update set provision_amount = rec.outstanding_amount * v_provision_pct / 100, classification_date = sys..."
           ],
           "expected": [],
           "f1": null,
@@ -351,7 +353,9 @@
           "precision": 0.0,
           "recall": null,
           "unexpected": [
-            "could not deterministically identify the database object type from the raw source."
+            "could not deterministically identify the database object type from the raw source.",
+            "could not fully structurally parse embedded sql statement (non-fatal, passed through as raw text): merge into npa_provision np using (select rec.account_id as account_id from dual) src on (np.account_id = src.ac...",
+            "could not fully structurally parse embedded sql statement (non-fatal, passed through as raw text): update set provision_amount = rec.outstanding_amount * v_provision_pct / 100, classification_date = sys..."
           ]
         },
         "business_rules": {
@@ -499,7 +503,9 @@
       "checks": {
         "ambiguities": {
           "actual": [
-            "could not deterministically identify the database object type from the raw source."
+            "could not deterministically identify the database object type from the raw source.",
+            "could not fully structurally parse embedded sql statement (non-fatal, passed through as raw text): merge into overdue_ageing_summary tgt using (select rec.account_id as account_id from dual) src...",
+            "could not fully structurally parse embedded sql statement (non-fatal, passed through as raw text): update set tgt.ageing_bucket = v_ageing_bucket, tgt.last_updated = sysdate when n..."
           ],
           "expected": [],
           "f1": null,
@@ -508,7 +514,9 @@
           "precision": 0.0,
           "recall": null,
           "unexpected": [
-            "could not deterministically identify the database object type from the raw source."
+            "could not deterministically identify the database object type from the raw source.",
+            "could not fully structurally parse embedded sql statement (non-fatal, passed through as raw text): merge into overdue_ageing_summary tgt using (select rec.account_id as account_id from dual) src...",
+            "could not fully structurally parse embedded sql statement (non-fatal, passed through as raw text): update set tgt.ageing_bucket = v_ageing_bucket, tgt.last_updated = sysdate when n..."
           ]
         },
         "business_rules": {
@@ -1065,7 +1073,8 @@
       "checks": {
         "ambiguities": {
           "actual": [
-            "parameter extraction failed for a parameterized object header; the object is not known to be parameterless."
+            "could not fully structurally parse embedded sql statement (non-fatal, passed through as raw text): merge dbo.npa_provision as tgt using ( select account_id, provision_amount from dbo.staging_provisioning ) a...",
+            "could not fully structurally parse embedded sql statement (non-fatal, passed through as raw text): update set provision_amount = src.provision_amount, updated_at = getdate() when not matched then..."
           ],
           "expected": [],
           "f1": null,
@@ -1074,7 +1083,8 @@
           "precision": 0.0,
           "recall": null,
           "unexpected": [
-            "parameter extraction failed for a parameterized object header; the object is not known to be parameterless."
+            "could not fully structurally parse embedded sql statement (non-fatal, passed through as raw text): merge dbo.npa_provision as tgt using ( select account_id, provision_amount from dbo.staging_provisioning ) a...",
+            "could not fully structurally parse embedded sql statement (non-fatal, passed through as raw text): update set provision_amount = src.provision_amount, updated_at = getdate() when not matched then..."
           ]
         },
         "business_rules": {

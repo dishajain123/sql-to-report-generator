@@ -69,6 +69,7 @@ from src.synthesis.rule_synthesizer import SynthesisResult
 from src.dialect.detector import AMBIGUOUS, ORACLE, TSQL, UNKNOWN, UNSUPPORTED, normalize_dialect_name
 from src.core.pipeline_utils import RunMetadata, run_metadata_to_dict
 from src.parsing.dedup import find_write_only_temp_tables
+from src.parsing.technical_sql_ops import _extract_from_clause_alias_map
 
 _NOT_DETERMINED = "Not explicitly determined from source SQL."
 # Common, semantically-empty words excluded from the business-meaning
@@ -176,7 +177,10 @@ class ReportFormatterAgent:
         ctx = self._prepare(ingestion, merged_extraction, synthesis, canonical_ir, run_metadata)
         synthesis = ctx["synthesis"]
         business_rules_for_display = self._project_decision_rules(
-            ctx["business_rules_for_display"], ctx["decision_blocks"]
+            ctx["business_rules_for_display"], ctx["decision_blocks"], ctx["merged_extraction"]
+        )
+        business_rules_for_display, suppressed_conflict_count = self._exclude_conflicting_rules(
+            business_rules_for_display
         )
         consolidated_reads = ctx["consolidated_reads"]
         consolidated_writes = ctx["consolidated_writes"]
@@ -223,6 +227,7 @@ class ReportFormatterAgent:
                 getattr(ingestion, "raw_code", ""),
                 raw_merged_extraction=raw_merged_extraction,
                 raw_synthesis_data=raw_synthesis_data,
+                extra_items=self._conflict_suppression_finding(suppressed_conflict_count),
             ),
             self._verification_pointer(),
         ]
@@ -909,17 +914,30 @@ class ReportFormatterAgent:
     # 5. Business Rules
     # ------------------------------------------------------------------
 
-    def _project_decision_rules(self, rules, decision_blocks):
+    def _project_decision_rules(self, rules, decision_blocks, merged_extraction=None):
         """One display projection shared by counts, overview and rule detail."""
-        by_id = {str(rule.get("rule_id") or ""): rule for rule in rules}
+        # Ambiguous legacy IDs cannot safely identify a block member. Keep
+        # those rules individually instead of borrowing unrelated metadata.
+        from collections import Counter
+        counts = Counter(str(rule.get("rule_id") or "") for rule in rules)
+        by_id = {str(rule.get("rule_id") or ""): rule for rule in rules
+                 if rule.get("rule_id") and counts[str(rule["rule_id"])] == 1}
         replacements = {}
         consumed = set()
+        seen_blocks = set()
         for block in decision_blocks or []:
+            block_key = str(block.get("block_id") or "")
+            if block_key and block_key in seen_blocks:
+                continue
+            seen_blocks.add(block_key)
+            if any(str(rid) not in by_id for rid in block.get("rule_ids", [])):
+                continue
             members = [by_id[rid] for rid in block.get("rule_ids", []) if rid in by_id]
             if not members:
                 continue
             first_id = str(members[0].get("rule_id") or "")
-            projected = dict(members[0])
+            authoritative = next((r for r in members if r.get("rule_type") == "deterministic_decision_table"), members[0])
+            projected = dict(authoritative)
             projected["rule_id"] = str(block.get("block_id") or first_id)
             projected["rule_name"] = block.get("name") or projected.get("rule_name")
             projected["decision_block_title"] = projected["rule_name"]
@@ -936,13 +954,19 @@ class ReportFormatterAgent:
             projected["decision_logic_rows"] = [
                 {"condition": branch.get("condition", ""),
                  "outcome": "; ".join(self._distinct_text([
-                     self._assignment_text(item) for item in branch.get("results", [])
+                     self._source_assignment_text(item) for item in branch.get("results", [])
                  ]))}
                 for branch in block.get("branches", [])
             ]
             projected["action"] = ""
-            if block.get("eligibility"):
+            if "eligibility" in block:
                 projected["eligibility"] = list(block["eligibility"])
+            if block.get("output_fields"):
+                projected["fields_affected"] = list(block["output_fields"])
+                projected["output_field"] = ", ".join(block["output_fields"])
+            projected["source_chain_id"] = block.get("source_chain_id", "")
+            projected["statement_span"] = list(block.get("statement_span") or [])
+            projected["source_line_start"] = block.get("source_line_start")
             projected["decision_role"] = str(block.get("decision_role") or "assignment")
             projected["decision_context"] = list(block.get("decision_context") or [])
             projected["execution_semantics"] = str(block.get("execution_semantics") or "")
@@ -951,9 +975,870 @@ class ReportFormatterAgent:
         displayed = []
         for rule in rules:
             rid = str(rule.get("rule_id") or "")
-            displayed.extend(replacements.get(rid, []))
+            displayed.extend(replacements.pop(rid, []))
             if rid not in consumed:
                 displayed.append(rule)
+        from src.output.decision_groups import group_statement_decisions
+        grouped = self._disambiguate_duplicate_names(group_statement_decisions(displayed))
+        narrative_suppressed = self._suppress_narrative_duplicates_of_decision_blocks(
+            grouped, merged_extraction
+        )
+        content_suppressed = self._suppress_content_duplicate_decision_tables(
+            narrative_suppressed, merged_extraction
+        )
+        multi_field_suppressed = self._suppress_multi_field_tables_fully_covered_elsewhere(
+            content_suppressed, merged_extraction
+        )
+        identity_suppressed = self._suppress_single_write_field_duplicates_by_identity(
+            multi_field_suppressed, merged_extraction
+        )
+        structurally_repaired = self._strip_concatenated_chain_decision_rows(identity_suppressed)
+        return self._suppress_contentless_single_field_duplicates(structurally_repaired, merged_extraction)
+
+    def _strip_concatenated_chain_decision_rows(
+        self, displayed: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Strip `decision_logic_rows` from a non-canonical rule whose own
+        table is provably the CONCATENATION of two or more separate
+        decision chains rather than one real ladder - detected by a hard,
+        dialect-agnostic structural invariant: a single well-formed
+        decision ladder has AT MOST ONE catch-all/ELSE row. Two or more
+        rows that each normalize to a bare "ELSE" can only mean the model
+        flattened multiple statements' independently-branching CASE/IF
+        ladders (each with its own terminal ELSE) into one combined row
+        list - observed for real: a rule claiming `Outcome, SeverityTier,
+        FeedName, ReconciledOn` whose "table" was actually the `Outcome`
+        chain's 5 rows immediately followed by an unrelated `SeverityTier`
+        chain's 6 rows, producing garbled joined cells like
+        `'FAILED'; 'UNKNOWN'` wherever two chains' ELSE rows landed at the
+        same list position.
+
+        Only removes the malformed STRUCTURED table, never the rule
+        itself - the rule's own prose (`business_meaning`/`summary`) may
+        still be a perfectly good description of the statement; only the
+        row-by-row content has been proven internally inconsistent. Never
+        touches a canonical rule: deterministic extraction never produces
+        more than one ELSE for a single chain, so this can only ever fire
+        on free-form model output.
+        """
+        result = []
+        for rule in displayed:
+            rows = self._decision_logic_rows(rule)
+            if not self._is_canonical_decision_rule(rule) and len(rows) >= 2:
+                else_count = sum(
+                    1 for row in rows
+                    if self._normalize_condition_text(row.get("condition", "")).strip().upper() == "ELSE"
+                )
+                if else_count >= 2:
+                    rule = dict(rule)
+                    rule["decision_logic_rows"] = []
+                    result.append(rule)
+                    continue
+            result.append(rule)
+        return result
+
+    def _suppress_single_write_field_duplicates_by_identity(
+        self,
+        displayed: List[Dict[str, Any]],
+        merged_extraction: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Drop a non-canonical rule naming exactly one field when that
+        field is written by exactly one statement in the WHOLE procedure
+        (`_globally_single_write_fields`) and a canonical single-field rule
+        already exists for it - regardless of whether the two rules'
+        condition TEXT matches at all.
+
+        The other suppression passes all require some form of content or
+        table match before dropping a rule; this one needs neither, because
+        field identity alone is already conclusive proof once a field is
+        known to be written exactly once in the whole source: there is
+        only one statement either rule could possibly be describing, full
+        stop, independent of how each one chose to phrase its conditions.
+        This catches a case none of the content-based passes can: a
+        deterministic TSQL_IF_ELSE chain represents branch selection as its
+        literal `IF EXISTS(...)` guard (kept deliberately separate from the
+        row-level UPDATE predicate, per this session's own generalized
+        branch-scope fix), while a model narrating the same statement
+        almost always drops that wrapper and states the bare row predicate
+        instead - two textually unrelated but factually identical
+        representations that no amount of condition-text normalization can
+        safely equate without risking false merges elsewhere. Field
+        identity sidesteps the text-matching problem entirely.
+
+        Deliberately does NOT fall back to this for a field written by two
+        or more statements (even sharing one table) - there, field name
+        alone cannot tell the rules apart, and the table-scoped checks
+        already handle what they safely can.
+        """
+        global_single_write_fields = self._globally_single_write_fields(merged_extraction)
+        if not global_single_write_fields:
+            return displayed
+        single_field_blocks = {
+            next(iter(self._field_token_set(rule))): rule
+            for rule in displayed
+            if self._is_canonical_decision_rule(rule) and len(self._field_token_set(rule)) == 1
+        }
+        result = []
+        for rule in displayed:
+            if self._is_canonical_decision_rule(rule):
+                result.append(rule)
+                continue
+            fields = self._field_token_set(rule)
+            if (
+                len(fields) == 1
+                and next(iter(fields)) in global_single_write_fields
+                and next(iter(fields)) in single_field_blocks
+            ):
+                continue
+            result.append(rule)
+        return result
+
+    def _suppress_multi_field_tables_fully_covered_elsewhere(
+        self,
+        displayed: List[Dict[str, Any]],
+        merged_extraction: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Drop a non-canonical rule that claims TWO OR MORE fields with its
+        own flat `decision_logic_rows`, when EVERY one of those fields
+        already has its own correct, separate canonical decision table
+        elsewhere in the report.
+
+        Exists for a specific, observed failure mode distinct from the
+        other suppression passes: a model can author a single rule for a
+        whole INSERT/UPDATE *statement* that actually sets several fields
+        via *different, independently-branching* CASE expressions, and
+        flatten all of their rows into one combined table - producing
+        garbled, semicolon-joined outcome cells where two unrelated
+        chains' rows happened to land at the same list position (e.g. an
+        `Outcome` ladder's `ELSE -> 'FAILED'` and a separately-branching
+        `SeverityTier` ladder's `ELSE -> 'UNKNOWN'` merging into one row
+        reading `'FAILED'; 'UNKNOWN'`). `group_statement_decisions` already
+        handles the LEGITIMATE version of one statement setting several
+        fields correctly (rendering one sub-table per field, and setting
+        the combined rule's own `decision_logic_rows` to `[]` - so it can
+        never match here); this only fires on a rule that instead invented
+        its own single merged table.
+
+        Never inspects whether the content is actually wrong (this module
+        must not itself judge business meaning) - only whether it is
+        REDUNDANT: when a correct, separate canonical table already exists
+        for every field the rule claims, that rule can be dropped with
+        zero information loss regardless of whether its own content was
+        right or wrong, since the canonical tables already say everything
+        it could legitimately say.
+        """
+        single_field_blocks = {
+            next(iter(self._field_token_set(rule))): rule
+            for rule in displayed
+            if rule.get("decision_block_id") and len(self._field_token_set(rule)) == 1
+        }
+        if not single_field_blocks:
+            return displayed
+        result = []
+        for rule in displayed:
+            fields = self._field_token_set(rule)
+            if (
+                len(fields) >= 2
+                and rule.get("decision_logic_rows")
+                and not self._is_canonical_decision_rule(rule)
+                and fields <= single_field_blocks.keys()
+            ):
+                continue
+            result.append(rule)
+        return result
+
+    def _suppress_contentless_single_field_duplicates(
+        self,
+        displayed: List[Dict[str, Any]],
+        merged_extraction: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Collapse duplicate CONTENTLESS narrative rules about the same
+        single, once-written field - e.g. sectioned synthesis independently
+        producing "Update DpdDays in LoanAccountCal" (no eligibility, no
+        decision rows: a pure "this field gets set" restatement) in one
+        section while another section separately derives "Calculate DPD
+        days" / "Set DPD days to zero" (the same field, but each carrying
+        real eligibility text describing an actual branch). Both fixes this
+        pairs with (`_suppress_narrative_duplicates_of_decision_blocks`,
+        `_suppress_partial_decision_tables_for_single_write_fields`) need
+        an existing canonical decision BLOCK to compare against; this one
+        does not, and exists for the case sectioned synthesis produces
+        several independent narrations of the same statement with no
+        decision table anywhere in the output at all.
+
+        Only fires per (field, table) pair written by exactly one statement
+        in the whole procedure (`_single_write_statement_field_tables`) -
+        the same proof used elsewhere that only one genuine fact about
+        that field, in that table, can exist. A rule's table is resolved
+        via `_resolve_rule_table`; two rules are only ever grouped together
+        when each independently resolves to the SAME table, so a field
+        name that recurs across genuinely different tables never causes an
+        unrelated pair of rules to be treated as duplicates. Within a
+        group, only ever drops a rule that adds ZERO information (no
+        `decision_logic_rows` and no `eligibility` text): a rule with
+        either is left standing even if a sibling rule names the same
+        (field, table), since it may be documenting one specific branch
+        rather than merely repeating that the field was touched at all.
+        """
+        single_write_pairs = self._single_write_statement_field_tables(merged_extraction)
+        if not single_write_pairs:
+            return displayed
+        known_tables = self._known_table_names(merged_extraction)
+
+        def _is_contentless(rule: Dict[str, Any]) -> bool:
+            if rule.get("decision_logic_rows") or rule.get("decision_block_id"):
+                return False
+            return not self._rule_text_lines(rule.get("eligibility"))
+
+        groups: Dict[Tuple[str, str], List[int]] = {}
+        for index, rule in enumerate(displayed):
+            fields = self._field_token_set(rule)
+            if len(fields) != 1:
+                continue
+            field = next(iter(fields))
+            table = self._resolve_rule_table(rule, known_tables)
+            if table is None or (field, table) not in single_write_pairs:
+                continue
+            groups.setdefault((field, table), []).append(index)
+
+        drop_indices: "set[int]" = set()
+        for indices in groups.values():
+            contentless = [idx for idx in indices if _is_contentless(displayed[idx])]
+            if len(indices) - len(contentless) > 0:
+                # At least one sibling rule for this field carries real
+                # content (a decision table or specific eligibility text) -
+                # every purely contentless restatement is redundant.
+                drop_indices.update(contentless)
+            elif len(contentless) > 1:
+                # Every rule for this field is equally contentless - keep
+                # only the one with the longest summary text, to avoid
+                # showing the same "field gets updated" fact twice.
+                def _summary_length(idx: int) -> int:
+                    return len(" ".join(self._rule_text_lines(displayed[idx].get("summary"))))
+                keep = max(contentless, key=_summary_length)
+                drop_indices.update(idx for idx in contentless if idx != keep)
+
+        if not drop_indices:
+            return displayed
+        return [rule for index, rule in enumerate(displayed) if index not in drop_indices]
+
+    @staticmethod
+    def _is_canonical_decision_rule(rule: Dict[str, Any]) -> bool:
+        """True for a rule whose decision content is provably grounded in
+        deterministic evidence rather than free-form model narration: a
+        `decision_block_id` member, a rule tagged `deterministic_decision_table`,
+        or a rule whose `decision_logic_rows` were entirely backfilled from
+        deterministic chain evidence (`decision_rows_grounded` - see
+        `RuleSynthesizerAgent._normalize_business_rules`, set when the model
+        supplied no rows of its own and every row came from source-derived
+        chain evidence). The third case matters because a rule can carry a
+        fully-grounded table without ever being merged into a `decision_block`
+        (block membership requires a literal condition-text match the
+        block-matcher can line up against) - without also treating it as
+        canonical here, a duplicate-suppression pass would only ever compare
+        two non-canonical rules and refuse to touch either of them, even
+        when one is byte-for-byte source truth and the other is a stray,
+        differently-worded model restatement of the exact same statement.
+        """
+        return (
+            bool(rule.get("decision_block_id"))
+            or rule.get("rule_type") == "deterministic_decision_table"
+            or bool(rule.get("decision_rows_grounded"))
+        )
+
+    @staticmethod
+    def _bare_table_token(text: Any) -> str:
+        return str(text or "").split(".")[-1].strip().strip("#").casefold()
+
+    @classmethod
+    def _known_table_names(cls, merged_extraction: Optional[Dict[str, Any]]) -> "set[str]":
+        if not isinstance(merged_extraction, dict):
+            return set()
+        names: "set[str]" = set()
+        for section in ("tables_read", "tables_written"):
+            for row in merged_extraction.get(section, []) or []:
+                if isinstance(row, dict):
+                    bare = cls._bare_table_token(row.get("table"))
+                    if bare:
+                        names.add(bare)
+        return names
+
+    @classmethod
+    def _globally_single_write_fields(cls, merged_extraction: Optional[Dict[str, Any]]) -> "set[str]":
+        """Bare field names assigned by exactly one write statement in the
+        WHOLE procedure, counting across every table together (unlike
+        `_single_write_statement_field_tables`, which counts per-table).
+
+        A field in this set needs no table resolution at all to prove
+        there can be only one genuine decision/fact about it anywhere in
+        the source: if the total statement count across every table is 1,
+        there is only one statement it could possibly be, regardless of
+        whether either rule's own text happens to name that table. This
+        matters because `_resolve_rule_table` can fail on both sides of a
+        genuine duplicate (a model-authored rule often never mentions the
+        table it targets at all) - table-scoped matching would then leave
+        the duplicate untouched purely for lack of a resolvable table name,
+        even though field identity alone already proves it. A field
+        written by 2+ separate statements (even if some share a table)
+        is deliberately excluded here and left to the table-scoped check,
+        since field name alone cannot then distinguish which statement a
+        given rule is about.
+        """
+        if not isinstance(merged_extraction, dict):
+            return set()
+        counts: Dict[str, "set[Any]"] = {}
+        for row in merged_extraction.get("tables_written", []) or []:
+            if not isinstance(row, dict):
+                continue
+            statement_key = (row.get("source_line_start", -1), row.get("source_char_start", -1))
+            for col in (row.get("target_columns") or row.get("columns") or []):
+                bare = str(col or "").split(".")[-1].strip().casefold()
+                if not bare:
+                    continue
+                counts.setdefault(bare, set()).add(statement_key)
+        return {field for field, keys in counts.items() if len(keys) == 1}
+
+    @classmethod
+    def _single_write_statement_field_tables(
+        cls, merged_extraction: Optional[Dict[str, Any]]
+    ) -> "set[Tuple[str, str]]":
+        """(bare field, bare table) pairs assigned by exactly one write
+        statement anywhere in the procedure, per the deterministic
+        `tables_written` extraction (one entry per UPDATE/INSERT/MERGE
+        clause, each carrying its own `source_line_start`).
+
+        Scoped per TABLE, not just per field, because the same field name
+        legitimately recurs across several genuinely different statements
+        against different tables in one procedure (`DpdBucket` is set once
+        in `LoanAccountCal` by the classification UPDATE, once more staged
+        into `#DpdStaging` by an INSERT, and again copied into
+        `DpdBucketHistory` by a MERGE) - each of those is single-write
+        within its own table and can carry its own genuine rule, even
+        though the bare field name alone would look "written 3 times".
+
+        A pair in this set can have at most one genuine decision/fact
+        about it in the whole procedure - so a plain-prose rule resolved to
+        this same (field, table), with no decision rows of its own, cannot
+        be describing anything other than whichever rule/decision block
+        already documents that same single statement.
+        """
+        if not isinstance(merged_extraction, dict):
+            return set()
+        counts: Dict[Tuple[str, str], "set[Any]"] = {}
+        for row in merged_extraction.get("tables_written", []) or []:
+            if not isinstance(row, dict):
+                continue
+            table = cls._bare_table_token(row.get("table"))
+            if not table:
+                continue
+            statement_key = (row.get("source_line_start", -1), row.get("source_char_start", -1))
+            for col in (row.get("target_columns") or row.get("columns") or []):
+                bare = str(col or "").split(".")[-1].strip().casefold()
+                if not bare:
+                    continue
+                counts.setdefault((bare, table), set()).add(statement_key)
+        return {pair for pair, keys in counts.items() if len(keys) == 1}
+
+    @classmethod
+    def _resolve_rule_table(
+        cls, rule: Dict[str, Any], known_tables: "set[str]"
+    ) -> Optional[str]:
+        """Best-effort bare table name a rule is about: the structured
+        `Target:` context for a decision-table/block rule, or - for a
+        plain narrative rule with no such structure - whichever single
+        known table name is named in its own rule_name/summary text.
+        Returns None (never guesses) when zero or more than one known
+        table name is mentioned, since an ambiguous match must never drive
+        a suppression decision.
+        """
+        target = cls._rule_target_table(rule)
+        if target:
+            bare = cls._bare_table_token(target)
+            if bare:
+                return bare
+        text = " ".join(
+            [str(rule.get("rule_name") or "")]
+            + cls._rule_text_lines(rule.get("summary"))
+        )
+        matches = {
+            table for table in known_tables
+            if table and re.search(r"(?<![A-Za-z0-9_])" + re.escape(table) + r"(?![A-Za-z0-9_])", text, re.IGNORECASE)
+        }
+        if len(matches) == 1:
+            return next(iter(matches))
+        return None
+
+    @staticmethod
+    def _field_token_set(rule: Dict[str, Any]) -> "set[str]":
+        values = rule.get("fields_affected") or []
+        if isinstance(values, str):
+            values = [values]
+        if not values and rule.get("output_field"):
+            values = [rule["output_field"]]
+        return {
+            token.split(".")[-1].strip().casefold()
+            for value in values
+            for token in str(value or "").split(",")
+            if token.strip()
+        }
+
+    def _suppress_narrative_duplicates_of_decision_blocks(
+        self,
+        displayed: List[Dict[str, Any]],
+        merged_extraction: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Drop a rule that only restates, in prose, the exact same fields
+        an already-displayed decision block fully documents with a real
+        table (e.g. a model-authored "set DPD to zero if below reference
+        period" rule whose comma-joined output_field lists the same six
+        fields a grouped #TEMPTABLE decision block already covers, but
+        which carries no decision_logic_rows of its own - it never merged
+        into that block because it names no literal condition text the
+        block-matcher can line up against).
+
+        Deliberately narrow to avoid deleting a genuinely separate rule
+        that happens to touch one of the same fields (e.g. a `DPD_Max`
+        reset-to-zero step is a real, distinct operation from the `DPD_Max`
+        MAX-selection block, even though both name that field) - for a
+        rule with two or more fields, only an EXACT match of the whole
+        field set against a block's whole field set counts.
+
+        A rule naming exactly ONE field is also dropped, but only when
+        that field is assigned by exactly one write statement in the whole
+        procedure (per `_single_write_statement_fields`) - if the field is
+        only ever set in one place, a same-field decision block already
+        documents that one statement in full, so the prose rule can only
+        be a restatement of it, never a second genuine fact. A field
+        written in two or more separate statements (the `DPD_Max`
+        reset-vs-MAX-selection case) is left alone either way.
+        """
+        block_field_sets = [
+            self._field_token_set(rule)
+            for rule in displayed
+            if rule.get("decision_block_id")
+        ]
+        multi_field_block_sets = [fields for fields in block_field_sets if len(fields) > 1]
+        single_field_blocks: Dict[str, Dict[str, Any]] = {
+            next(iter(fields)): rule
+            for fields, rule in zip(block_field_sets, (
+                rule for rule in displayed if rule.get("decision_block_id")
+            ))
+            if len(fields) == 1
+        }
+        known_tables = self._known_table_names(merged_extraction)
+        single_write_pairs = self._single_write_statement_field_tables(merged_extraction)
+        result = []
+        for rule in displayed:
+            if rule.get("decision_block_id") or rule.get("decision_logic_rows"):
+                result.append(rule)
+                continue
+            fields = self._field_token_set(rule)
+            if len(fields) > 1 and fields in multi_field_block_sets:
+                continue
+            if len(fields) == 1:
+                field = next(iter(fields))
+                block_rule = single_field_blocks.get(field)
+                if block_rule is not None:
+                    block_table = self._resolve_rule_table(block_rule, known_tables)
+                    rule_table = self._resolve_rule_table(rule, known_tables)
+                    if (
+                        block_table is not None
+                        and block_table == rule_table
+                        and (field, block_table) in single_write_pairs
+                    ):
+                        continue
+            result.append(rule)
+        return result
+
+    @staticmethod
+    def _dedup_field_bare_name(text: Any) -> str:
+        """Reduce every dotted field reference in `text` down to its bare
+        trailing segment - `PRO.LoanAccountCal.DpdDays`, `A.DpdDays`, and a
+        bare `DpdDays` all become `DpdDays`. Used only to detect when two
+        decision tables describe the same underlying predicate/column for
+        duplicate-suppression purposes; never for display, where the fuller
+        alias-resolved form (schema/table context) is wanted. This is a
+        strictly stronger version of the 1-3-letter-alias-only stripping
+        `_field_references_for_display` does: a deterministically recovered
+        block's rows carry the fully schema-qualified name (`PRO.
+        LoanAccountCal.DpdDays`, which that stripping leaves untouched since
+        neither `PRO` nor `LoanAccountCal` alone looks like a short alias),
+        while a model-authored duplicate produced in a different synthesis
+        section almost always restates the same column bare (`DpdDays`) -
+        so without reducing both to the same bare form, an otherwise
+        identical duplicate decision table survives detection entirely.
+        """
+        dotted_path = re.compile(
+            r"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*\.)+[A-Za-z_][A-Za-z0-9_]*"
+        )
+        return dotted_path.sub(lambda match: match.group(0).split(".")[-1], str(text or ""))
+
+    @staticmethod
+    def _normalize_condition_text(text: Any, *, bare_fields: bool = False) -> str:
+        """Collapse whitespace and strip a single fully-wrapping parenthesis
+        pair so two renderings of the same predicate/result compare equal
+        regardless of incidental formatting (double spaces from hand-edited
+        SQL, or one side parenthesizing a boolean expression the other
+        doesn't - both observed between a deterministic block's recovered
+        rows and a model-authored rule re-deriving the same table).
+
+        `bare_fields=True` additionally reduces every dotted field
+        reference to its bare trailing segment (see
+        `_dedup_field_bare_name`) rather than only stripping 1-3-letter
+        alias tokens - used by the duplicate-decision-table signature,
+        never by display code.
+        """
+        # Strip this module's own presentational row-filter/unreachable-
+        # branch annotations (see `RuleSynthesizerAgent.
+        # _annotate_row_condition_with_filter`/`_branch_is_unreachable`)
+        # before anything else: they are added only to a deterministic
+        # TSQL_IF_ELSE-sourced row for the reader's benefit, never by a
+        # model paraphrasing the same branch, so leaving them in would
+        # make an otherwise-identical duplicate compare as "different"
+        # and defeat this exact duplicate-detection signature.
+        text = re.sub(r"\s*—\s*row filter:.*$", "", str(text or ""), flags=re.S)
+        text = re.sub(r"\s*\[UNREACHABLE.*$", "", text, flags=re.S)
+        text = re.sub(r"\s*—\s*applies to all rows \(no additional filter\)\s*$", "", text)
+        # Strip table-alias prefixes first (`A.DPD_Max` vs `DPD_Max`): a
+        # deterministically recovered block keeps the raw aliased SQL in its
+        # rows, while a model-authored duplicate of the same table almost
+        # always paraphrases without the alias, matching what the alias-
+        # stripped *display* renders (`_pretty_condition_for_display`) even
+        # though the two source values differ.
+        field_normalized = (
+            ReportFormatterAgent._dedup_field_bare_name(text)
+            if bare_fields
+            else ReportFormatterAgent._field_references_for_display(text)
+        )
+        collapsed = re.sub(r"\s+", " ", field_normalized).strip()
+        # Collapsing a *run* of whitespace to one space still leaves a single
+        # stray space next to punctuation untouched (e.g. the hand-typed
+        # source literally has "DPD_NoCredit ,0)" in several branches of the
+        # real SMA_MARKING procedure) - a model-authored duplicate of the
+        # same row almost always drops that incidental space, so without
+        # this the two otherwise-identical rows fail to match and the
+        # duplicate survives (observed for real: `Determine DPD_Max` and a
+        # narrative `Calculate maximum DPD` rule differed only by this one
+        # space in a non-first row, in a live-generated report). Comparing
+        # predicate/result text, not literal source formatting, so this
+        # space carries no meaning worth preserving.
+        collapsed = re.sub(r"\s+([,)])", r"\1", collapsed)
+        collapsed = re.sub(r"([(])\s+", r"\1", collapsed)
+        while len(collapsed) >= 2 and collapsed[0] == "(" and collapsed[-1] == ")":
+            depth = 0
+            fully_wrapped = True
+            for index, char in enumerate(collapsed):
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth == 0 and index != len(collapsed) - 1:
+                        fully_wrapped = False
+                        break
+            if not fully_wrapped:
+                break
+            collapsed = collapsed[1:-1].strip()
+        return collapsed.casefold()
+
+    def _decision_table_signature(self, rule: Dict[str, Any]) -> Optional[Tuple[Tuple[str, str], ...]]:
+        rows = self._decision_logic_rows(rule)
+        if not rows:
+            return None
+        return tuple(
+            (
+                self._normalize_condition_text(row.get("condition", "")),
+                self._normalize_condition_text(row.get("outcome", "")),
+            )
+            for row in rows
+        )
+
+    def _decision_table_condition_signature(self, rule: Dict[str, Any]) -> Optional[Tuple[str, ...]]:
+        """Like `_decision_table_signature`, but ignores each row's outcome
+        entirely and reduces field references to their bare trailing
+        segment. A row-for-row match on just the ordered conditions over
+        the same field set is already a near-certain signal that two rules
+        describe the same decision chain, catching duplicates the stricter
+        exact signature misses - e.g. a deterministically recovered block
+        rendering fully schema-qualified conditions (`PRO.LoanAccountCal.
+        DpdDays = 0`) against a model-authored restatement of the exact
+        same chain from a different synthesis section that both drops the
+        qualifier (`DpdDays = 0`) *and* leaves its own final ELSE outcome
+        blank - both observed for real in the same live report.
+        """
+        rows = self._decision_logic_rows(rule)
+        if not rows:
+            return None
+        return tuple(
+            self._normalize_condition_text(row.get("condition", ""), bare_fields=True)
+            for row in rows
+        )
+
+    def _suppress_content_duplicate_decision_tables(
+        self,
+        displayed: List[Dict[str, Any]],
+        merged_extraction: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Drop a rule whose own decision table is a byte-for-byte-equivalent
+        restatement of an already-displayed rule's table over the same
+        field(s) - e.g. a model-synthesized "Calculate maximum DPD" rule
+        that re-derives, row for row, the exact same MAX-selection ladder a
+        deterministically recovered `DPD_Max` block already renders. Also
+        drops a rule whose ordered *conditions* alone (ignoring outcome
+        text and alias/schema qualification - see
+        `_decision_table_condition_signature`) match an already-displayed
+        rule's, since two decision tables branching on the exact same
+        predicates in the exact same order over the same field(s) are
+        never a coincidence in practice, even when one side's outcome
+        cells are blank, truncated, or worded differently.
+
+        Unlike `_suppress_narrative_duplicates_of_decision_blocks`, this
+        catches duplicates that DO carry their own `decision_logic_rows` -
+        the earlier pass deliberately never touches those, since a rule
+        with real decision content is usually genuinely distinct. Here the
+        content itself (condition/result pairs, in order, normalized for
+        whitespace/wrapping only) is compared, so a rule that merely shares
+        a field name or a superficially similar table is never dropped -
+        only a matching row-sequence over an identical field set is.
+
+        Only ever drops a rule that is NOT itself a canonical
+        `decision_block_id` member: two independently recovered blocks can
+        legitimately share an identical row signature (e.g. the same
+        MAX-selection ladder recomputed once per `CustomerEntityID` and once
+        per `UCIF_ID` - two real, differently-grouped decision chains that
+        happen to produce the same condition/result text) and must never be
+        collapsed into each other just because their tables read alike. A
+        non-block rule is dropped only when it duplicates a rule that
+        carries a `decision_block_id` or is flagged
+        `deterministic_decision_table` - the concrete, narrow case this pass
+        targets - never when it merely duplicates another plain rule.
+        """
+        exact_groups: Dict[Tuple[frozenset, Tuple[Tuple[str, str], ...]], List[int]] = {}
+        condition_groups: Dict[Tuple[frozenset, Tuple[str, ...]], List[int]] = {}
+        for index, rule in enumerate(displayed):
+            fields = frozenset(self._field_token_set(rule))
+            if not fields:
+                continue
+            signature = self._decision_table_signature(rule)
+            if signature is not None:
+                exact_groups.setdefault((fields, signature), []).append(index)
+            condition_signature = self._decision_table_condition_signature(rule)
+            if condition_signature is not None:
+                condition_groups.setdefault((fields, condition_signature), []).append(index)
+
+        def _is_canonical(idx: int) -> bool:
+            return self._is_canonical_decision_rule(displayed[idx])
+
+        drop_indices: set = set()
+        for groups in (exact_groups, condition_groups):
+            for indices in groups.values():
+                if len(indices) < 2:
+                    continue
+                canonical = [idx for idx in indices if _is_canonical(idx)]
+                if not canonical:
+                    continue
+                non_canonical = [idx for idx in indices if idx not in canonical]
+                drop_indices.update(non_canonical)
+                # Two CANONICAL entries can still be the same underlying
+                # statement rather than two legitimately distinct decision
+                # chains that happen to share a signature (see the
+                # docstring's `CustomerEntityID`/`UCIF_ID` example - that
+                # case has TWO real `decision_block_id`s). Only when one
+                # canonical member is a block projection
+                # (`decision_block_id` set) and another is an ungrouped
+                # deterministic rule with NO block id is it safe to assume
+                # the ungrouped one is a stray duplicate of the block: a
+                # rule never independently re-derives real ground-truth
+                # content identical down to the condition text unless it is
+                # describing the exact same statement the block already
+                # covers.
+                blocked = [idx for idx in canonical if displayed[idx].get("decision_block_id")]
+                unblocked = [idx for idx in canonical if not displayed[idx].get("decision_block_id")]
+                if blocked and unblocked:
+                    drop_indices.update(unblocked)
+
+        if drop_indices:
+            displayed = [rule for index, rule in enumerate(displayed) if index not in drop_indices]
+        return self._suppress_partial_decision_tables_for_single_write_fields(displayed, merged_extraction)
+
+    def _suppress_partial_decision_tables_for_single_write_fields(
+        self,
+        displayed: List[Dict[str, Any]],
+        merged_extraction: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Drop a non-canonical rule whose own decision table is only a
+        PARTIAL restatement of a canonical (deterministic-block) table for
+        the same single field - e.g. a model-authored rule asserting only
+        `DpdDays > 90 -> 'BUCKET_90_PLUS'` when a deterministically
+        recovered block already documents the full 6-branch DpdBucket
+        ladder that this one row is a (slightly reworded) fragment of.
+
+        `_suppress_content_duplicate_decision_tables` only catches an
+        EXACT row-sequence match; it cannot catch a subset, so a model
+        that free-associates a single real branch into its own one-row
+        "decision table" survives it untouched and shows up as a second,
+        contradictory-looking source of truth for the same field.
+
+        Only fires when the field is written by exactly one statement
+        anywhere in the procedure - since two genuine decision tables for
+        the same field (written by separate statements, e.g. against two
+        different tables) could otherwise legitimately share a row or two.
+        Combined with the row-subset check below (a much stronger signal
+        than field identity alone, since it also requires real overlapping
+        condition text), this stays safe even without per-table scoping.
+        """
+        single_write_fields = {
+            field for field, _table in self._single_write_statement_field_tables(merged_extraction)
+        }
+        if not single_write_fields:
+            return displayed
+
+        def _is_canonical(rule: Dict[str, Any]) -> bool:
+            return self._is_canonical_decision_rule(rule)
+
+        canonical_condition_sets: Dict[str, "set[str]"] = {}
+        for rule in displayed:
+            if not _is_canonical(rule):
+                continue
+            fields = self._field_token_set(rule)
+            if len(fields) != 1:
+                continue
+            field = next(iter(fields))
+            if field not in single_write_fields:
+                continue
+            condition_signature = self._decision_table_condition_signature(rule)
+            if not condition_signature or len(condition_signature) < 2:
+                continue
+            canonical_condition_sets.setdefault(field, set()).update(condition_signature)
+
+        if not canonical_condition_sets:
+            return displayed
+
+        result = []
+        for rule in displayed:
+            if _is_canonical(rule):
+                result.append(rule)
+                continue
+            fields = self._field_token_set(rule)
+            condition_signature = self._decision_table_condition_signature(rule)
+            if (
+                len(fields) == 1
+                and condition_signature
+                and next(iter(fields)) in canonical_condition_sets
+                and set(condition_signature) <= canonical_condition_sets[next(iter(fields))]
+            ):
+                continue
+            result.append(rule)
+        return result
+
+    @staticmethod
+    def _rule_target_table(rule: Dict[str, Any]) -> str:
+        for item in rule.get("decision_context") or []:
+            text = str(item or "")
+            if text.startswith("Target:"):
+                return text[len("Target:"):].strip()
+        return ""
+
+    @staticmethod
+    def _rule_alias_map(rule: Dict[str, Any]) -> Dict[str, str]:
+        """Resolve the table aliases (`A`, `B`, `dpd`, `ABD`, ...) a rule's
+        own condition/outcome/eligibility text uses back to the real table
+        names named in that same rule's `FROM ... JOIN ...` source context,
+        e.g. `{"A": "PRO.ACCOUNTCAL", "DPD": "#DPD"}`.
+
+        Every rule already carries its own FROM/JOIN text verbatim in
+        `decision_context` (rendered under "Source context"), so no new
+        parsing pass over the original SQL is needed here - this only reuses
+        `_extract_from_clause_alias_map` (the same alias-resolution regex
+        already used by deterministic table-operation extraction) against
+        text the rule already has. Returns an empty map when there is no
+        FROM/JOIN text to resolve from, so callers can treat "no map" and
+        "map found nothing" the same way (both leave display text as-is).
+        """
+        context_lines = [
+            str(item) for item in (rule.get("decision_context") or [])
+            if not str(item).startswith("Target:") and not str(item).startswith("Expression:")
+        ]
+        if not context_lines:
+            return {}
+        # `_extract_from_clause_alias_map` expects the clause text with the
+        # leading "FROM" keyword already stripped (matching how its other
+        # caller in this module slices it out of the raw statement) - a
+        # rule's own `decision_context` still has it, or the first
+        # comma/alias in it silently fails to match and its alias is lost.
+        joined = " ".join(context_lines)
+        joined = re.sub(r"(?i)^\s*FROM\b", "", joined)
+        return _extract_from_clause_alias_map(joined)
+
+    @classmethod
+    def _merged_alias_map(cls, rules: List[Dict[str, Any]]) -> Dict[str, str]:
+        """Union the alias maps of every rule in a displayed group (e.g. the
+        several source rows behind one `_render_decision_block` table).
+        Rows from the same decision chain/statement share one FROM clause,
+        so this is normally just that one map repeated; when it isn't (rare:
+        rules grouped by name rather than a shared chain), an earlier rule's
+        resolution for a given alias wins rather than being silently
+        overwritten by a later, possibly-unrelated rule reusing the same
+        short alias letter for a different table.
+        """
+        merged: Dict[str, str] = {}
+        for rule in rules:
+            for alias, table in cls._rule_alias_map(rule).items():
+                merged.setdefault(alias, table)
+        return merged
+
+    def _disambiguate_duplicate_names(self, displayed: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Two distinct rules sharing one rule_name read as duplicates in the
+        overview/summary table even though they act on different fields or
+        tables (e.g. the same grouping ladder recomputed per CustomerEntityID
+        and per UCIF_ID, or two same-named CRUD steps on different target
+        tables). Give same-named rules a distinguishing suffix - by output
+        field first, then target table, then (if a target table is itself
+        shared, e.g. one populates a temp table and another transforms it
+        in place) a plain ordinal - so the report never shows two different
+        rules under one indistinguishable title, in either the summary
+        table or the rule-detail headings (both `rule_name` and
+        `decision_block_title` are updated, since `_render_decision_block`
+        prefers the latter). Exact duplicates (same name AND same
+        field/target) are left untouched; that is a dedup problem, not a
+        naming problem.
+        """
+        groups: Dict[str, List[int]] = {}
+        for index, rule in enumerate(displayed):
+            name = str(rule.get("rule_name") or "").strip()
+            if not name:
+                continue
+            groups.setdefault(name.casefold(), []).append(index)
+        for indices in groups.values():
+            if len(indices) < 2:
+                continue
+            members = [displayed[i] for i in indices]
+            fields = [str(rule.get("output_field") or "").strip() for rule in members]
+            targets = [self._rule_target_table(rule) for rule in members]
+            if len(set(fields)) > 1:
+                suffixes = fields
+            else:
+                # Targets may not vary either (e.g. one SELECT INTO
+                # populates a temp table and a later UPDATE transforms it
+                # in place) - still use them as a best-effort suffix; the
+                # ordinal fallback below breaks whatever tie remains.
+                suffixes = targets
+            base_name = str(members[0].get("rule_name") or "").strip()
+            new_names = [f"{base_name} ({suffix})" if suffix else base_name for suffix in suffixes]
+            # A field/target suffix can itself still collide (two rules on
+            # the very same temp table, one populating it and one
+            # transforming it in place) - fall back to a plain ordinal only
+            # for whichever of those still tie.
+            seen_counts: Dict[str, int] = {}
+            for name in new_names:
+                seen_counts[name] = seen_counts.get(name, 0) + 1
+            running: Dict[str, int] = {}
+            for index, name in zip(indices, new_names):
+                if seen_counts[name] > 1:
+                    running[name] = running.get(name, 0) + 1
+                    name = f"{name} [{running[name]}]"
+                displayed[index] = dict(displayed[index])
+                displayed[index]["rule_name"] = name
+                displayed[index]["decision_block_title"] = name
         return displayed
 
     def _business_rules_section(
@@ -983,14 +1868,121 @@ class ReportFormatterAgent:
             # represented the complete chain in one rule.  Group size is not
             # a safe proxy for structural control flow.
             has_structural_block = bool(str(group[0].get("decision_block_id") or "").strip())
-            if len(group) > 1 or has_structural_block:
+            if group[0].get("decision_tables"):
+                lines.extend(self._render_statement_decisions(idx, group[0]))
+            elif len(group) > 1 or has_structural_block:
                 lines.extend(self._render_decision_block(idx, group))
             else:
                 lines.extend(self._render_business_rule_block(idx, group[0]))
             lines.append("")
         return "\n".join(lines).strip()
 
+    @staticmethod
+    def _rule_is_conflicting(rule: Dict[str, Any]) -> bool:
+        """`CONFLICT` specifically (not `LLM_ONLY`/`UNRESOLVED`) means
+        reconciliation has actual proof this rule's claim contradicts the
+        deterministic parse of the source SQL - not merely "unverifiable",
+        but demonstrably wrong. `LLM_ONLY`/`UNRESOLVED` rules have no
+        deterministic evidence to check against either way, so there is no
+        proof to act on and they are left alone.
+        """
+        return str(rule.get("reconciliation_status") or "").strip().upper() == "CONFLICT"
+
+    @classmethod
+    def _exclude_conflicting_rules(cls, rules: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
+        """Drop every rule reconciliation proved contradicts the source SQL
+        from the main business report entirely, rather than showing a
+        fabricated decision table alongside a "needs review" warning.
+
+        Earlier this flagged a `CONFLICT` rule in place with a warning
+        banner and, for a while, the literal deterministic evidence quoted
+        underneath it. In practice that still put an admittedly-wrong
+        decision table (e.g. a model-invented `DpdDays <= 30 -> 1` bucket
+        scheme that exists nowhere in the source) directly in front of a
+        business reader, just with a caveat attached - and cluttered the
+        report with pipeline-status language ("needs review", "source SQL
+        actually shows...") the business document is not supposed to
+        carry (see `_business_rule_overview_table`'s docstring). Once
+        reconciliation has *proof* a claim is wrong, the correct behavior
+        is to not assert it at all - a real SQL construct the model
+        conflicted with either already has its own correct rule elsewhere
+        in this same report (from `ensure_decision_chain_coverage`'s
+        deterministic backfill), or, if it doesn't, omission is still
+        safer than a wrong table shown as fact. The count of what was
+        removed is surfaced once, in plain language, via
+        `_conflict_suppression_finding` under Findings / Needs Review -
+        never per-rule, never with internal status names.
+        """
+        kept: List[Dict[str, Any]] = []
+        suppressed = 0
+        for rule in rules:
+            if isinstance(rule, dict) and cls._rule_is_conflicting(rule):
+                suppressed += 1
+                continue
+            kept.append(rule)
+        return kept, suppressed
+
+    @staticmethod
+    def _conflict_suppression_finding(suppressed_count: int) -> List[str]:
+        if suppressed_count <= 0:
+            return []
+        plural = "s" if suppressed_count != 1 else ""
+        return [
+            f"{suppressed_count} claim{plural} generated from this source could not be "
+            "confirmed against the SQL and were left out of the Business Rules section "
+            "above rather than shown as fact."
+        ]
+
+    def _render_statement_decisions(self, idx, rule):
+        alias_map = self._rule_alias_map(rule)
+        lines = [f"### R{idx} — {rule['rule_name']}", "",
+                 f"**Affected Field:** `{rule['output_field']}`", "",
+                 rule['business_meaning']]
+        # Eligibility ("Applies to") is business-facing prose/predicate text
+        # and gets aliases resolved to real table names like every other
+        # rendered rule field. "Source context" is the literal FROM/JOIN
+        # evidence itself and stays raw on purpose, same as the
+        # `preserve_sql=True` decision tables below it.
+        for label, values, clean in (
+            ("Applies to", rule.get('eligibility', []), True),
+            ("Source context", rule.get('decision_context', []), False),
+        ):
+            if values:
+                lines.extend(["", f"**{label}:**", ""])
+                lines.extend(
+                    f"- {self._field_references_for_display(value, alias_map) if clean else value}"
+                    for value in values
+                )
+        if rule.get('execution_semantics'):
+            lines.extend(["", "**Evaluation order (within each field):**", "",
+                          rule['execution_semantics']])
+        for table in rule['decision_tables']:
+            lines.extend(["", f"#### Decision Logic — {table['output_field']}", ""])
+            expressions = [
+                self._field_references_for_display(item, alias_map)
+                for item in table.get('decision_context', []) if item.startswith('Expression:')
+            ]
+            lines.extend(f"- {item}" for item in expressions)
+            if expressions:
+                lines.append("")
+            lines.extend(self._decision_logic_block(
+                table.get('decision_logic_rows', []), preserve_sql=True, alias_map=alias_map
+            ))
+        return lines
+
     def _render_decision_block(self, idx: int, rules: List[Dict[str, Any]]) -> List[str]:
+        source_sql = any(rule.get("source_chain_id") for rule in rules)
+        # `_source_assignment_text` is a deliberate raw-fidelity path (see
+        # its own docstring) and is left untouched; only the alias-cleaning
+        # `_assignment_text` path gets the resolved alias map, so a real
+        # table name (`PRO.ACCOUNTCAL.Field`) shows up in place of a bare,
+        # unexplained alias (`A.Field`) instead of the alias being silently
+        # dropped to just `Field`.
+        alias_map = self._merged_alias_map(rules)
+        if source_sql:
+            assignment_text = self._source_assignment_text
+        else:
+            assignment_text = lambda value: self._assignment_text(value, alias_map)
         names = self._distinct_text([self._business_rule_name(rule, idx) for rule in rules])
         authored_block_title = next(
             (
@@ -1009,9 +2001,9 @@ class ReportFormatterAgent:
                 action = str(rule.get("action") or "").strip()
                 for row in rows:
                     condition = str(row.get("condition") or "").strip()
-                    outcome = self._assignment_text(row.get("outcome") or "")
+                    outcome = assignment_text(row.get("outcome") or "")
                     assignments = [
-                        self._assignment_text(item)
+                        self._assignment_text(item, alias_map)
                         for item in (row.get("assignments") or [])
                     ]
                     # A model may put a secondary branch result in the
@@ -1022,7 +2014,7 @@ class ReportFormatterAgent:
                     if outcome:
                         result_values = [*assignments, outcome]
                     else:
-                        result_values = [*assignments, self._field_references_for_display(action)] if action else assignments
+                        result_values = [*assignments, self._field_references_for_display(action, alias_map)] if action else assignments
                     table_rows.append((condition, "; ".join(self._distinct_text(result_values))))
 
                 # A rule-level action can contain an additional assignment
@@ -1031,7 +2023,7 @@ class ReportFormatterAgent:
                 if action and self._action_has_unrepresented_result(
                     action, [value for row in table_rows for value in row[1:]]
                 ):
-                    table_rows.append(("", self._field_references_for_display(action)))
+                    table_rows.append(("", self._field_references_for_display(action, alias_map)))
             else:
                 condition = str(rule.get("condition") or "").strip()
                 result = str(rule.get("action") or rule.get("business_meaning") or "").strip()
@@ -1044,12 +2036,13 @@ class ReportFormatterAgent:
         lines.extend([
             f"**{field_label}:** `{', '.join(affected)}`" if affected and affected[0] != "Not specified" else "**Affected Field:** Not specified",
             "",
-            "**Summary:**",
-            "",
         ])
-        lines.extend(f"- {value}" for value in explanations)
+        if explanations != [_NOT_DETERMINED] or not any(rule.get("execution_semantics") for rule in rules):
+            lines.extend(["**Summary:**", ""])
+            lines.extend(f"- {value}" for value in explanations)
         eligibility = self._distinct_text([
-            item for rule in rules for item in self._rule_text_lines(rule.get("eligibility"))
+            self._field_references_for_display(item, alias_map)
+            for rule in rules for item in self._rule_text_lines(rule.get("eligibility"))
         ])
         if eligibility:
             lines.extend(["", "**Applies to:**", ""])
@@ -1068,7 +2061,7 @@ class ReportFormatterAgent:
         lines.extend(self._decision_logic_block([
             {"condition": condition, "outcome": outcome}
             for condition, outcome in table_rows
-        ]))
+        ], alias_map=alias_map))
         return lines
 
     def _decision_block_explanations(
@@ -1077,7 +2070,7 @@ class ReportFormatterAgent:
         """Use only concise LLM-authored summaries above the branch table."""
         table_keys = {
             re.sub(r"\s+", " ", str(value or "")).strip().casefold()
-            for value in table_content
+            for value in [*table_content, *[rule.get("execution_semantics", "") for rule in rules]]
         }
         explanations: List[str] = []
         for rule in rules:
@@ -1107,18 +2100,25 @@ class ReportFormatterAgent:
         return "Decision block"
 
     def _render_business_rule_block(self, idx: int, rule: Dict[str, Any]) -> List[str]:
+        alias_map = self._rule_alias_map(rule)
         rule_name = self._business_rule_name(rule, idx)
         output_field = self._business_rule_output(rule)
         decision_logic_rows = self._decision_logic_rows(rule)
         meaning = str(rule.get("business_meaning") or "").strip()
         summary_values = self._distinct_text([
-            self._field_references_for_display(meaning),
-            *self._rule_text_lines(rule.get("tie_priority_handling")),
-            *self._rule_text_lines(rule.get("default")),
-            *self._rule_text_lines(rule.get("when_not_eligible")),
+            self._field_references_for_display(meaning, alias_map),
+            *(self._field_references_for_display(item, alias_map)
+              for item in self._rule_text_lines(rule.get("tie_priority_handling"))),
+            *(self._field_references_for_display(item, alias_map)
+              for item in self._rule_text_lines(rule.get("default"))),
+            *(self._field_references_for_display(item, alias_map)
+              for item in self._rule_text_lines(rule.get("when_not_eligible"))),
         ])
 
-        eligibility_items = self._rule_text_lines(rule.get("eligibility"))
+        eligibility_items = [
+            self._field_references_for_display(item, alias_map)
+            for item in self._rule_text_lines(rule.get("eligibility"))
+        ]
 
         lines = [f"### R{idx} — {rule_name}", ""]
         lines.append(f"**Affected Field:** `{output_field}`" if output_field != "Not specified" else "**Affected Field:** Not specified")
@@ -1139,7 +2139,7 @@ class ReportFormatterAgent:
         if decision_logic_rows:
             lines.append("### Decision Logic")
             lines.append("")
-            lines.extend(self._decision_logic_block(decision_logic_rows))
+            lines.extend(self._decision_logic_block(decision_logic_rows, alias_map=alias_map))
             lines.append("")
 
         return lines
@@ -1555,7 +2555,11 @@ class ReportFormatterAgent:
         The verification summary intentionally includes reconciliation and
         validation details. The main report gets the same rule inventory in
         a presentation-only form so it remains useful without exposing
-        pipeline status or provenance identifiers.
+        pipeline status or provenance identifiers. Rules reconciliation
+        proved contradict the source SQL are removed before this table is
+        ever built - see `_exclude_conflicting_rules` - rather than shown
+        here with a caveat attached, so every rule in this table is a claim
+        the report actually stands behind.
         """
         header = ["| Rule | Affected Field | Business Purpose |", "|---|---|---|"]
         if not rules:
@@ -1720,24 +2724,97 @@ class ReportFormatterAgent:
     # Supplementary technical sections
     # ------------------------------------------------------------------
 
+    @classmethod
+    def _normalize_calculation_expression(cls, expression: Any) -> str:
+        """Normalize a calculation's expression text for duplicate
+        detection: reduce dotted field references to their bare trailing
+        segment, treat `ISNULL(...)`/`COALESCE(...)` as the same call (both
+        are the null-coalescing function, and different synthesis sections
+        have been observed to paraphrase one as the other for the literal
+        same statement), collapse whitespace, and strip one fully-wrapping
+        parenthesis pair - the same normalization `_normalize_condition_text`
+        uses for decision-table rows, reused here because sectioned
+        synthesis produces the identical failure mode for calculations: the
+        same formula re-derived by two sections, one wrapping it in an
+        outer `(...)` the other doesn't, which a plain whitespace-only
+        comparison (the previous behavior here) does not catch.
+        """
+        text = cls._dedup_field_bare_name(str(expression or ""))
+        text = re.sub(r"(?i)\bISNULL\s*\(", "COALESCE(", text)
+        return cls._normalize_condition_text(text)
+
+    @staticmethod
+    def _calculation_target_parts(calculation: Dict[str, Any]) -> Tuple[str, str]:
+        """Split *what* a calculation computes into `(table_part,
+        field_part)`, for pairing with its normalized expression in the
+        duplicate-detection key. `field_part` is always the bare trailing
+        segment; `table_part` is whatever qualifies it (schema/table/alias)
+        or "" when the target has no qualifier at all (e.g. "Not
+        specified", or a bare field name). An empty `table_part` is never
+        treated as "no table" for matching purposes - see
+        `_calculation_is_duplicate`, which lets it match any table rather
+        than requiring an exact match, since a missing qualifier means the
+        table wasn't captured, not that it's a different one. Two
+        genuinely different, both-qualified tables (e.g.
+        `AccountHistory.MovementToDate` vs `CustomerHistory.
+        MovementToDate`) still never match.
+        """
+        target = (
+            calculation.get("output_field") or calculation.get("name")
+            or calculation.get("result") or calculation.get("field")
+            or calculation.get("metric") or ""
+        )
+        text = re.sub(r"\s+", "", str(target)).strip()
+        if "." in text:
+            table_part, _, field_part = text.rpartition(".")
+            return table_part.casefold(), field_part.casefold()
+        return "", text.casefold()
+
+    @staticmethod
+    def _calculation_is_duplicate(
+        known: List[Tuple[str, str, str]], table_part: str, field_part: str, expression_key: str
+    ) -> bool:
+        for known_table, known_field, known_expression in known:
+            if known_expression != expression_key or known_field != field_part:
+                continue
+            if known_table and table_part and known_table != table_part:
+                continue
+            return True
+        return False
+
     def _calculations(
         self,
         synthesis: SynthesisResult,
         merged_extraction: Optional[Dict[str, Any]] = None,
     ) -> str:
-        calcs = list(synthesis.data.get("calculations", []) or [])
-        known_expressions = {
-            re.sub(r"\s+", "", str(c.get("expression") or c.get("formula") or "")).casefold()
-            for c in calcs if isinstance(c, dict)
-        }
+        calcs = []
+        seen_calculations = set()
+        known_expressions: List[Tuple[str, str, str]] = []
+        for calculation in synthesis.data.get("calculations", []) or []:
+            if not isinstance(calculation, dict):
+                continue
+            key = json.dumps(calculation, sort_keys=True, default=str)
+            expression_key = self._normalize_calculation_expression(
+                calculation.get("expression") or calculation.get("formula") or ""
+            )
+            table_part, field_part = self._calculation_target_parts(calculation)
+            if key in seen_calculations:
+                continue
+            if expression_key and self._calculation_is_duplicate(known_expressions, table_part, field_part, expression_key):
+                continue
+            calcs.append(calculation)
+            seen_calculations.add(key)
+            if expression_key:
+                known_expressions.append((table_part, field_part, expression_key))
         for calculation in (merged_extraction or {}).get("calculations", []) or []:
             if not isinstance(calculation, dict):
                 continue
             expression = str(calculation.get("expression") or calculation.get("formula") or "")
-            key = re.sub(r"\s+", "", expression).casefold()
-            if key and key not in known_expressions:
+            expression_key = self._normalize_calculation_expression(expression)
+            table_part, field_part = self._calculation_target_parts(calculation)
+            if expression_key and not self._calculation_is_duplicate(known_expressions, table_part, field_part, expression_key):
                 calcs.append(calculation)
-                known_expressions.add(key)
+                known_expressions.append((table_part, field_part, expression_key))
         if not calcs:
             return "## Calculations\n\n_None identified._"
         lines = []
@@ -1752,14 +2829,18 @@ class ReportFormatterAgent:
             expression = calculation.get("expression") or calculation.get("formula") or "Not specified"
             feeds = self._calculation_output(calculation, merged_extraction)
             used_by = self._calculation_used_by(calculation, merged_extraction, feeds)
+            display_expression = self._field_references_for_display(expression)
             lines.extend([
                 f"### Calculation — {self._field_for_display(name)}",
                 "",
                 "**Expression:**",
-                self._field_references_for_display(expression),
+                "",
+                "```sql",
+                self._pretty_print_expression(display_expression),
+                "```",
                 "",
                 "**Output:**",
-                self._field_for_display(feeds),
+                f"`{self._field_for_display(feeds)}`",
                 "",
                 "**Used By:**",
                 str(used_by),
@@ -1768,6 +2849,37 @@ class ReportFormatterAgent:
         if not lines:
             return "## Calculations\n\n_None identified._"
         return "## Calculations\n\n" + "\n".join(lines)
+
+    @staticmethod
+    def _pretty_print_expression(expression: Any) -> str:
+        """Reformat a `CASE ... END` expression across multiple lines (one
+        `WHEN`/`ELSE` branch per line) so a reader can actually read and
+        reuse the formula, instead of one unbroken line that regularly runs
+        past 150-200 characters for a multi-branch calculation - the exact
+        shape every multi-branch calculation in this report renders as
+        (e.g. a 3-`WHEN`-plus-`ELSE` penalty-interest formula rendered as a
+        single ~240-character line). Non-`CASE` expressions are returned
+        unchanged - a short formula (`A + B * 0.02`) already reads fine as
+        one line, and inserting breaks would only add noise with no
+        branch structure to hang them on.
+        """
+        text = str(expression or "").strip()
+        if not re.match(r"(?i)^\(?\s*CASE\b", text):
+            return text
+        # Break before each WHEN/ELSE/END keyword that starts a new branch.
+        # `END` may be followed by an alias/close-paren (e.g. `END)`), kept
+        # on the same broken-to line rather than split further.
+        broken = re.sub(r"(?i)\s+(WHEN|ELSE|END)\b", r"\n\1", text)
+        result_lines: List[str] = []
+        for raw_line in broken.split("\n"):
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            if re.match(r"(?i)^(CASE|END)\b", stripped):
+                result_lines.append(stripped)
+            else:
+                result_lines.append("    " + stripped)
+        return "\n".join(result_lines)
 
     @classmethod
     def _calculation_output(
@@ -1779,8 +2891,8 @@ class ReportFormatterAgent:
             if isinstance(value, str) and value.strip():
                 return value
         formula = str(calculation.get("expression") or calculation.get("formula") or "")
-        evidence = " ".join(cls._rule_text_lines(calculation.get("source_evidence") or calculation.get("evidence")))
-        needle = re.sub(r"\s+", " ", f"{formula} {evidence}").strip().casefold()
+        from src.parsing.expression_identity import expression_key
+        needle = expression_key(formula)
         rows = (merged_extraction or {}).get("tables_written", []) if isinstance(merged_extraction, dict) else []
         for row in rows:
             if not isinstance(row, dict):
@@ -1793,8 +2905,8 @@ class ReportFormatterAgent:
                 expression = str(item.get("expression") or item.get("value") or "")
                 if not expression:
                     continue
-                normalized_expression = re.sub(r"\s+", " ", expression).strip().casefold()
-                if normalized_expression in needle or needle in normalized_expression:
+                normalized_expression = expression_key(expression)
+                if needle and normalized_expression == needle:
                     table = str(row.get("table") or "").strip()
                     column = str(item.get("column") or item.get("target_column") or "").strip()
                     if table and column:
@@ -1825,19 +2937,57 @@ class ReportFormatterAgent:
                 return f"{operation} INTO {table}" if operation == "INSERT" else f"{operation} {table}"
         return "Not specified"
 
+    _CATCH_BLOCK_RE = re.compile(r"(?is)\bBEGIN\s+CATCH\b(?P<body>.*?)\bEND\s+CATCH\b")
+
+    @classmethod
+    def _extract_catch_block_text(cls, raw_source: str) -> str:
+        """Return the raw statement text inside the first `BEGIN CATCH ...
+        END CATCH` block in `raw_source` (T-SQL), or "" if there isn't
+        one. `END CATCH` is a distinctive enough two-word token that a
+        plain non-greedy match is safe even with nested `BEGIN...END`
+        blocks inside the CATCH body (TRY/CATCH itself never nests, so
+        there is exactly one closing `END CATCH` to find).
+        """
+        match = cls._CATCH_BLOCK_RE.search(str(raw_source or ""))
+        if not match:
+            return ""
+        body = match.group("body")
+        lines = [line for line in body.splitlines() if line.strip()]
+        return "\n".join(lines).strip()
+
     def _exception_handling(
         self,
         synthesis: SynthesisResult,
         raw_source: str = "",
         merged_extraction: Optional[Dict[str, Any]] = None,
     ) -> str:
-        summary = synthesis.data.get("exception_handling_summary") or "No explicit failure-path behavior identified."
-        summary = re.sub(
-            r"(?i)\b(?:continues?|proceeds?)\s+(?:execution|processing)\b",
-            "the source does not explicitly state whether processing continues",
-            str(summary),
-        )
-        return f"## Exception Handling\n\n{summary}"
+        llm_summary = str(synthesis.data.get("exception_handling_summary") or "").strip()
+        if llm_summary:
+            summary = re.sub(
+                r"(?i)\b(?:continues?|proceeds?)\s+(?:execution|processing)\b",
+                "the source does not explicitly state whether processing continues",
+                llm_summary,
+            )
+            return f"## Exception Handling\n\n{summary}"
+
+        # No LLM-authored summary reached this report (a truncated
+        # response, a chunk the model never saw, ...) - "No explicit
+        # failure-path behavior identified" is then not merely
+        # incomplete, it is FALSE whenever the source actually has a
+        # `BEGIN CATCH` block, which is exactly the case a reader most
+        # needs to be told about. Fall back to showing the block's own
+        # statements verbatim (organizing existing SQL evidence, not
+        # authoring a business interpretation of it) rather than denying
+        # explicit handling exists at all.
+        catch_body = self._extract_catch_block_text(raw_source)
+        if catch_body:
+            return (
+                "## Exception Handling\n\n"
+                "The procedure defines an explicit error handler "
+                "(`BEGIN CATCH ... END CATCH`). On failure, it runs:\n\n"
+                f"```sql\n{catch_body}\n```"
+            )
+        return "## Exception Handling\n\nNo explicit failure-path behavior identified."
 
     @staticmethod
     def _is_control_or_audit_table(table_name: str, write_bucket: Optional[Dict[str, Any]]) -> bool:
@@ -2072,28 +3222,37 @@ class ReportFormatterAgent:
             "Every rule counted here is still individually traceable in the Source "
             "Traceability table below - none are dropped, only grouped for display._",
         ]
+        # Wording note: since reconciliation now propagates a MATCHED result
+        # into `validation_status` (see canonicalization notes), these four
+        # statuses are reserved for the genuinely unprovable cases -
+        # unmatched claims, parser failures, weak/incomplete evidence, and
+        # real conflicting signals - not the normal case. Describe each as
+        # an unresolved/undetermined finding, not a "send this to a human
+        # for approval" workflow: this report never implies that ordinary
+        # generated rules need sign-off before being treated as correct.
         if status_counts.get("unverified"):
             lines.append(
                 "\n_Rules marked **unverified** could not be matched back to the "
-                "technical extraction or source code and should be prioritized for "
-                "human review before being treated as confirmed._"
+                "technical extraction or source code - this specific claim remains "
+                "unresolved and should not yet be treated as a confirmed business rule._"
             )
         if status_counts.get("parser_failed"):
             lines.append(
                 "\n_Rules marked **parser_failed** depend on technical evidence from "
-                "a chunk that failed structural parsing and must be treated as "
-                "uncertain until the source is reprocessed or manually reviewed._"
+                "a chunk that failed structural parsing - this specific claim remains "
+                "undetermined until the source can be reprocessed._"
             )
         if status_counts.get("insufficient_evidence"):
             lines.append(
                 "\n_Rules marked **insufficient_evidence** have some support, but the "
-                "technical extraction was incomplete or only weakly supported and "
-                "should not be treated as fully verified._"
+                "technical extraction was incomplete or only weakly supported - this "
+                "specific claim is not yet fully verified._"
             )
         if status_counts.get("ambiguous"):
             lines.append(
                 "\n_Rules marked **ambiguous** are supported only weakly or with "
-                "conflicting technical signals and need a human review before use._"
+                "genuinely conflicting technical signals - this specific claim remains "
+                "an open discrepancy, not a confirmed business rule._"
             )
         return "\n".join(lines)
 
@@ -2257,6 +3416,7 @@ class ReportFormatterAgent:
         raw_source: str = "",
         raw_merged_extraction: Optional[Dict[str, Any]] = None,
         raw_synthesis_data: Optional[Dict[str, Any]] = None,
+        extra_items: Optional[List[str]] = None,
     ) -> str:
         """Business-relevant findings only: deterministic dead-code /
         disabled-logic detection first (highest signal - these are
@@ -2291,6 +3451,29 @@ class ReportFormatterAgent:
             for item in merged_ambiguities
             if str(item).strip() and not self._is_reconciliation_diagnostic(item)
         )
+        # `pipeline.py`'s `_merge_extractions`/`_single_pass_extraction_payload`
+        # already append one "Chunk 'X' (kind) technical extraction returned
+        # malformed JSON..." ambiguity per chunk that has a parse error - the
+        # exact same fact this loop derives independently from the same
+        # `chunk_provenance` entry's `parse_error` field. Left unguarded,
+        # every chunk with a parse error produced two differently-worded
+        # findings bullets about itself (observed for real: "Chunk
+        # '00_main_body_1' (main_body) technical extraction returned
+        # malformed JSON..." from ambiguities, plus "Chunk 00_main_body_1
+        # (main_body) returned malformed JSON..." from this loop, repeated
+        # per chunk). Skip a chunk here when an existing ambiguity already
+        # names it - this loop's own bullet stays as the fallback for the
+        # (synthetic-test / future-caller) case where a chunk has a parse
+        # error but no matching ambiguity was ever recorded for it.
+        already_named_chunk_ids = {
+            chunk_id
+            for chunk_id in (
+                str(chunk.get("chunk_id") or "").strip()
+                for chunk in source_merged_extraction.get("chunk_provenance", []) or []
+                if isinstance(chunk, dict)
+            )
+            if chunk_id and any(chunk_id in str(item) for item in merged_ambiguities)
+        }
         for chunk in source_merged_extraction.get("chunk_provenance", []) or []:
             if not isinstance(chunk, dict):
                 continue
@@ -2298,6 +3481,8 @@ class ReportFormatterAgent:
             if not parse_error:
                 continue
             chunk_id = str(chunk.get("chunk_id") or "").strip() or "this chunk"
+            if chunk_id in already_named_chunk_ids:
+                continue
             chunk_kind = str(chunk.get("chunk_kind") or "").strip()
             if chunk_id == "this chunk":
                 items.append(
@@ -2314,6 +3499,8 @@ class ReportFormatterAgent:
             for item in (source_synthesis_data.get("ambiguities", []) or [])
             if str(item).strip() and not self._is_reconciliation_diagnostic(item)
         )
+
+        items.extend(str(item).strip() for item in (extra_items or []) if str(item).strip())
 
         if not items:
             return "## Findings / Needs Review\n\nNone identified."
@@ -2537,41 +3724,66 @@ class ReportFormatterAgent:
         return "Not specified"
 
     @staticmethod
-    def _field_for_display(value: Any) -> str:
-        """Remove presentation-only alias segments without mutating source data.
+    def _field_for_display(value: Any, alias_map: Optional[Dict[str, str]] = None) -> str:
+        """Resolve a presentation-only alias segment to its real table name
+        when known, otherwise remove it, without mutating source data.
 
-        Two-part values such as ``A.Field`` are alias-qualified fields. For
-        longer qualified names, preserve the first schema/table path and
-        remove only interior one-to-three-letter alias segments, e.g.
-        ``schema.Table.A.Field`` -> ``schema.Table.Field``.
+        Two-part values such as ``A.Field`` are alias-qualified fields. When
+        `alias_map` (from `_rule_alias_map`/`_merged_alias_map`) resolves the
+        alias to a real table - e.g. ``{"A": "PRO.ACCOUNTCAL"}`` - the alias
+        is replaced with that table name (``A.Field`` -> ``PRO.ACCOUNTCAL.
+        Field``) so a reader can tell which of several joined tables a field
+        came from, instead of the field silently losing that context. Only
+        when the alias is unresolvable (no map given, or the alias isn't in
+        it - e.g. a bare one-off reference with no accompanying FROM/JOIN
+        text) does this fall back to the previous behavior of just dropping
+        a one-to-three-letter alias segment. For longer qualified names,
+        preserve the first schema/table path and resolve or remove only
+        interior alias segments, e.g. ``schema.Table.A.Field`` ->
+        ``schema.Table.Field`` (or ``schema.Table.<resolved>.Field`` if `A`
+        resolves to something other than that same leading path).
         """
         text = str(value or "").strip()
         if not text or "." not in text:
             return text
         parts = text.split(".")
-        if len(parts) == 2 and re.fullmatch(r"[A-Za-z]{1,3}", parts[0]):
-            return parts[1]
+
+        def _resolve_or_strip(part: str) -> Optional[str]:
+            if alias_map:
+                resolved = alias_map.get(part.upper())
+                if resolved:
+                    return resolved
+            if re.fullmatch(r"[A-Za-z]{1,3}", part):
+                return None
+            return part
+
+        if len(parts) == 2:
+            resolved = _resolve_or_strip(parts[0])
+            return f"{resolved}.{parts[1]}" if resolved else parts[1]
         if len(parts) > 2:
-            parts = [parts[0], *(
-                part for part in parts[1:-1]
-                if not re.fullmatch(r"[A-Za-z]{1,3}", part)
-            ), parts[-1]]
+            middle = [
+                resolved
+                for resolved in (_resolve_or_strip(part) for part in parts[1:-1])
+                if resolved is not None
+            ]
+            parts = [parts[0], *middle, parts[-1]]
         return ".".join(parts)
 
     @staticmethod
-    def _field_references_for_display(value: Any) -> str:
+    def _field_references_for_display(value: Any, alias_map: Optional[Dict[str, str]] = None) -> str:
         """Clean dotted field references only while rendering text.
 
         The underlying LLM/canonical values remain unchanged. Dotted paths
         are handled as units so expressions such as ``A.Field`` and
-        ``schema.Table.A.Field`` lose only their alias segment.
+        ``schema.Table.A.Field`` have only their alias segment resolved (or,
+        absent a resolution, removed) - see `_field_for_display`.
         """
         text = str(value or "")
         dotted_path = re.compile(
             r"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*\.)+[A-Za-z_][A-Za-z0-9_]*"
         )
         return dotted_path.sub(
-            lambda match: ReportFormatterAgent._field_for_display(match.group(0)), text
+            lambda match: ReportFormatterAgent._field_for_display(match.group(0), alias_map), text
         )
 
     @staticmethod
@@ -2624,15 +3836,31 @@ class ReportFormatterAgent:
             rendered.append(rendered_row)
         return rendered
 
-    def _decision_logic_block(self, rows: List[Dict[str, str]]) -> List[str]:
+    def _decision_logic_block(
+        self,
+        rows: List[Dict[str, str]],
+        preserve_sql: bool = False,
+        alias_map: Optional[Dict[str, str]] = None,
+    ) -> List[str]:
+        """`preserve_sql=True` keeps every other character of the row's raw
+        source text untouched (spacing, casing, parenthesization, function
+        names) - it does NOT mean "leave a bare, unexplained table alias
+        (A, B, dpd) visible". `_field_references_for_display` only ever
+        rewrites dotted alias.field tokens, leaving all other text as
+        written, so it is safe to apply even in the raw-preserved path:
+        `A.FACILITYTYPE` becomes `PRO.ACCOUNTCAL.FACILITYTYPE` when the
+        alias resolves, or is stripped to bare `FACILITYTYPE` when it
+        can't (no available FROM/JOIN context) - never left as a cryptic
+        one-letter alias with no indication of which table it names.
+        """
         lines = ["| Condition | Result |", "|---|---|"]
         for row in rows:
-            condition = self._escape_table_cell(self._pretty_condition_for_display(row["condition"]))
-            results = [self._field_references_for_display(row.get("outcome") or "")]
+            condition = self._escape_table_cell(self._field_references_for_display(row["condition"], alias_map) if preserve_sql else self._pretty_condition_for_display(row["condition"], alias_map))
+            results = [self._field_references_for_display(row.get("outcome") or "", alias_map)]
             assignments = row.get("assignments") or []
             if not isinstance(assignments, list):
                 assignments = [assignments]
-            results.extend(self._assignment_text(item) for item in assignments if str(item).strip())
+            results.extend(self._assignment_text(item, alias_map) for item in assignments if str(item).strip())
             outcome = self._escape_table_cell("; ".join(self._distinct_text(results)))
             lines.append(f"| {condition} | {outcome} |")
         return lines
@@ -2654,18 +3882,26 @@ class ReportFormatterAgent:
         return result
 
     @staticmethod
-    def _assignment_text(value: Any) -> str:
+    def _source_assignment_text(value: Any) -> str:
+        if isinstance(value, dict):
+            field = value.get("field") or value.get("column") or value.get("target")
+            result = value.get("value", value.get("expression", value.get("result", "")))
+            return f"{field} := {result}" if field else str(result)
+        return str(value or "").strip()
+
+    @staticmethod
+    def _assignment_text(value: Any, alias_map: Optional[Dict[str, str]] = None) -> str:
         if isinstance(value, dict):
             field = value.get("field") or value.get("column") or value.get("target")
             result = value.get("value") or value.get("expression") or value.get("result")
             if field and result:
-                return f"{ReportFormatterAgent._field_for_display(field)} := {result}"
-        return ReportFormatterAgent._field_references_for_display(value).strip()
+                return f"{ReportFormatterAgent._field_for_display(field, alias_map)} := {result}"
+        return ReportFormatterAgent._field_references_for_display(value, alias_map).strip()
 
     @staticmethod
-    def _pretty_condition_for_display(condition: str) -> str:
+    def _pretty_condition_for_display(condition: str, alias_map: Optional[Dict[str, str]] = None) -> str:
         """Return the LLM-authored condition without semantic rewriting."""
-        return ReportFormatterAgent._field_references_for_display(condition)
+        return ReportFormatterAgent._field_references_for_display(condition, alias_map)
 
     # ------------------------------------------------------------------
     # Review-priority icon / escaping / truncation

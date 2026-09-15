@@ -17,6 +17,7 @@ truncate mid-synthesis:
 """
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -226,10 +227,19 @@ def test_merge_section_results_concatenates_rules_and_dedupes_text_fields():
     merged = RuleSynthesizerAgent.merge_section_results([first, second])
 
     assert merged.data["purpose_summary"] == "Handles setup."
+    # `step_by_step_flow` is a per-section *full-procedure* narrative, not a
+    # per-section-contributed list (every section is prompted to describe
+    # "the" flow, not just its own slice) - see `merge_section_results`'s
+    # comment. Concatenating every section's attempt was observed to
+    # produce heavily duplicated near-identical steps in a live report, so
+    # the merge keeps only the single section with the most steps (here,
+    # both sections have 2 - the first one wins the tie) rather than
+    # concatenating. This does mean a genuinely unique step that only a
+    # shorter section captured ("Assign SMA class.") is not carried
+    # through; that is an accepted, documented trade-off.
     assert merged.data["step_by_step_flow"] == [
         "Drop temp tables.",
         "Load accounts.",
-        "Assign SMA class.",
     ]
     assert [r["rule_id"] for r in merged.data["business_rules"]] == ["r1", "r2"]
     assert merged.data["ambiguities"] == [
@@ -289,11 +299,21 @@ class _RecordingSynthesizer:
     call and returns one distinguishable rule per call, while delegating
     the real sectioning decisions to an actual `RuleSynthesizerAgent`
     instance so the pipeline is exercised against real planning logic.
+
+    Section calls now run concurrently (see `_run_rule_synthesis`), so this
+    must be safe to call from multiple threads at once, and the returned
+    `rule_id` must be derived from each call's own content rather than a
+    shared call counter - counting completions as they race in gives a
+    result whose *identity* depends on scheduling, not on which section it
+    actually came from, even though `merge_section_results` still receives
+    the per-section results in the original, stable section order (that
+    ordering comes from `ThreadPoolExecutor.map`, not from this recorder).
     """
 
     def __init__(self, delegate: RuleSynthesizerAgent):
         self._delegate = delegate
         self.calls: List[Dict[str, Any]] = []
+        self._lock = threading.Lock()
 
     def requires_sectioned_synthesis(self, raw_source: str) -> bool:
         return self._delegate.requires_sectioned_synthesis(raw_source)
@@ -302,12 +322,15 @@ class _RecordingSynthesizer:
         return self._delegate.plan_synthesis_sections(chunks, raw_source)
 
     def synthesize(self, **kwargs) -> SynthesisResult:
-        self.calls.append(kwargs)
-        rule_id = f"rule_{len(self.calls)}"
+        with self._lock:
+            self.calls.append(kwargs)
+        conditions = (kwargs.get("merged_extraction") or {}).get("conditions") or []
+        first_chunk_id = conditions[0]["source_chunk_id"] if conditions else "none"
+        rule_id = f"rule_{first_chunk_id}"
         return SynthesisResult(
             data={
-                "purpose_summary": f"Section {len(self.calls)} summary.",
-                "step_by_step_flow": [f"Section {len(self.calls)} step."],
+                "purpose_summary": f"Section {first_chunk_id} summary.",
+                "step_by_step_flow": [f"Section {first_chunk_id} step."],
                 "business_rules": [{"rule_id": rule_id, "rule_name": rule_id}],
                 "calculations": [],
                 "exception_handling_summary": "",
@@ -322,6 +345,10 @@ def _make_bare_pipeline() -> LogicRulesExtractorPipeline:
     pipeline.model_name = "test-model"
     pipeline.provider = "test"
     pipeline.project_root = Path(__file__).resolve().parent.parent
+    # `_run_rule_synthesis` runs sections concurrently via a
+    # ThreadPoolExecutor sized from `chunk_workers` - a bare `__new__`
+    # instance skips `__init__`, so this must be set explicitly.
+    pipeline.chunk_workers = LogicRulesExtractorPipeline._resolve_chunk_workers(None)
     return pipeline
 
 
@@ -349,7 +376,7 @@ def test_run_rule_synthesis_uses_single_call_for_small_object():
         telemetry_tracker=None,
     )
     assert len(recorder.calls) == 1
-    assert result.data["business_rules"] == [{"rule_id": "rule_1", "rule_name": "rule_1"}]
+    assert result.data["business_rules"] == [{"rule_id": "rule_none", "rule_name": "rule_none"}]
 
 
 def test_run_rule_synthesis_sections_large_object_and_merges_results():
@@ -409,11 +436,16 @@ def test_run_rule_synthesis_sections_large_object_and_merges_results():
         assert len(call["raw_source"]) < len(raw_source)
         seen_chunk_ids = {c["source_chunk_id"] for c in call["merged_extraction"]["conditions"]}
         assert seen_chunk_ids  # non-empty scoped slice
-    # Results from every section were merged into one rule list, one per
-    # section call, in call order.
-    assert [r["rule_id"] for r in result.data["business_rules"]] == [
-        f"rule_{i}" for i in range(1, len(recorder.calls) + 1)
+    # Section calls run concurrently, so calls may land in `recorder.calls`
+    # in a scheduling-dependent order - but the merged result must still
+    # reflect the stable, original section order (planned once up front by
+    # `plan_synthesis_sections`), one rule per section, never reordered or
+    # dropped by running them in parallel.
+    expected_sections = delegate.plan_synthesis_sections(chunks, raw_source)
+    expected_rule_ids = [
+        f"rule_{section['chunk_ids'][0]}" for section in expected_sections
     ]
+    assert [r["rule_id"] for r in result.data["business_rules"]] == expected_rule_ids
 
 
 # --------------------------------------------------------------------------
@@ -451,6 +483,58 @@ def test_merge_section_results_drops_degenerate_step_and_keeps_clean_ones():
     merged = RuleSynthesizerAgent.merge_section_results([first, second])
     assert merged.data["step_by_step_flow"] == ["Reads account data."]
     assert any("repetition-degeneration" in w for w in merged.guardrail_warnings)
+
+
+def test_merge_section_results_drops_degenerate_and_truncated_ambiguities():
+    # Regression for a real live-generated report
+    # (samples/output/1_PRO.SMA_MARKING...): the "ambiguities" array had no
+    # degenerate-repetition screen at all (unlike business_rules and
+    # step_by_step_flow), so garbage fragments from a truncated model
+    # response ("SMA_x", "SMA_SMA_", "SMA_") and a cut-off sentence with an
+    # unclosed quote ("Chunk '00_main_body") reached the final report as
+    # standalone Findings bullets.
+    first = _result(ambiguities=["A genuine, complete ambiguity note."])
+    second = _result(ambiguities=[
+        "A genuine, complete ambiguity note.",
+        _garbage_text("SMA_"),
+        "Chunk '00_main_body",
+    ])
+    merged = RuleSynthesizerAgent.merge_section_results([first, second])
+    assert merged.data["ambiguities"] == ["A genuine, complete ambiguity note."]
+    assert any("repetition-degeneration" in w or "truncation" in w for w in merged.guardrail_warnings)
+
+
+def test_looks_truncated_flags_unclosed_quotes_and_short_cutoffs():
+    assert RuleSynthesizerAgent._looks_truncated("Chunk '00_main_body") is True
+    assert RuleSynthesizerAgent._looks_truncated("The value is \"unterminated") is True
+    assert RuleSynthesizerAgent._looks_truncated(
+        "Chunk '00_main_body_1' (main_body) technical extraction returned "
+        "malformed JSON and needs manual review."
+    ) is False
+    assert RuleSynthesizerAgent._looks_truncated("") is False
+
+
+def test_parse_error_housekeeping_ambiguities_excluded_from_synthesis_payload():
+    # Regression for a real live-generated report: the deterministic
+    # per-chunk "malformed JSON" housekeeping message was sent to the
+    # synthesis model as input "ambiguities", and the model paraphrased it
+    # back out in its OWN ambiguities output 3-4 different ways ("Several
+    # chunks ... need manual review", "The technical extraction for chunks
+    # '...', '...' returned malformed JSON", etc.) - all restating the same
+    # fact the deterministic path already reports once per chunk. Excluding
+    # this housekeeping shape from the model's input prevents it from ever
+    # being re-derived/restated.
+    merged_extraction = {
+        "ambiguities": [
+            "Chunk '00_main_body_1' (main_body) technical extraction returned malformed JSON and needs manual review.",
+            "Full-source technical extraction returned malformed JSON and needs manual review.",
+            "A genuine extraction-derived ambiguity about unresolved dynamic SQL.",
+        ],
+    }
+    payload = RuleSynthesizerAgent._build_compact_synthesis_payload(merged_extraction)
+    assert payload["ambiguities"] == [
+        "A genuine extraction-derived ambiguity about unresolved dynamic SQL.",
+    ]
 
 
 def test_merge_section_results_dedupes_identical_rules_across_sections():

@@ -1434,6 +1434,32 @@ def test_decision_chains_present_in_extraction_schema_for_all_dialects():
         assert "assignments" in system_text
 
 
+def test_synthesis_prompt_forbids_evaluation_order_titles_and_table_restatements():
+    # Regression test for two real observed defects (see
+    # docs/SMA_report_root_causes.md, "rule titles that read as duplicates"
+    # and "a content-level duplicate survives even with unique titles"):
+    # the model copied evaluation-order boilerplate ("First matching row
+    # wins...") verbatim into "rule_name", and separately emitted a
+    # narrative-only rule that restated, in prose, a decision table another
+    # rule already carried for the same field(s). Both were previously
+    # fixed only downstream in report_formatter.py; the prompt itself must
+    # also tell the model not to do either in the first place.
+    #
+    # Checked against the three raw "system" keys directly (not through
+    # `get_prompt_set`, which only ever accepts "oracle"/"tsql" - "default"
+    # is an unreachable fallback for this file since both real dialects are
+    # always explicitly defined, but it is still real prompt content worth
+    # keeping in sync).
+    from src.prompts.prompt_loader import _load_yaml
+
+    data = _load_yaml("rule_synthesis.yaml")
+    for dialect in ("default", "oracle", "tsql"):
+        system_text = data["system"][dialect]
+        assert "NEVER COPY EXECUTION-SEMANTICS" in system_text
+        assert "SQL type conversion still applies" in system_text
+        assert "DO NOT RESTATE A DECISION TABLE IN PROSE" in system_text
+
+
 # --------------------------------------------------------------------------
 # RuleSynthesizerAgent.revise() - the coverage-driven review pass.
 #
@@ -1716,3 +1742,198 @@ def test_auxiliary_exception_rule_is_not_duplicated_in_business_rules():
     assert RuleSynthesizerAgent._remove_auxiliary_rules(
         [rule], {"exception_handling": ["failure handler records the event"]}
     ) == []
+
+
+def _dpd_bucket_chain():
+    """Mirrors the real decision chain from
+    `samples/07_DPD_Bucket_Classification.sql`'s `DpdBucket` CASE."""
+    return {
+        "chain_type": "CASE_EXPRESSION",
+        "subject": "A.DpdDays",
+        "branches": [
+            {"branch_condition": "A.DpdDays IS NULL", "assignments": [{"field": "DpdBucket", "value": "'NOT_APPLICABLE'"}]},
+            {"branch_condition": "A.DpdDays = 0", "assignments": [{"field": "DpdBucket", "value": "'CURRENT'"}]},
+            {"branch_condition": "A.DpdDays BETWEEN 1 AND 30", "assignments": [{"field": "DpdBucket", "value": "'BUCKET_1_30'"}]},
+            {"branch_condition": "A.DpdDays BETWEEN 31 AND 60", "assignments": [{"field": "DpdBucket", "value": "'BUCKET_31_60'"}]},
+            {"branch_condition": "A.DpdDays BETWEEN 61 AND 90", "assignments": [{"field": "DpdBucket", "value": "'BUCKET_61_90'"}]},
+            {"is_catch_all": True, "branch_condition": "ELSE", "assignments": [{"field": "DpdBucket", "value": "'BUCKET_90_PLUS'"}]},
+        ],
+    }
+
+
+def test_blank_else_outcome_is_repaired_from_a_structurally_matching_decision_chain():
+    """Regression for a real live-generated report
+    (`samples/07_DPD_Bucket_Classification.sql`'s "DPD Bucket
+    Classification" report): a model-authored rule reproduced every
+    condition of the `DpdBucket` CASE exactly, but left its own final ELSE
+    row's outcome blank - apparently running low on its own output budget
+    right at the end. Because the rule already carried non-empty
+    `decision_logic_rows`, the "no rows at all" backfill never ran, and the
+    blank ELSE cell reached the rendered report. `_normalize_business_rules`
+    must now repair just that blank cell from the deterministic chain,
+    whose branch conditions line up with the rule's own rows one-for-one.
+    """
+    raw_rules = [{
+        "rule_id": "r12",
+        "rule_name": "Classify accounts into DPD buckets",
+        "output_field": "DpdBucket",
+        "fields_affected": ["DpdBucket"],
+        "condition": "DpdDays is evaluated",
+        "action": "Classify the account into a DPD bucket.",
+        "decision_logic_rows": [
+            {"condition": "DpdDays IS NULL", "outcome": "'NOT_APPLICABLE'"},
+            {"condition": "DpdDays = 0", "outcome": "'CURRENT'"},
+            {"condition": "DpdDays BETWEEN 1 AND 30", "outcome": "'BUCKET_1_30'"},
+            {"condition": "DpdDays BETWEEN 31 AND 60", "outcome": "'BUCKET_31_60'"},
+            {"condition": "DpdDays BETWEEN 61 AND 90", "outcome": "'BUCKET_61_90'"},
+            {"condition": "ELSE", "outcome": ""},  # left blank by the model
+        ],
+        "business_meaning": "Classifies DPD accounts into buckets.",
+        "rule_type": "explicit",
+        "confidence": "medium",
+        "validation_status": "verified",
+    }]
+
+    normalized = RuleSynthesizerAgent._normalize_business_rules(
+        raw_rules, technical_context={"decision_chains": [_dpd_bucket_chain()]}
+    )
+
+    rows = normalized[0]["decision_logic_rows"]
+    assert len(rows) == 6
+    assert rows[-1]["condition"] == "ELSE"
+    assert rows[-1]["outcome"] == "'BUCKET_90_PLUS'"
+    # Every other row's model-authored outcome is left exactly as-is.
+    assert rows[1]["outcome"] == "'CURRENT'"
+
+
+def test_repair_does_not_touch_a_rule_whose_conditions_do_not_line_up():
+    """A rule sharing the same output_field but with a genuinely different
+    (or shorter/reordered) set of conditions than any decision chain must
+    not be "repaired" - the structural match requires every condition to
+    line up one-for-one, in order, not just a shared field name."""
+    raw_rules = [{
+        "rule_id": "r1",
+        "rule_name": "Different classification",
+        "output_field": "DpdBucket",
+        "fields_affected": ["DpdBucket"],
+        "condition": "some other condition",
+        "action": "Assign a bucket by a different rule entirely.",
+        "decision_logic_rows": [
+            {"condition": "DpdDays <= 30", "outcome": "1"},
+            {"condition": "DpdDays > 30", "outcome": ""},
+        ],
+        "business_meaning": "Unrelated classification.",
+        "rule_type": "explicit",
+        "confidence": "medium",
+        "validation_status": "verified",
+    }]
+
+    normalized = RuleSynthesizerAgent._normalize_business_rules(
+        raw_rules, technical_context={"decision_chains": [_dpd_bucket_chain()]}
+    )
+
+    rows = normalized[0]["decision_logic_rows"]
+    assert rows[1]["outcome"] == ""  # left untouched - no structural match
+
+
+def test_repair_never_overwrites_a_non_blank_outcome():
+    """Even when a rule qualifies for repair (one blank row), any row that
+    already has its own non-blank outcome must be left exactly as the
+    model authored it, never replaced by the deterministic chain's value -
+    the repair only ever fills in what's missing."""
+    raw_rules = [{
+        "rule_id": "r1",
+        "rule_name": "Classify accounts into DPD buckets",
+        "output_field": "DpdBucket",
+        "fields_affected": ["DpdBucket"],
+        "condition": "DpdDays is evaluated",
+        "action": "Classify the account into a DPD bucket.",
+        "decision_logic_rows": [
+            {"condition": "DpdDays IS NULL", "outcome": "'NOT_APPLICABLE'"},
+            {"condition": "DpdDays = 0", "outcome": "'CURRENT_CUSTOM_TEXT'"},  # authored differently, but non-blank
+            {"condition": "DpdDays BETWEEN 1 AND 30", "outcome": "'BUCKET_1_30'"},
+            {"condition": "DpdDays BETWEEN 31 AND 60", "outcome": "'BUCKET_31_60'"},
+            {"condition": "DpdDays BETWEEN 61 AND 90", "outcome": "'BUCKET_61_90'"},
+            {"condition": "ELSE", "outcome": ""},
+        ],
+        "business_meaning": "Classifies DPD accounts into buckets.",
+        "rule_type": "explicit",
+        "confidence": "medium",
+        "validation_status": "verified",
+    }]
+
+    normalized = RuleSynthesizerAgent._normalize_business_rules(
+        raw_rules, technical_context={"decision_chains": [_dpd_bucket_chain()]}
+    )
+
+    rows = normalized[0]["decision_logic_rows"]
+    assert rows[1]["outcome"] == "'CURRENT_CUSTOM_TEXT'"
+    assert rows[-1]["outcome"] == "'BUCKET_90_PLUS'"
+
+
+def test_blank_first_row_outcome_is_repaired_even_with_a_qualified_output_field():
+    """Regression for a real live-generated report
+    (`samples/07_DPD_Bucket_Classification.sql`'s R2 "Determine DpdBucket"
+    table): the model left the FIRST branch's outcome blank (`DpdDays IS
+    NULL` -> should be 'NOT_APPLICABLE'), not the last, and authored
+    `output_field` as a fully schema-qualified reference
+    (`PRO.LoanAccountCal.DpdBucket`) rather than the bare `DpdBucket` the
+    deterministic chain's own assignments use. The old strict
+    `field.lower() == output_field.lower()` comparison never matched a
+    qualified `output_field` against the chain's bare field name, so
+    repair silently no-opped and the blank cell reached the report -
+    field comparisons must collapse to the bare trailing segment, the same
+    way condition comparisons already do.
+    """
+    raw_rules = [{
+        "rule_id": "r2",
+        "rule_name": "Determine DpdBucket",
+        "output_field": "PRO.LoanAccountCal.DpdBucket",
+        "fields_affected": ["PRO.LoanAccountCal.DpdBucket"],
+        "condition": "DpdDays is evaluated",
+        "action": "Assign a DPD bucket to each account.",
+        "decision_logic_rows": [
+            {"condition": "PRO.LoanAccountCal.DpdDays IS NULL", "outcome": ""},  # left blank by the model
+            {"condition": "PRO.LoanAccountCal.DpdDays = 0", "outcome": "'CURRENT'"},
+            {"condition": "PRO.LoanAccountCal.DpdDays BETWEEN 1 AND 30", "outcome": "'BUCKET_1_30'"},
+            {"condition": "PRO.LoanAccountCal.DpdDays BETWEEN 31 AND 60", "outcome": "'BUCKET_31_60'"},
+            {"condition": "PRO.LoanAccountCal.DpdDays BETWEEN 61 AND 90", "outcome": "'BUCKET_61_90'"},
+            {"condition": "ELSE", "outcome": "'BUCKET_90_PLUS'"},
+        ],
+        "business_meaning": "Classifies DPD accounts into buckets.",
+        "rule_type": "explicit",
+        "confidence": "medium",
+        "validation_status": "verified",
+    }]
+
+    normalized = RuleSynthesizerAgent._normalize_business_rules(
+        raw_rules, technical_context={"decision_chains": [_dpd_bucket_chain()]}
+    )
+
+    rows = normalized[0]["decision_logic_rows"]
+    assert rows[0]["condition"] == "PRO.LoanAccountCal.DpdDays IS NULL"
+    assert rows[0]["outcome"] == "'NOT_APPLICABLE'"
+
+def test_nested_list_inside_fields_affected_is_flattened():
+    """A model can return `fields_affected` with a NESTED list as one of
+    its own items (e.g. `["SeverityTier", ["FeedName", "Outcome"]]`)
+    instead of a flat list of field names. Left as-is, that inner list
+    string-reprs straight into the rendered report ("SeverityTier,
+    ['FeedName', 'Outcome']") - normalization must flatten it so every
+    downstream caller can keep assuming a flat list of scalar field names.
+    """
+    raw_rules = [
+        {
+            "rule_id": "r1",
+            "rule_name": "Insert reconciliation results",
+            "output_field": "SeverityTier",
+            "fields_affected": ["SeverityTier", ["FeedName", "Outcome", "ReconciledOn"]],
+            "business_meaning": "Insert reconciliation results.",
+            "rule_type": "explicit",
+        },
+    ]
+
+    normalized = RuleSynthesizerAgent._normalize_business_rules(raw_rules)
+
+    assert normalized[0]["fields_affected"] == ["SeverityTier", "FeedName", "Outcome", "ReconciledOn"]
+    assert not any(isinstance(item, list) for item in normalized[0]["fields_affected"])

@@ -4,6 +4,7 @@ from src.validation.coverage_check import (
     CoverageGap,
     find_coverage_gaps,
     find_decision_points,
+    format_consolidated_gap_ambiguity,
     format_gap_for_ambiguity,
 )
 from src.synthesis.rule_synthesizer import SynthesisResult
@@ -310,7 +311,9 @@ def test_empty_synthesis_triggers_revision_and_uses_revised_llm_rules(monkeypatc
     assert len(synthesizer.revise_calls) == 1
     assert "provision_amount" in synthesizer.revise_calls[0]["gaps"][0].snippet
     assert result.report == "report"
-    assert pipeline.formatter_agent.synthesis_data[-1]["business_rules"] == revised
+    final_rules = pipeline.formatter_agent.synthesis_data[-1]["business_rules"]
+    assert all(rule["rule_id"] for rule in final_rules)
+    assert [{k: v for k, v in rule.items() if k != "rule_id"} for rule in final_rules] == revised
     assert find_coverage_gaps(source, pipeline.formatter_agent.synthesis_data[-1]["business_rules"]) == []
 
 
@@ -334,8 +337,9 @@ END"""
     assert len(synthesizer.revise_calls) == 1
     assert synthesizer.revise_calls[0]["gaps"]
     final_rules = pipeline.formatter_agent.synthesis_data[-1]["business_rules"]
-    # The model's revised rule is passed through unchanged...
-    assert final_rules[0] == revised[0]
+    # Preserve authored content and allocate an identity for the revised rule.
+    assert final_rules[0]["rule_id"]
+    assert {k: v for k, v in final_rules[0].items() if k != "rule_id"} == revised[0]
     # ...and the pipeline's own deterministic guarantee
     # (`RuleSynthesizerAgent.ensure_decision_chain_coverage`) appends a
     # Decision Logic table for `risk_band` regardless of whether the model
@@ -389,6 +393,25 @@ def test_format_gap_for_ambiguity_never_fabricates_business_meaning():
     assert "review" in text.lower()
     # Must not assert what the logic *means* - only that it needs review.
     assert "business rule" not in text.lower() or "confirm" in text.lower()
+
+
+def test_consolidated_gap_ambiguity_does_not_repeat_a_shared_line_range():
+    # Regression for a real live-generated report
+    # (samples/output/6_PRO.SMA_MARKING...): two distinct gaps (an INSERT
+    # keyword and a nested CASE/WHEN keyword) landed on the exact same
+    # line range, and the un-deduped preview read "lines 610-651, 610-651,
+    # ..." - the same range listed twice in one sentence, which reads as a
+    # mistake even though both gaps are genuinely separate unresolved
+    # constructs. The total count must still reflect every gap.
+    gaps = [
+        CoverageGap(line_start=610, line_end=651, snippet="INSERT INTO t ...", keywords=["INSERT"]),
+        CoverageGap(line_start=610, line_end=651, snippet="CASE WHEN x THEN y END", keywords=["CASE", "WHEN"]),
+        CoverageGap(line_start=693, line_end=695, snippet="UPDATE t SET x=1", keywords=["UPDATE"]),
+    ]
+    text = format_consolidated_gap_ambiguity(gaps)
+    assert text.count("610-651") == 1
+    assert "693-695" in text
+    assert "(3 total)" in text
 
 
 def test_where_gated_blocks_get_real_per_line_scoring_not_blanket_coverage(caplog):

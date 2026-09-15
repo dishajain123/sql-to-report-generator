@@ -259,6 +259,56 @@ def test_business_report_findings_preserves_merged_and_synthesis_ambiguities():
     assert findings_section.index("Chunk 01_nested_block (nested_block) returned malformed JSON and needs manual review.") < findings_section.index("Automatic extraction for some chunks returned malformed JSON and needs manual review.")
 
 
+def test_chunk_parse_error_reported_once_not_twice_when_pipeline_already_named_it():
+    """Regression for a real live-generated report
+    (samples/output/1_PRO.SMA_MARKING...): `pipeline.py`'s
+    `_merge_extractions` already appends one "Chunk 'X' (kind) technical
+    extraction returned malformed JSON..." ambiguity per chunk with a parse
+    error - the exact same fact `_findings_section`'s own
+    `chunk_provenance` loop derives independently from that chunk's
+    `parse_error` field. Reproducing that real shape (not the synthetic,
+    differently-worded ambiguity the older preservation test uses) must
+    produce exactly one bullet for that chunk, not two.
+    """
+    ingestion = _ingestion()
+    merged = _merged()
+    chunk_id = "00_main_body_1"
+    merged["ambiguities"] = [
+        f"Chunk '{chunk_id}' (main_body) technical extraction returned malformed JSON and needs manual review.",
+    ]
+    merged["chunk_provenance"].append(
+        {
+            "chunk_id": chunk_id,
+            "chunk_kind": "main_body",
+            "chunk_context": ["main_body"],
+            "embedded_sql": [],
+            "parse_error": "malformed json",
+            "guardrail_warnings": [],
+            "support_confidence": "low",
+            "source_file": "demo.sql",
+            "source_char_start": 0,
+            "source_char_end": 44,
+            "source_line_start": 1,
+            "source_line_end": 1,
+            "source_location_status": "available",
+        }
+    )
+    synthesis = _synthesis()
+    synthesis.data["ambiguities"] = []
+    reconciliation = reconcile_deterministic_evidence(
+        ingestion=ingestion, merged_extraction=merged, synthesis=synthesis,
+    )
+    ir = CanonicalBusinessIR.from_pipeline(
+        ingestion=ingestion, merged_extraction=merged, synthesis=synthesis, reconciliation=reconciliation,
+    )
+    report = ReportFormatterAgent().format(
+        ingestion=ingestion, merged_extraction=merged, synthesis=synthesis, canonical_ir=ir,
+    )
+    findings_section = report.split("## Findings / Needs Review", 1)[1]
+    assert findings_section.count(chunk_id) == 1
+    assert findings_section.count("malformed JSON") == 1
+
+
 def test_business_rules_are_ordered_by_source_execution_order_not_llm_order():
     """The synthesis LLM can return rules in any order; the canonical IR
     must reorder them by where their evidence first appears in the

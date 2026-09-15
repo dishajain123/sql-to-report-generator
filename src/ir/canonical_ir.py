@@ -61,6 +61,7 @@ def _attach_calculation_destinations(
     calculations: List[Dict[str, Any]], operations: List["TableOperationIR"], source_text: str = ""
 ) -> List[Dict[str, Any]]:
     """Link existing calculation expressions through local variables to writes."""
+    from src.parsing.expression_identity import expression_key
     result = [dict(item) for item in calculations]
 
     def known(value: Any) -> bool:
@@ -72,36 +73,33 @@ def _attach_calculation_destinations(
     for calculation in result:
         if any(known(calculation.get(key)) for key in ("destination", "output", "output_field")):
             continue
-        expression_tokens = _calculation_tokens(calculation.get("expression") or calculation.get("formula"))
-        if not expression_tokens:
+        expression_identity = expression_key(calculation.get("expression") or calculation.get("formula"))
+        if not expression_identity:
             continue
         local_targets = set()
         for match in re.finditer(
             r"\b([A-Za-z_][A-Za-z0-9_$#]*)\s*:=\s*(.*?);", str(source_text or ""), re.IGNORECASE | re.DOTALL
         ):
-            rhs_tokens = _calculation_tokens(match.group(2))
-            if expression_tokens <= rhs_tokens or (
-                len(expression_tokens) >= 2 and len(expression_tokens & rhs_tokens) >= max(2, len(expression_tokens) // 2)
-            ):
+            if expression_identity == expression_key(match.group(2)):
                 local_targets.add(match.group(1).casefold())
+        matches = []
         for operation in operations:
             table = str(operation.table or "").strip()
             for assignment in operation.assigned_values:
                 if not isinstance(assignment, dict):
                     continue
                 assigned_expression = assignment.get("expression") or assignment.get("value")
-                assigned_tokens = _calculation_tokens(assigned_expression)
-                if not (expression_tokens <= assigned_tokens or len(expression_tokens & assigned_tokens) >= 2 or local_targets & assigned_tokens):
+                assigned_identity = expression_key(assigned_expression)
+                if not (expression_identity == assigned_identity or str(assigned_expression or "").strip().casefold() in local_targets):
                     continue
                 column = str(assignment.get("column") or assignment.get("target_column") or "").strip()
                 if not table or not column:
                     continue
                 operation_name = str(operation.operation or "").upper()
-                calculation["destination"] = f"{table}.{column}"
-                calculation["used_by"] = f"INSERT INTO {table}" if operation_name == "INSERT" else f"{operation_name} {table}"
-                break
-            if calculation.get("destination"):
-                break
+                matches.append((f"{table}.{column}", f"INSERT INTO {table}" if operation_name == "INSERT" else f"{operation_name} {table}"))
+        if matches:
+            calculation["destination"] = ", ".join(dict.fromkeys(item[0] for item in matches))
+            calculation["used_by"] = "; ".join(dict.fromkeys(item[1] for item in matches))
     return result
 
 
@@ -534,7 +532,7 @@ class BusinessRuleIR:
             evidence=_string_list(data.get("source_evidence") or data.get("evidence")),
             evidence_spans=evidence_spans,
             source_chunks=_string_list(data.get("source_chunks")),
-            source_statements=_string_list(data.get("source_statements")),
+            source_statements=_string_list(data.get("source_statements") or data.get("source_statement_ids")),
             dependencies=_string_list(data.get("dependencies")),
             ambiguities=_string_list(data.get("ambiguities") or data.get("unresolved_ambiguities")),
             reconciliation_status=_clean_text(data.get("reconciliation_status")),
@@ -676,9 +674,18 @@ def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[D
                 for branch in branches for a in (branch.get("assignments") or [])
                 if isinstance(a, dict)
             }
+            # A model sometimes reports multiple fields as one
+            # comma-joined output_field/fields_affected string (e.g. "A, B,
+            # C") instead of a list of individual names. Left unsplit, that
+            # whole string never matches a single chain field, so the rule
+            # never gets folded into the deterministic block it actually
+            # describes - it survives as a redundant, table-less narrative
+            # duplicate of the very block that documents it correctly.
             rule_fields = {
-                value.split(".")[-1].casefold()
+                token.split(".")[-1].strip().casefold()
                 for value in [rule.output_field, *rule.fields_affected] if value
+                for token in str(value).split(",")
+                if token.strip()
             }
             if chain_fields and rule_fields and not chain_fields.intersection(rule_fields):
                 continue
@@ -695,6 +702,14 @@ def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[D
                 if condition.strip().casefold() != "else"
                 and any(_condition_matches(condition, candidate) for candidate in candidates)
             ]
+            # A model may describe a whole decision in prose and cite its exact
+            # executable expression. This is stronger evidence than shared words.
+            from src.parsing.decision_identity import decision_text_key
+            source_key = decision_text_key(chain.get("source_sql", ""))
+            if (not branch_matches and len(source_key) >= 30
+                    and rule_fields and rule_fields <= chain_fields
+                    and any(source_key in decision_text_key(evidence) for evidence in rule.evidence)):
+                branch_matches = list(range(len(conditions)))
             # ELSE has meaning only inside an already matched chain.
             if branch_matches:
                 branch_matches.extend(
@@ -779,6 +794,11 @@ def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[D
             rule.extra["decision_block_title"] = block_title
         blocks.append({
             "block_id": block_id,
+            "source_chain_id": str(chain.get("chain_id") or ""),
+            "statement_span": list(chain.get("statement_span") or []),
+            "source_line_start": chain.get("source_line_start"),
+            "output_fields": list(dict.fromkeys(str(a.get("field") or "") for branch in branches
+                                               for a in branch.get("assignments", []) if a.get("field"))),
             "decision_role": str(chain.get("decision_role") or "assignment"),
             "eligibility": list(chain.get("eligibility") or []),
             "decision_context": list(chain.get("decision_context") or []),
@@ -798,6 +818,9 @@ def _decision_block_title_from_llm_text(
     source_branch_literals: List[str],
 ) -> str:
     """Select an overall title from authored text without inventing meaning."""
+    for rule in rules:
+        if rule.rule_type == "deterministic_decision_table" and rule.extra.get("rule_name"):
+            return str(rule.extra["rule_name"])
     branch_literals = {
         token.casefold()
         for value in [*source_branch_literals]
@@ -869,7 +892,8 @@ class CanonicalBusinessIR:
         deduped_table_rows = _dedupe_table_rows(table_rows)
         table_operations = [TableOperationIR.from_dict(item) for item in deduped_table_rows]
 
-        business_rules = [BusinessRuleIR.from_dict(item) for item in _dict_list(synthesis.data.get("business_rules"))]
+        from src.ir.rule_identity import unique_rule_ids
+        business_rules = [BusinessRuleIR.from_dict(item) for item in unique_rule_ids(_dict_list(synthesis.data.get("business_rules")))]
         business_rules = _order_business_rules_by_execution_order(business_rules, statements)
         chains = merged_extraction.get("decision_chains")
         has_structural_chain = any(

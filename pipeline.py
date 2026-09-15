@@ -54,6 +54,7 @@ from src.validation.semantic_validation import (
     extract_procedural_decision_chains,
     extract_nested_decision_chains,
     extract_case_assignment_decision_chains,
+    extract_tsql_if_elseif_chains,
     merge_decision_chains,
     find_semantic_anomalies,
 )
@@ -147,10 +148,18 @@ def _extract_deterministic_decision_chains(source: str, dialect: str = "tsql") -
     ``merge_decision_chains`` remains the single deduplication boundary.
     """
     from src.parsing.decision_tables import enrich_decision_tables
+    # `extract_nested_decision_chains`/`extract_procedural_decision_chains`
+    # only recognize Oracle PL/SQL's IF...THEN/ELSIF...THEN/END IF syntax
+    # (see their docstrings) and never match T-SQL's IF/ELSE IF/ELSE/bare
+    # END - so a T-SQL source needs its own syntax-aware extractor or its
+    # procedural IF ladders have zero deterministic decision-chain coverage
+    # at all, regardless of how much real business logic they contain.
+    tsql_chains = extract_tsql_if_elseif_chains(source) if str(dialect or "").strip().lower() == "tsql" else []
     chains = merge_decision_chains(
         extract_case_assignment_decision_chains(source),
         extract_nested_decision_chains(source),
         extract_procedural_decision_chains(source),
+        tsql_chains,
     )
     return enrich_decision_tables(source, chains, dialect=dialect)
 
@@ -169,23 +178,31 @@ def _ranges_overlap(left_start: Any, left_end: Any, right_start: Any, right_end:
 _TRUNCATION_AMBIGUITY_MARKER = "exceeded the model's maximum"
 
 
-def _merge_into_truncation_ambiguity(container: Dict[str, Any], gap_summary: str) -> None:
+def _merge_into_truncation_ambiguity(container: Dict[str, Any], gap_summary: str) -> bool:
     """Fold a consolidated coverage-gap summary into the existing
     truncation ambiguity string (identified by its stable marker phrase)
     instead of appending it as a second, separate bullet. Keeps the
     truncation cause and its affected line ranges as one report item.
-    Falls back to appending the summary on its own if the truncation
-    ambiguity isn't present in this container for some reason, so the
-    information is never silently dropped.
+
+    Returns True when an existing truncation ambiguity was found and
+    merged in place, False when this container had no such ambiguity to
+    merge into. Callers that invoke this on more than one container (e.g.
+    both `merged_extraction` and `synthesis.data`) must check this return
+    value before falling back to a standalone append in the other
+    container - `_findings_section` unions ambiguities from every
+    container without deduplicating near-identical text, so unconditionally
+    appending `gap_summary` on its own to a container that has no marker,
+    right after successfully merging the same summary into another
+    container's marker, produces two findings bullets (one standalone, one
+    combined) describing the exact same truncation instead of one.
     """
     ambiguities = list(container.get("ambiguities", []) or [])
     for index, item in enumerate(ambiguities):
         if _TRUNCATION_AMBIGUITY_MARKER in str(item):
             ambiguities[index] = f"{str(item).rstrip()} {gap_summary}"
             container["ambiguities"] = ambiguities
-            return
-    ambiguities.append(gap_summary)
-    container["ambiguities"] = ambiguities
+            return True
+    return False
 
 
 def _annotate_decision_chain_provenance(
@@ -729,8 +746,20 @@ class LogicRulesExtractorPipeline:
             # is a distinct thing to check.
             if getattr(synthesis, "truncated", False) and len(coverage_gaps) > 1:
                 gap_summary = format_consolidated_gap_ambiguity(coverage_gaps)
-                _merge_into_truncation_ambiguity(merged_extraction, gap_summary)
-                _merge_into_truncation_ambiguity(synthesis.data, gap_summary)
+                # `_findings_section` unions ambiguities from both
+                # containers without deduplicating near-identical text, so
+                # merging the same summary into both containers' truncation
+                # markers (or merging into one and appending standalone to
+                # the other) would show the affected-regions text twice.
+                # Merge into whichever container already carries the
+                # truncation ambiguity; only append it standalone (to
+                # `merged_extraction`, the container `_findings_section`
+                # always reads) when NEITHER container has that marker, so
+                # the information is never silently dropped.
+                merged_into_synthesis = _merge_into_truncation_ambiguity(synthesis.data, gap_summary)
+                merged_into_extraction = _merge_into_truncation_ambiguity(merged_extraction, gap_summary)
+                if not merged_into_synthesis and not merged_into_extraction:
+                    merged_extraction["ambiguities"] = list(merged_extraction.get("ambiguities", []) or []) + [gap_summary]
             else:
                 gap_findings = [format_gap_for_ambiguity(gap) for gap in coverage_gaps]
                 merged_extraction["ambiguities"].extend(gap_findings)
@@ -748,6 +777,21 @@ class LogicRulesExtractorPipeline:
         synthesis.data["business_rules"] = RuleSynthesizerAgent.ensure_decision_chain_coverage(
             synthesis.data.get("business_rules", []),
             merged_extraction.get("decision_chains", []),
+        )
+        # `ensure_decision_chain_coverage` guarantees a rule for every
+        # qualifying deterministic chain regardless of what table it
+        # targets - including a boilerplate `IF EXISTS(...) ... ELSE ...`
+        # around the standard ACLRUNNINGPROCESSSTATUS bookkeeping in a
+        # CATCH block, which produces a fully "correct" but purely
+        # operational per-column decision table ("Determine COMPLETED",
+        # "Determine ERRORDATE", ...). `_remove_operational_status_rules`
+        # already exists to keep exactly this kind of plumbing out of the
+        # business-rule collection, but it only ran on the model's own
+        # rules *before* this synthetic step added more - re-run it now so
+        # the same exclusion applies uniformly no matter which stage
+        # produced the rule.
+        synthesis.data["business_rules"] = RuleSynthesizerAgent._remove_operational_status_rules(
+            synthesis.data.get("business_rules", []), merged_extraction
         )
 
         # Diagnostic-only inventory: this is deliberately built after
@@ -1445,8 +1489,8 @@ class LogicRulesExtractorPipeline:
             getattr(chunk, "chunk_id", None): chunk
             for chunk in (ingestion.chunks or [])
         }
-        section_results: List[SynthesisResult] = []
-        for section in sections:
+
+        def _run_section(section: Dict[str, Any]) -> SynthesisResult:
             chunk_id_list = list(section.get("chunk_ids") or [])
             chunk_ids = set(chunk_id_list)
             section_extraction = self._scope_extraction_to_chunks(merged_extraction, chunk_ids)
@@ -1479,17 +1523,38 @@ class LogicRulesExtractorPipeline:
                     if chunk_id in chunk_lookup
                 ]
                 section_raw_source = "\n".join(text for text in section_texts if text) or raw_source
-            section_results.append(
-                self.synthesizer_agent.synthesize(
-                    object_name=ingestion.object_name,
-                    object_type=ingestion.object_type,
-                    parameter_summary=parameter_summary,
-                    merged_extraction=section_synthesis_input,
-                    dialect=dialect,
-                    raw_source=section_raw_source,
-                    telemetry_tracker=telemetry_tracker,
-                )
+            return self.synthesizer_agent.synthesize(
+                object_name=ingestion.object_name,
+                object_type=ingestion.object_type,
+                parameter_summary=parameter_summary,
+                merged_extraction=section_synthesis_input,
+                dialect=dialect,
+                raw_source=section_raw_source,
+                telemetry_tracker=telemetry_tracker,
             )
+
+        # Sections are independent synthesis calls over disjoint parts of
+        # the same object - nothing in one section's prompt or result
+        # depends on another's, they are only combined afterward by
+        # `merge_section_results`. Run them concurrently (same
+        # ThreadPoolExecutor pattern, and the same `self.chunk_workers`
+        # budget, already used for per-chunk extraction in
+        # `_extract_all_chunks`) instead of one full network round-trip
+        # after another: this is the dominant cost of Stage 5 for any
+        # object large enough to need sectioning in the first place
+        # (PRO.SMA_MARKING reliably needs 2-4 sections), and running them
+        # sequentially wastes wall-clock time waiting on I/O with nothing
+        # else happening, not on work that has to be serialized. Output is
+        # unaffected - each section call and its content are identical to
+        # the sequential version; only the scheduling changes, and
+        # `LLMTelemetryTracker`/`PersistentLLMResponseCache` are already
+        # relied on to be thread-safe by that same extraction-stage usage.
+        worker_count = min(self.chunk_workers, len(sections))
+        if worker_count <= 1:
+            section_results = [_run_section(section) for section in sections]
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                section_results = list(executor.map(_run_section, sections))
         return RuleSynthesizerAgent.merge_section_results(section_results)
 
     @staticmethod

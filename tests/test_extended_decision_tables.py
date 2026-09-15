@@ -132,7 +132,12 @@ def test_real_sample_scope_fallback_and_sequential_maps_reach_full_report():
     report = ReportFormatterAgent().format(ingestion, {'decision_chains': chains}, SynthesisResult(data={'business_rules': rules}))
     assert 'GROUP BY A.UCIF_ID' in report
     assert 'later matching updates can overwrite' in report
-    assert 'CONVERT(INT, SMA_CLASS_KEY) = 3' in report
+    # The `B.` alias is resolved to its real table (PRO.CUSTOMERCAL, from
+    # this rule's own FROM/JOIN source context: "... INNER JOIN
+    # PRO.CUSTOMERCAL AS B ON ...") rather than silently dropped - a reader
+    # can tell which of the two joined tables SMA_CLASS_KEY comes from
+    # instead of seeing a bare, unexplained column name.
+    assert 'CONVERT(INT, PRO.CUSTOMERCAL.SMA_CLASS_KEY) = 3' in report
     assert 'EffectiveFromTimeKey' in report
 
 

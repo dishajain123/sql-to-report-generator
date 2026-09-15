@@ -308,10 +308,27 @@ class PatternRetrievalAgent:
             if self._collection is None:
                 self.build_or_load()
 
-            results = self._collection.query(query_texts=[query], n_results=k)
+            results = self._collection.query(
+                query_texts=[query], n_results=k, include=["documents", "metadatas", "distances"],
+            )
             docs = results.get("documents", [[]])[0]
             metas = results.get("metadatas", [[]])[0]
-            pairs = list(zip(docs, metas))
+            distances = results.get("distances", [[]])[0] if results.get("distances") else [0.0] * len(docs)
+            # Chroma's HNSW index does not guarantee a stable order for
+            # results tied (or nearly tied) on distance - two runs of the
+            # exact same query against the exact same collection can return
+            # equal-score documents in a different order, which then changes
+            # the RAG context text handed to the LLM prompt and is a real
+            # source of run-to-run output variation even at low temperature.
+            # Re-sort deterministically: distance ascending (preserving
+            # Chroma's relevance ranking), with the document text itself as
+            # a stable tiebreaker for anything Chroma returned as equal-
+            # distance, so the same query always produces the same order.
+            ranked = sorted(
+                zip(docs, metas, distances),
+                key=lambda item: (item[2] if item[2] is not None else 0.0, item[0] or ""),
+            )
+            pairs = [(doc, meta) for doc, meta, _ in ranked]
             self._query_cache[cache_key] = [(doc, dict(meta or {})) for doc, meta in pairs]
             return pairs
 

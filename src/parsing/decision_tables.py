@@ -229,7 +229,7 @@ def _chain(source, record, field, rows, suffix, **extra):
     return dict(chain_type='SCALAR_EXPRESSION', chain_id=chain_id, subject=field,
                 branches=branches, source_char_start=start, source_char_end=end,
                 source_line_start=provenance['line_start'], source_line_end=provenance['line_end'],
-                source_location_status='available', **extra)
+                source_location_status='available', statement_span=[start, end], source_sql=source[start:end], **extra)
 
 
 def enrich_decision_tables(raw_source, chains, dialect='tsql'):
@@ -249,6 +249,8 @@ def enrich_decision_tables(raw_source, chains, dialect='tsql'):
         members = [c for c in result if record['start'] <= c.get('source_char_start', -1)
                    and c.get('source_char_end', -1) <= record['end']]
         for chain in members:
+            chain['source_sql'] = source[chain.get('source_char_start', record['start']):chain.get('source_char_end', record['end'])]
+            chain['statement_span'] = [record['start'], record['end']]
             chain['eligibility'] = eligibility
             chain['decision_context'] = context
             chain['execution_semantics'] = 'First matching row wins; ELSE includes false or NULL predicates.'

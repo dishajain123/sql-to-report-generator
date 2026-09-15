@@ -534,9 +534,24 @@ def _extract_table_ops_from_tree(
             if target_table is not None
             else None
         )
+        # `UPDATE <alias> SET ...` parses its own head as an `exp.Table`
+        # node too (e.g. a bare `D`, name="D"/alias="") - a SEPARATE node
+        # from the FROM-clause's real table (`PRO.DishonouredCheque`,
+        # alias="D") that `_resolve_update_target` correctly resolves as
+        # the actual write target. `target_key` only matches that resolved
+        # FROM-clause node, so the head's own bare-alias node was never
+        # excluded here and fell through as a phantom extra "read" of a
+        # table literally named "D" - a duplicate of the real target, not
+        # a genuine second dependency. Exclude it explicitly too.
+        head_key = (
+            (_table_signature(tree.this), _table_alias(tree.this))
+            if isinstance(tree.this, exp.Table)
+            else None
+        )
         read_table_nodes = [
             t for t in table_nodes
-            if target_key is None or (_table_signature(t), _table_alias(t)) != target_key
+            if (target_key is None or (_table_signature(t), _table_alias(t)) != target_key)
+            and (head_key is None or (_table_signature(t), _table_alias(t)) != head_key)
         ]
         for occurrence_index, table in enumerate(read_table_nodes, start=1):
             operations.append(

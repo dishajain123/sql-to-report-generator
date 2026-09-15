@@ -709,3 +709,64 @@ def test_find_write_only_temp_tables_does_not_flag_table_read_via_missed_join():
     structural_only = find_write_only_temp_tables(table_operations)
     assert structural_only == ["#ALIVE"]
     assert find_write_only_temp_tables(table_operations, raw_source=raw_source) == []
+
+
+# --------------------------------------------------------------------------
+# 5. T-SQL `UPDATE <alias> SET ... FROM <table> <alias>` no longer emits a
+#    phantom READ of the bare alias as if it were its own table
+# --------------------------------------------------------------------------
+
+
+def test_update_alias_from_idiom_does_not_emit_phantom_alias_table_read():
+    """Regression for a real, generic bug found while auditing the
+    bundled T-SQL samples' "Data Touched" lineage: for the standard T-SQL
+    idiom `UPDATE <alias> SET ... FROM <real_table> <alias> WHERE ...`,
+    sqlglot represents the `UPDATE <alias>` HEAD as its own bare `exp.
+    Table` node (name=alias, e.g. "D"), separate from the FROM clause's
+    real table node (name="PRO.DishonouredCheque", alias="D") that
+    `_resolve_update_target` correctly resolves as the write target. The
+    "every other table this UPDATE reads" loop only excluded the resolved
+    FROM-clause node from its read list, never the UPDATE head's own bare-
+    alias node - so a bare, unqualified "table" literally named after the
+    alias (e.g. "D", "A") leaked into `tables_read`, and from there into
+    the business report's "Data Touched" table and its "N table
+    reference(s) could not be resolved" footnote, for every single
+    UPDATE...FROM statement in a T-SQL procedure using this idiom (i.e.
+    most of them - this is the standard way to write a filtered/joined
+    UPDATE in T-SQL).
+    """
+    chunk = _chunk(
+        "UPDATE D\n"
+        "SET D.PenaltyAmount = 100\n"
+        "FROM PRO.DishonouredCheque D\n"
+        "WHERE D.DishonourDate = @ProcessDate\n"
+    )
+    ops, _ = extract_table_operations_from_chunks([chunk], dialect="tsql")
+    tables = {op["table"] for op in ops}
+    assert "D" not in tables
+    assert "PRO.DishonouredCheque" in tables
+    # Exactly one operation for this statement - the UPDATE against the
+    # real table - not a second phantom READ of the bare alias.
+    assert len(ops) == 1
+    assert ops[0]["operation"] == "UPDATE"
+
+
+def test_update_alias_from_join_idiom_still_reports_the_joined_table_as_read():
+    """The fix must not over-correct: a genuinely different table joined
+    into the UPDATE (read, not written) still needs its own READ record -
+    only the UPDATE head's own bare-alias artifact is excluded, not every
+    table besides the resolved target."""
+    chunk = _chunk(
+        "UPDATE A\n"
+        "SET A.Balance = A.Balance + B.PenaltyAmount\n"
+        "FROM PRO.LoanAccountCal A\n"
+        "INNER JOIN PRO.DishonouredCheque B ON B.AccountId = A.AccountId\n"
+        "WHERE B.DishonourDate = @ProcessDate\n"
+    )
+    ops, _ = extract_table_operations_from_chunks([chunk], dialect="tsql")
+    tables_by_op = {op["operation"]: op["table"] for op in ops}
+    assert tables_by_op.get("UPDATE") == "PRO.LoanAccountCal"
+    read_tables = {op["table"] for op in ops if op["operation"] == "READ"}
+    assert "PRO.DishonouredCheque" in read_tables
+    assert "A" not in {op["table"] for op in ops}
+    assert "B" not in {op["table"] for op in ops}

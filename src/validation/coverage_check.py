@@ -1006,7 +1006,14 @@ def format_consolidated_gap_ambiguity(gaps: list["CoverageGap"], max_ranges: int
     list item - one bullet explaining both the cause and the affected
     regions, not two).
     """
-    ranges = [f"{gap.line_start}-{gap.line_end}" for gap in gaps]
+    # Two distinct gaps (different keywords, e.g. an INSERT and a nested
+    # CASE/WHEN) can share the exact same line range. `{len(gaps)} total}`
+    # below must still count every one of them - each is independently
+    # unresolved - but the preview list of ranges only needs to name each
+    # affected region once; without dedup, the same range fills two of the
+    # `max_ranges` preview slots and reads as though the sentence itself
+    # repeated a line range by mistake.
+    ranges = list(dict.fromkeys(f"{gap.line_start}-{gap.line_end}" for gap in gaps))
     shown = ranges[:max_ranges]
     range_text = ", ".join(shown)
     if len(ranges) > max_ranges:
