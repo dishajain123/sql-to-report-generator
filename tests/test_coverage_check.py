@@ -337,18 +337,14 @@ END"""
     assert len(synthesizer.revise_calls) == 1
     assert synthesizer.revise_calls[0]["gaps"]
     final_rules = pipeline.formatter_agent.synthesis_data[-1]["business_rules"]
-    # Preserve authored content and allocate an identity for the revised rule.
+    # Coverage revision still runs, but permanent structural shaping
+    # (`finalize_business_rule_shape`) drops the contentless narrative shell
+    # once `ensure_decision_chain_coverage` has emitted the SQL-grounded
+    # CASE ladder for the same field - one rule per structural decision.
+    assert len(final_rules) == 1
     assert final_rules[0]["rule_id"]
-    assert {k: v for k, v in final_rules[0].items() if k != "rule_id"} == revised[0]
-    # ...and the pipeline's own deterministic guarantee
-    # (`RuleSynthesizerAgent.ensure_decision_chain_coverage`) appends a
-    # Decision Logic table for `risk_band` regardless of whether the model
-    # supplied one, because the source's CASE ladder is unambiguous
-    # (two explicit branches and the implicit NULL fallback) and the stubbed `revise()` here - unlike the real
-    # `RuleSynthesizerAgent` - never populates `decision_logic_rows` itself.
-    assert len(final_rules) == 2
-    assert final_rules[1]["output_field"] == "risk_band"
-    assert final_rules[1]["decision_logic_rows"] == [
+    assert final_rules[0]["output_field"] == "risk_band"
+    assert final_rules[0]["decision_logic_rows"] == [
         {"condition": "score < 50", "outcome": "'LOW'"},
         {"condition": "score >= 50", "outcome": "'HIGH'"},
         {"condition": "ELSE", "outcome": "NULL"},

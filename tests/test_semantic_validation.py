@@ -220,6 +220,41 @@ def test_merge_decision_chains_keeps_deterministic_first_and_drops_exact_duplica
     assert merged[1]["subject"] == "flg"
 
 
+def test_merge_decision_chains_drops_assignment_empty_llm_shells():
+    """LLM extraction often re-emits a deterministic CASE ladder as
+    ``decision_chain_NNN`` with the same branch conditions but empty
+    ``assignments``. Those shells must not survive merge: they previously
+    produced a second IR decision block and a duplicate Classify/Penal
+    table in the business report for samples like 07_DPD_Bucket.
+    """
+    deterministic = [
+        {
+            "chain_id": "case_0043_0050_1482",
+            "chain_type": "CASE_EXPRESSION",
+            "branches": [
+                {"branch_condition": "A.DpdDays IS NULL", "assignments": [{"field": "DpdBucket", "value": "'NOT_APPLICABLE'"}]},
+                {"branch_condition": "A.DpdDays = 0", "assignments": [{"field": "DpdBucket", "value": "'CURRENT'"}]},
+                {"branch_condition": "ELSE", "assignments": [{"field": "DpdBucket", "value": "'BUCKET_90_PLUS'"}]},
+            ],
+        }
+    ]
+    llm_shell = [
+        {
+            "chain_id": "decision_chain_006",
+            "branches": [
+                {"branch_condition": "A.DpdDays IS NULL", "assignments": []},
+                {"branch_condition": "A.DpdDays = 0", "assignments": []},
+                {"branch_condition": "ELSE", "assignments": []},
+            ],
+        }
+    ]
+    merged = merge_decision_chains(deterministic, llm_shell)
+    assert len(merged) == 1
+    assert merged[0]["chain_id"] == "case_0043_0050_1482"
+    # An empty shell alone is also useless and must not be kept.
+    assert merge_decision_chains(llm_shell) == []
+
+
 def test_procedural_ladder_still_wins_when_present_alongside_case_expressions():
     """Sanity check: adding the CASE-expression path must not regress the
     existing PL/SQL IF/ELSIF/ELSE ladder extraction it sits alongside."""

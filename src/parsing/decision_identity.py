@@ -79,12 +79,32 @@ def normalized_condition_key(value) -> str:
     literals are located and protected first (via the same quote-splitting
     approach as `decision_text_key`) so a literal that happens to contain a
     dot or brackets is never mistaken for a qualifier chain and mangled.
+
+    Literal quote marks themselves are then stripped so a deterministic
+    row's `'NOT_APPLICABLE'` and a model paraphrase's bare `NOT_APPLICABLE`
+    compare equal for coverage/dedup identity (observed live: two complete
+    DpdBucket ladders survived side-by-side solely because of quote style).
     """
-    parts = re.split(r"('(?:''|[^'])*'|\"(?:\"\"|[^\"])*\")", str(value or ''))
+    text = str(value or "")
+    # Presentational coverage annotations are display-only and must not
+    # keep two otherwise-identical ladders from matching for dedup.
+    text = re.sub(r"\s*—\s*row filter:.*$", "", text, flags=re.S)
+    text = re.sub(r"\s*\[UNREACHABLE.*$", "", text, flags=re.S)
+    text = re.sub(r"\s*—\s*applies to all rows \(no additional filter\)\s*$", "", text)
+    parts = re.split(r"('(?:''|[^'])*'|\"(?:\"\"|[^\"])*\")", text)
     out = []
     for index, part in enumerate(parts):
         if index % 2:
-            out.append(part)
+            lit = part
+            if len(lit) >= 2 and lit[0] == lit[-1] and lit[0] in "'\"":
+                inner = lit[1:-1]
+                if lit[0] == "'":
+                    inner = inner.replace("''", "'")
+                else:
+                    inner = inner.replace('""', '"')
+                out.append(inner.casefold())
+            else:
+                out.append(lit.casefold())
             continue
         part = strip_qualifiers(part)
         out.append(re.sub(r'\s+', ' ', part).casefold())

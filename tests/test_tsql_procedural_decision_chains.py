@@ -505,12 +505,19 @@ def test_row_filter_annotation_is_shown_distinctly_in_rendered_rows():
     """
     chains = extract_tsql_if_elseif_chains(sql)
     rules = RuleSynthesizerAgent.ensure_decision_chain_coverage([], chains)
-    tier_rule = next(r for r in rules if r["output_field"] == "Tier")
+    tier_rule = next(
+        r for r in rules
+        if "Tier" in str(r.get("output_field") or "")
+    )
+    assert "Bonus" in str(tier_rule.get("output_field") or "")
     rows = {row["condition"]: row["outcome"] for row in tier_rule["decision_logic_rows"]}
     overtime_row = next(cond for cond in rows if cond.startswith("EXISTS"))
     assert "row filter: Overtime > 40" in overtime_row
+    assert "Tier := 'OVERTIME'" in rows[overtime_row]
+    assert "Bonus := 100" in rows[overtime_row]
     else_row = next(cond for cond in rows if cond == "ELSE — applies to all rows (no additional filter)")
-    assert rows[else_row] == "'STANDARD'"
+    assert "Tier := 'STANDARD'" in rows[else_row]
+    assert "Bonus := 0" in rows[else_row]
 
 
 # --------------------------------------------------------------------------

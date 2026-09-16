@@ -528,6 +528,61 @@ def ground_extraction_against_source(data: Dict[str, Any], source_text: str) -> 
             if confidence == "low":
                 item["confidence"] = "low"
             warnings.extend(item_warnings)
+
+    warnings.extend(_ground_calculation_expressions(data, source_text))
+    return warnings
+
+
+_FUNCTION_CALL_TOKEN = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+# Bare SQL keywords/operators that can appear immediately before "(" without
+# being a function call this check should ground (e.g. "(x + 1)", "IN (...)",
+# "CASE WHEN (...)").  Excluding them avoids flagging a calculation as
+# hallucinated purely for using ordinary parenthesized grouping/logic.
+_NON_FUNCTION_CALL_KEYWORDS = frozenset({
+    "IN", "CASE", "WHEN", "AND", "OR", "NOT", "IF", "ELSE", "EXISTS",
+})
+
+
+def _ground_calculation_expressions(data: Dict[str, Any], source_text: str) -> List[str]:
+    """Anti-hallucination check for calculation expressions.
+
+    `ground_extraction_against_source` above only verifies table/column
+    identifiers; it never inspects the calculation *expression* text
+    itself, so a model can wrap a genuine, grounded column reference in an
+    invented function call (e.g. a fabricated `CAST(... AS DATETIME2)` or
+    `COALESCE(...)` the source never uses) and it passes through
+    unchecked. This checks every function-call-shaped token
+    (`NAME(`) in a calculation's expression is actually present
+    (case-insensitively) in the source chunk; a calculation with an
+    ungrounded function name is dropped outright (not merely flagged) so a
+    hallucinated wrapper can never silently reach the report as fact.
+    """
+    calculations = data.get("calculations")
+    if not isinstance(calculations, list):
+        return []
+    warnings: List[str] = []
+    kept: List[Any] = []
+    for calc in calculations:
+        if not isinstance(calc, dict):
+            kept.append(calc)
+            continue
+        expression = str(calc.get("expression") or calc.get("formula") or "")
+        ungrounded = sorted({
+            name for name in _FUNCTION_CALL_TOKEN.findall(expression)
+            if name.upper() not in _NON_FUNCTION_CALL_KEYWORDS
+            and not _identifier_present(source_text, name)
+        })
+        if ungrounded:
+            field = str(calc.get("field") or calc.get("output_field") or calc.get("table") or "this calculation")
+            warnings.append(
+                f"Calculation for '{field}' references function(s) "
+                f"{', '.join(ungrounded)} that do not appear in the source code "
+                "for this chunk; dropped rather than asserted as fact."
+            )
+            continue
+        kept.append(calc)
+    data["calculations"] = kept
     return warnings
 
 

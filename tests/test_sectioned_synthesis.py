@@ -248,10 +248,99 @@ def test_merge_section_results_concatenates_rules_and_dedupes_text_fields():
     assert any("2 section(s)" in w for w in merged.guardrail_warnings)
 
 
+def test_merge_section_results_drops_near_duplicate_flow_steps():
+    # Two sections each independently describe the same MERGE statement in
+    # slightly different words - exact-text dedup alone lets both through.
+    first = _result(step_by_step_flow=[
+        "Merge the staged records into the ACCOUNT table using the source key.",
+    ])
+    second = _result(step_by_step_flow=[
+        "Merges staged records into the ACCOUNT table by source key.",
+        "Archive superseded rows to ACCOUNT_HISTORY.",
+    ])
+    merged = RuleSynthesizerAgent.merge_section_results([first, second])
+    assert merged.data["step_by_step_flow"] == [
+        "Merge the staged records into the ACCOUNT table using the source key.",
+        "Archive superseded rows to ACCOUNT_HISTORY.",
+    ]
+
+
+def test_merge_section_results_keeps_short_similar_looking_distinct_steps():
+    first = _result(step_by_step_flow=["Commit the transaction."])
+    second = _result(step_by_step_flow=["Rollback the transaction."])
+    merged = RuleSynthesizerAgent.merge_section_results([first, second])
+    assert merged.data["step_by_step_flow"] == [
+        "Commit the transaction.",
+        "Rollback the transaction.",
+    ]
+
+
 def test_merge_section_results_empty_input_returns_empty_synthesis():
     merged = RuleSynthesizerAgent.merge_section_results([])
     assert merged.data["business_rules"] == []
     assert merged.data["purpose_summary"] == ""
+
+
+def test_purpose_summary_merge_prefers_table_coverage_over_raw_length():
+    # A section that only ever saw ACCOUNT can pad its own guess with
+    # verbose phrasing and still say strictly less than a shorter summary
+    # that actually names both tables the procedure really writes to -
+    # picking by raw length alone (the old behavior) would keep the
+    # longer, less complete one.
+    merged_extraction = {
+        "tables_written": [
+            {"table": "ACCOUNT"},
+            {"table": "ACCOUNT_HISTORY"},
+        ],
+    }
+    verbose_but_narrow = _result(
+        purpose_summary=(
+            "This procedure carefully evaluates every account record in "
+            "great detail before making a final determination about its "
+            "status and persisting the outcome back to the ACCOUNT table."
+        ),
+    )
+    short_but_complete = _result(
+        purpose_summary="Classifies ACCOUNT records and archives them to ACCOUNT_HISTORY.",
+    )
+    merged = RuleSynthesizerAgent.merge_section_results(
+        [verbose_but_narrow, short_but_complete], merged_extraction
+    )
+    assert merged.data["purpose_summary"] == (
+        "Classifies ACCOUNT records and archives them to ACCOUNT_HISTORY."
+    )
+
+
+def test_purpose_summary_merge_appends_missing_tables_when_winner_covers_few():
+    merged_extraction = {
+        "tables_written": [
+            {"table": "ACCOUNT"},
+            {"table": "ACCOUNT_HISTORY"},
+            {"table": "ACCOUNT_AUDIT"},
+        ],
+    }
+    # Single-result input short-circuits before any table-coverage repair
+    # (see `if len(usable) == 1: return usable[0]`), so exercise the merge
+    # path with two identical-purpose sections instead.
+    only = _result(purpose_summary="Classifies ACCOUNT records.")
+    merged = RuleSynthesizerAgent.merge_section_results([only, only], merged_extraction)
+    assert "ACCOUNT_HISTORY" in merged.data["purpose_summary"]
+    assert "ACCOUNT_AUDIT" in merged.data["purpose_summary"]
+
+
+def test_purpose_summary_merge_excludes_process_bookkeeping_tables():
+    merged_extraction = {
+        "tables_written": [
+            {"table": "ACCOUNT"},
+            {"table": "ACLRUNNINGPROCESSSTATUS"},
+        ],
+        "table_operations": [
+            {"table": "ACLRUNNINGPROCESSSTATUS", "operation": "UPDATE"},
+        ],
+    }
+    only = _result(purpose_summary="Classifies ACCOUNT records.")
+    merged = RuleSynthesizerAgent.merge_section_results([only, only], merged_extraction)
+    assert "ACLRUNNINGPROCESSSTATUS" not in merged.data["purpose_summary"]
 
 
 # --------------------------------------------------------------------------

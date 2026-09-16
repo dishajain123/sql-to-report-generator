@@ -461,6 +461,13 @@ def _extract_table_ops_from_tree(
             _render_all_columns(source_expr, dialect) if source_expr is not None else []
         )
         assigned_values = _render_insert_assigned_values(tree, dialect)
+        # INSERT ... SELECT ... WHERE filters the rows being inserted; the
+        # WHERE lives on the source SELECT, not on the Insert node itself.
+        # Without this, conditional audit/queue inserts look WHERE-less and
+        # `ensure_statement_coverage` never floors them as business rules.
+        insert_where = where_predicate
+        if not insert_where and source_expr is not None:
+            insert_where = _render_expression(source_expr.args.get("where"), dialect)
         if target_table is not None:
             operations.append(
                 _build_operation_record(
@@ -468,7 +475,7 @@ def _extract_table_ops_from_tree(
                     table=target_table,
                     target_columns=target_columns,
                     source_columns=source_columns,
-                    where_predicate=where_predicate,
+                    where_predicate=insert_where,
                     having_predicate=having_predicate,
                     join_predicates=join_predicates,
                     exists_predicates=exists_predicates,
@@ -637,26 +644,45 @@ def _extract_table_ops_from_tree(
     if isinstance(tree, exp.Merge):
         target_table = _resolve_merge_target(tree, dialect)
         if target_table is not None:
-            operations.append(
-                _build_operation_record(
-                    operation="MERGE",
-                    table=target_table,
-                    target_columns=_render_all_columns(tree, dialect),
-                    source_columns=all_columns,
-                    where_predicate=where_predicate,
-                    having_predicate=having_predicate,
-                    join_predicates=join_predicates,
-                    exists_predicates=exists_predicates,
-                    constants=constants,
-                    assigned_values=[],
-                    statement_kind=statement_kind,
-                    statement_text=statement_text,
-                    statement_id=statement_id,
-                    chunk=chunk,
-                    dialect=dialect,
-                    table_occurrence=1,
-                )
+            assigned_values = _render_merge_assigned_values(tree, dialect)
+            merge_target_columns = _unique_preserve(
+                [
+                    str(item.get("column") or "").strip()
+                    for item in assigned_values
+                    if str(item.get("column") or "").strip()
+                ]
+                or _render_all_columns(tree, dialect)
             )
+            # The MERGE's own ON clause (its join/match predicate) is not
+            # captured by `where`/`join_predicates` above - sqlglot models
+            # it as the Merge node's own `on` arg, not a WHERE or JOIN.
+            # Each WHEN branch's real "eligibility" is this ON predicate
+            # (join match / no match) optionally AND-ed with that WHEN's
+            # own extra condition (already captured per-item as
+            # `merge_condition` in `assigned_values`) - downstream coverage
+            # needs the ON text to build a grounded, non-invented condition
+            # for a MERGE branch the model never wrote a rule for.
+            merge_on_predicate = _render_expression(tree.args.get("on"), dialect)
+            record = _build_operation_record(
+                operation="MERGE",
+                table=target_table,
+                target_columns=merge_target_columns,
+                source_columns=all_columns,
+                where_predicate=where_predicate,
+                having_predicate=having_predicate,
+                join_predicates=join_predicates,
+                exists_predicates=exists_predicates,
+                constants=constants,
+                assigned_values=assigned_values,
+                statement_kind=statement_kind,
+                statement_text=statement_text,
+                statement_id=statement_id,
+                chunk=chunk,
+                dialect=dialect,
+                table_occurrence=1,
+            )
+            record["merge_on_predicate"] = merge_on_predicate
+            operations.append(record)
         return operations
 
     return operations
@@ -962,6 +988,8 @@ def _regex_fallback_table_operations(
             # `INSERT INTO table SELECT col1, col2 ...` with no explicit
             # column list - the selected columns are the effective targets.
             target_columns = list(source_columns)
+        where_match = re.search(r"(?is)\bWHERE\b(?P<where>.*)$", rest)
+        where_predicate = _normalize_clause_text(where_match.group("where")) if where_match else ""
         operations.append(
             {
                 "table": _normalize_table_reference_text(table.strip(), text),
@@ -977,8 +1005,8 @@ def _regex_fallback_table_operations(
                 "target_columns": target_columns,
                 "source_columns": source_columns,
                 "columns": _unique_preserve(target_columns),
-                "where_predicate": None,
-                "filter_condition": None,
+                "where_predicate": where_predicate or None,
+                "filter_condition": where_predicate or None,
                 "having_predicate": None,
                 "join_predicates": [],
                 "exists_predicates": [],
@@ -1338,6 +1366,29 @@ def _render_update_assigned_values(tree: exp.Update, dialect: str) -> List[Dict[
     return pairs
 
 
+def _render_insert_column_value_pairs(
+    columns: Sequence[Any],
+    values: Sequence[Any],
+    dialect: str,
+) -> List[Dict[str, str]]:
+    pairs: List[Dict[str, str]] = []
+    for column, value in zip(columns, values):
+        if column is None or value is None:
+            continue
+        column_sql = column.sql(dialect=dialect) if hasattr(column, "sql") else str(column)
+        value_sql = value.sql(dialect=dialect) if hasattr(value, "sql") else str(value)
+        pairs.append({
+            "column": column_sql,
+            "expression": value_sql,
+            "case_branches": (
+                _render_case_branches(value, dialect)
+                if isinstance(value, exp.Expression)
+                else []
+            ),
+        })
+    return pairs
+
+
 def _render_insert_assigned_values(tree: exp.Insert, dialect: str) -> List[Dict[str, str]]:
     """Pair INSERT target columns with literal VALUES/SELECT expressions."""
     target = tree.args.get("this")
@@ -1350,14 +1401,72 @@ def _render_insert_assigned_values(tree: exp.Insert, dialect: str) -> List[Dict[
         values = list(rows[0].args.get("expressions") or []) if rows and isinstance(rows[0], exp.Tuple) else []
     elif isinstance(source, exp.Select):
         values = list(source.args.get("expressions") or [])
+    elif isinstance(source, exp.Tuple):
+        values = list(source.args.get("expressions") or [])
     else:
         values = []
-    pairs: List[Dict[str, str]] = []
-    for column, value in zip(columns, values):
-        pairs.append({
-            "column": column.sql(dialect=dialect),
-            "expression": value.sql(dialect=dialect),
-        })
+    return _render_insert_column_value_pairs(columns, values, dialect)
+
+
+def _render_merge_assigned_values(tree: exp.Merge, dialect: str) -> List[Dict[str, Any]]:
+    """Capture WHEN MATCHED UPDATE SET and WHEN NOT MATCHED INSERT assignments.
+
+    Historically MERGE ops were emitted with ``assigned_values=[]``, so
+    downstream coverage / reconciliation / synthesis only saw whatever the
+    LLM happened to quote from raw SQL. This keeps technical assignment
+    evidence (columns, expressions, branch kind) without inventing business
+    meaning.
+    """
+    pairs: List[Dict[str, Any]] = []
+    for when in tree.args.get("expressions") or []:
+        if not isinstance(when, exp.When):
+            continue
+        matched = when.args.get("matched")
+        then = when.args.get("then")
+        condition = when.args.get("condition")
+        condition_sql = (
+            condition.sql(dialect=dialect) if isinstance(condition, exp.Expression) else ""
+        )
+        if matched:
+            branch = "MATCHED"
+        else:
+            # sqlglot uses source=False for NOT MATCHED BY TARGET, True for BY SOURCE
+            source_side = when.args.get("source")
+            if source_side is True:
+                branch = "NOT_MATCHED_BY_SOURCE"
+            else:
+                branch = "NOT_MATCHED_BY_TARGET"
+        if isinstance(then, exp.Update):
+            for item in _render_update_assigned_values(then, dialect):
+                pairs.append(
+                    {
+                        **item,
+                        "merge_branch": branch,
+                        "merge_condition": condition_sql,
+                    }
+                )
+        elif isinstance(then, exp.Insert):
+            insert_pairs = _render_insert_assigned_values(then, dialect)
+            if not insert_pairs:
+                insert_this = then.args.get("this")
+                insert_expr = then.args.get("expression")
+                columns: List[Any] = []
+                values: List[Any] = []
+                if isinstance(insert_this, exp.Tuple):
+                    columns = list(insert_this.args.get("expressions") or [])
+                elif isinstance(insert_this, exp.Schema):
+                    columns = list(insert_this.args.get("expressions") or [])
+                if isinstance(insert_expr, exp.Tuple):
+                    values = list(insert_expr.args.get("expressions") or [])
+                insert_pairs = _render_insert_column_value_pairs(columns, values, dialect)
+            for item in insert_pairs:
+                pairs.append(
+                    {
+                        **item,
+                        "merge_branch": branch,
+                        "merge_condition": condition_sql,
+                    }
+                )
     return pairs
 
 

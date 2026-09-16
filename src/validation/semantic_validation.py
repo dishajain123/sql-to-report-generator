@@ -1049,6 +1049,73 @@ def extract_case_assignment_decision_chains(source: str) -> List[Dict[str, Any]]
     return chains
 
 
+def _decision_chain_has_assignments(chain: Any) -> bool:
+    """True when at least one branch carries a field assignment.
+
+    LLM extraction sometimes re-emits a deterministic CASE/IF ladder as a
+    ``decision_chain_NNN`` with the same branch conditions but empty
+    ``assignments``. Those shells are not usable for coverage floors or IR
+    projection (no field/value to render) and previously survived
+    ``merge_decision_chains`` because the full structural signature
+    includes assignment pairs - empty vs filled looked "different", so
+    both were kept and the formatter projected the same rule twice.
+    """
+    if not isinstance(chain, dict):
+        return False
+    branches = chain.get("branches")
+    if not isinstance(branches, list):
+        return False
+    for branch in branches:
+        if not isinstance(branch, dict):
+            continue
+        assignments = branch.get("assignments")
+        if not isinstance(assignments, list):
+            continue
+        for item in assignments:
+            if isinstance(item, dict) and str(item.get("field") or "").strip():
+                return True
+    return False
+
+
+def _decision_chain_condition_signature(chain: Any) -> Optional[str]:
+    """Ordered branch-condition identity only (no assignments).
+
+    Used to drop assignment-empty LLM shells that restate a ladder already
+    recovered with real field/value pairs. Qualifier/quote differences are
+    normalized via ``normalized_condition_key`` so ``A.DpdDays IS NULL`` and
+    ``DpdDays IS NULL`` compare equal. Two *filled* chains that share
+    conditions but write different targets (e.g. the same MAX ladder once
+    per CustomerEntityID and once per UCIF_ID) still keep distinct full
+    structural signatures below and are not collapsed by this key alone.
+    """
+    if not isinstance(chain, dict):
+        return None
+    branches = chain.get("branches")
+    if not isinstance(branches, list) or not branches:
+        return None
+    from src.parsing.decision_identity import normalized_condition_key
+
+    chain_type = str(chain.get("chain_type") or "").strip().upper()
+    conditions: List[str] = []
+    for branch_index, branch in enumerate(branches):
+        if not isinstance(branch, dict):
+            continue
+        raw = branch.get("branch_condition")
+        if raw in (None, ""):
+            raw = branch.get("condition")
+        condition = normalized_condition_key(raw)
+        if (
+            chain_type == "NESTED_IF"
+            and branch_index == len(branches) - 1
+            and re.match(r"^not\s*\(", condition)
+        ):
+            condition = "else"
+        conditions.append(condition)
+    if not conditions:
+        return None
+    return json.dumps(conditions, sort_keys=False, default=str)
+
+
 def _decision_chain_signature(chain: Any) -> Optional[str]:
     """Normalized structural signature used to tell whether two decision
     chains are duplicates of the same source evidence (same field(s),
@@ -1066,8 +1133,13 @@ def _decision_chain_signature(chain: Any) -> Optional[str]:
     for branch_index, branch in enumerate(branches):
         if not isinstance(branch, dict):
             continue
-        from src.parsing.decision_identity import decision_text_key
-        condition = decision_text_key(branch.get("branch_condition"))
+        from src.parsing.decision_identity import decision_text_key, normalized_condition_key
+        # Prefer qualifier-stripped identity so an LLM restatement that
+        # drops ``A.`` / ``PRO.Table.`` prefixes still matches the
+        # deterministic chain for the same ladder.
+        condition = normalized_condition_key(
+            branch.get("branch_condition") or branch.get("condition")
+        ) or decision_text_key(branch.get("branch_condition"))
         # The nested extractor represents a flat ladder's final ELSE as the
         # effective predicate ``NOT(A) AND NOT(B)``. The procedural ladder
         # extractor represents the same branch as literal ELSE. Normalize
@@ -1085,7 +1157,8 @@ def _decision_chain_signature(chain: Any) -> Optional[str]:
             for item in assignments:
                 if not isinstance(item, dict):
                     continue
-                field = re.sub(r"\s+", " ", str(item.get("field") or "")).strip().lower()
+                from src.parsing.decision_identity import bare_field_key
+                field = bare_field_key(item.get("field"))
                 value = re.sub(r"\s+", " ", str(item.get("value") or "")).strip().lower().strip("'\"")
                 if field:
                     pairs.append([field, value])
@@ -1113,6 +1186,12 @@ def merge_decision_chains(*chain_lists: List[Any]) -> List[Dict[str, Any]]:
     processes chains in list order and lets the first chain to claim a
     field win), while the other chain can still contribute any additional
     fields the deterministic pass did not cover.
+
+    Assignment-empty shells (LLM ladders with branch conditions but no
+    field/value pairs) are dropped entirely: they cannot feed coverage
+    floors or IR result cells, and previously survived full-signature
+    dedup (empty vs filled looked different) then produced a second IR
+    decision block for the same synthesized rule.
     """
     merged: List[Dict[str, Any]] = []
     seen_signatures: Dict[str, List[Dict[str, Any]]] = {}
@@ -1122,11 +1201,15 @@ def merge_decision_chains(*chain_lists: List[Any]) -> List[Dict[str, Any]]:
         for chain in chains:
             if not isinstance(chain, dict):
                 continue
+            if not _decision_chain_has_assignments(chain):
+                # Empty shell: cannot feed coverage floors or IR result
+                # cells. Drop unconditionally (see docstring).
+                continue
             signature = _decision_chain_signature(chain)
             if signature is not None:
                 earlier = seen_signatures.setdefault(signature, [])
-                def distinct_occurrence(previous):
-                    start = chain.get("source_char_start", -1)
+                def distinct_occurrence(previous, current=chain):
+                    start = current.get("source_char_start", -1)
                     previous_start = previous.get("source_char_start", -1)
                     return (isinstance(start, int) and isinstance(previous_start, int)
                             and start >= 0 and previous_start >= 0 and start != previous_start)

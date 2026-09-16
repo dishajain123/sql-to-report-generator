@@ -132,6 +132,156 @@ def test_model_rule_name_copied_from_evaluation_order_is_replaced():
     assert next(r for r in result2 if r['rule_id'] == 'r2')['rule_name'] == 'Reset status on reprocessing'
 
 
+def test_blank_outcome_near_cover_is_repaired_instead_of_duplicating():
+    """A model rule that lists the correct ordered conditions but leaves an
+    outcome cell blank must be repaired from the chain in place - not treated
+    as uncovered (which used to synthesize a second, duplicate ladder).
+    """
+    chain = {
+        'chain_id': 'c1',
+        'execution_semantics': 'First matching row wins; ELSE includes false or NULL predicates.',
+        'branches': [
+            {'branch_condition': 'A.DpdDays IS NULL', 'assignments': [{'field': 'DpdBucket', 'value': "'NOT_APPLICABLE'"}]},
+            {'branch_condition': 'A.DpdDays = 0', 'assignments': [{'field': 'DpdBucket', 'value': "'CURRENT'"}]},
+            {'branch_condition': '', 'is_catch_all': True, 'assignments': [{'field': 'DpdBucket', 'value': "'BUCKET_90_PLUS'"}]},
+        ],
+    }
+    near_cover = {
+        'rule_id': 'r1',
+        'output_field': 'DpdBucket',
+        'rule_name': 'First matching row wins; ELSE includes false or NULL predicates.',
+        'business_meaning': 'First matching row wins; ELSE includes false or NULL predicates.',
+        'decision_logic_rows': [
+            {'condition': 'DpdDays IS NULL', 'outcome': ''},
+            {'condition': 'DpdDays = 0', 'outcome': "'CURRENT'"},
+            {'condition': 'ELSE', 'outcome': "'BUCKET_90_PLUS'"},
+        ],
+    }
+    result = RuleSynthesizerAgent.ensure_decision_chain_coverage([near_cover], [chain])
+    assert len(result) == 1
+    assert result[0]['rule_id'] == 'r1'
+    assert result[0]['rule_name'] == 'Determine DpdBucket'
+    assert result[0]['business_meaning'] == ''
+    assert result[0]['decision_logic_rows'][0]['outcome'] == "'NOT_APPLICABLE'"
+
+
+def test_incomplete_sibling_dropped_when_complete_cover_exists():
+    chain = {
+        'chain_id': 'c1',
+        'branches': [
+            {'branch_condition': 'X = 1', 'assignments': [{'field': 'STATUS', 'value': 'A'}]},
+            {'branch_condition': '', 'is_catch_all': True, 'assignments': [{'field': 'STATUS', 'value': 'B'}]},
+        ],
+    }
+    incomplete = {
+        'rule_id': 'bad', 'output_field': 'STATUS',
+        'decision_logic_rows': [
+            {'condition': 'X = 1', 'outcome': ''},
+            {'condition': 'ELSE', 'outcome': 'B'},
+        ],
+    }
+    complete = {
+        'rule_id': 'good', 'output_field': 'STATUS', 'rule_name': 'Set status',
+        'decision_logic_rows': [
+            {'condition': 'X = 1', 'outcome': 'A'},
+            {'condition': 'ELSE', 'outcome': 'B'},
+        ],
+    }
+    result = RuleSynthesizerAgent.ensure_decision_chain_coverage([incomplete, complete], [chain])
+    assert [r['rule_id'] for r in result] == ['good']
+
+
+def test_two_complete_model_covers_collapse_to_one():
+    """Two model rules restating the same complete CASE ladder must not both
+    survive ensure_decision_chain_coverage (observed: Determine DpdBucket +
+    Classify DPD buckets for one source CASE).
+    """
+    chain = {
+        'chain_id': 'c1',
+        'branches': [
+            {'branch_condition': 'DpdDays IS NULL', 'assignments': [{'field': 'DpdBucket', 'value': "'NOT_APPLICABLE'"}]},
+            {'branch_condition': 'DpdDays = 0', 'assignments': [{'field': 'DpdBucket', 'value': "'CURRENT'"}]},
+            {'branch_condition': '', 'is_catch_all': True, 'assignments': [{'field': 'DpdBucket', 'value': "'BUCKET_90_PLUS'"}]},
+        ],
+    }
+    rows = [
+        {'condition': 'DpdDays IS NULL', 'outcome': "'NOT_APPLICABLE'"},
+        {'condition': 'DpdDays = 0', 'outcome': "'CURRENT'"},
+        {'condition': 'ELSE', 'outcome': "'BUCKET_90_PLUS'"},
+    ]
+    first = {'rule_id': 'a', 'output_field': 'DpdBucket', 'rule_name': 'Determine DpdBucket',
+             'decision_logic_rows': [dict(r) for r in rows]}
+    second = {'rule_id': 'b', 'output_field': 'DpdBucket', 'rule_name': 'Classify DPD buckets',
+              'business_meaning': 'Classify loan accounts into DPD buckets.',
+              'decision_logic_rows': [dict(r) for r in rows]}
+    result = RuleSynthesizerAgent.ensure_decision_chain_coverage([first, second], [chain])
+    assert len(result) == 1
+    assert result[0]['rule_id'] == 'b'  # prefers non-empty business_meaning
+
+
+def test_formatter_collapses_noncanonical_content_duplicate_tables():
+    rules = [
+        {
+            'rule_id': 'a', 'output_field': 'DpdBucket', 'rule_name': 'Determine DpdBucket',
+            'fields_affected': ['DpdBucket'],
+            'decision_logic_rows': [
+                {'condition': 'DpdDays IS NULL', 'outcome': "'NOT_APPLICABLE'"},
+                {'condition': 'ELSE', 'outcome': "'CURRENT'"},
+            ],
+        },
+        {
+            'rule_id': 'b', 'output_field': 'DpdBucket', 'rule_name': 'Classify DPD buckets',
+            'fields_affected': ['DpdBucket'],
+            'decision_logic_rows': [
+                {'condition': 'DpdDays IS NULL', 'outcome': 'NOT_APPLICABLE'},
+                {'condition': 'ELSE', 'outcome': 'CURRENT'},
+            ],
+        },
+    ]
+    kept = ReportFormatterAgent()._suppress_content_duplicate_decision_tables(rules)
+    assert len(kept) == 1
+
+
+def test_unreachable_annotation_does_not_blank_decision_block_results():
+    """Deterministic coverage annotates unreachable CASE arms with
+    `[UNREACHABLE ...]`. IR block membership must still match those rows to
+    the raw chain conditions so the projected Result cell is not left blank
+    (observed for DpdDays IS NULL -> NOT_APPLICABLE in a live DPD report).
+    """
+    from src.ir.canonical_ir import BusinessRuleIR, _build_decision_blocks
+
+    chain = {
+        'chain_id': 'case_1',
+        'eligibility': ['NOT A.DpdDays IS NULL'],
+        'branches': [
+            {'branch_condition': 'A.DpdDays IS NULL', 'assignments': [{'field': 'DpdBucket', 'value': "'NOT_APPLICABLE'"}]},
+            {'branch_condition': 'A.DpdDays = 0', 'assignments': [{'field': 'DpdBucket', 'value': "'CURRENT'"}]},
+        ],
+    }
+    recovered = {
+        'rule_id': 'det1',
+        'output_field': 'DpdBucket',
+        'rule_type': 'deterministic_decision_table',
+        'source_chain_id': 'case_1',
+        'rule_name': 'Determine DpdBucket',
+        'decision_logic_rows': [
+            {
+                'condition': (
+                    "A.DpdDays IS NULL [UNREACHABLE — contradicts this statement's own WHERE "
+                    "clause; never executes for any row it touches]"
+                ),
+                'outcome': "'NOT_APPLICABLE'",
+            },
+            {'condition': 'A.DpdDays = 0', 'outcome': "'CURRENT'"},
+        ],
+    }
+    blocks = _build_decision_blocks([BusinessRuleIR.from_dict(recovered)], [chain])
+    assert len(blocks) == 1
+    outcomes = [branch['results'] for branch in blocks[0]['branches']]
+    assert outcomes[0] == ["'NOT_APPLICABLE'"]
+    assert outcomes[1] == ["'CURRENT'"]
+
+
 def test_qualified_chain_condition_is_recognized_as_covered_by_bare_model_rule():
     """Root-cause regression: a deterministic chain's own condition text is
     routinely alias/schema-qualified (`A.DpdDays IS NULL`,
@@ -395,6 +545,335 @@ def test_content_duplicate_suppression_never_collapses_two_canonical_blocks():
     assert {r['rule_id'] for r in result} == {'r1', 'r2'}
 
 
+def test_project_decision_rules_emits_one_projection_per_primary_rule():
+    """When the same synthesized rule is listed on two IR blocks (real
+    chain + leftover shell), projection must emit a single displayed rule
+    - not two canonical tables that content-dedup refuses to collapse.
+    """
+    rules = [
+        {
+            'rule_id': 'rule__1__3',
+            'rule_name': 'Classify DPD buckets',
+            'output_field': 'DpdBucket',
+            'fields_affected': ['DpdBucket'],
+            'decision_logic_rows': [
+                {'condition': 'DpdDays IS NULL', 'outcome': 'NOT_APPLICABLE'},
+                {'condition': 'ELSE', 'outcome': 'BUCKET_90_PLUS'},
+            ],
+        }
+    ]
+    blocks = [
+        {
+            'block_id': 'decision_block_001',
+            'source_chain_id': 'case_0043_0050_1482',
+            'name': 'Classify DPD buckets',
+            'output_fields': ['DpdBucket'],
+            'rule_ids': ['rule__1__3'],
+            'branches': [
+                {'condition': 'A.DpdDays IS NULL', 'results': ['NOT_APPLICABLE']},
+                {'condition': 'ELSE', 'results': ['BUCKET_90_PLUS']},
+            ],
+        },
+        {
+            'block_id': 'decision_block_006',
+            'source_chain_id': 'decision_chain_006',
+            'name': 'Classify DPD buckets',
+            'output_fields': [],
+            'rule_ids': ['rule__1__3'],
+            'branches': [
+                {'condition': 'A.DpdDays IS NULL', 'results': []},
+                {'condition': 'ELSE', 'results': []},
+            ],
+        },
+    ]
+    projected = ReportFormatterAgent()._project_decision_rules(rules, blocks)
+    classify = [r for r in projected if 'Classify' in str(r.get('rule_name') or '')]
+    assert len(classify) == 1
+    assert classify[0]['decision_block_id'] == 'decision_block_001'
+
+
+def test_conflicted_chain_block_keeps_full_facility_type_ladder():
+    """A model rule that correctly restates AdjustedPenalty's CC/OD + TL/DL
+    CASE can still be marked CONFLICT on a claim-level mismatch. Projection
+    must keep the deterministic chain table (both facility branches) and
+    clear CONFLICT so `_exclude_conflicting_rules` cannot delete the only
+    copy of the ladder from the business report.
+    """
+    rules = [
+        {
+            'rule_id': 'rule__5',
+            'rule_name': 'Adjust penalty in #DpdStaging',
+            'output_field': 'AdjustedPenalty',
+            'fields_affected': ['AdjustedPenalty'],
+            'reconciliation_status': 'CONFLICT',
+            'reconciliation_notes': ['Deterministic evidence conflicts with the synthesized claim.'],
+            'decision_logic_rows': [
+                {'condition': "S.FacilityType IN ('CC', 'OD')", 'outcome': 'S.AdjustedPenalty * 1.10'},
+                {'condition': "S.FacilityType IN ('TL', 'DL')", 'outcome': 'S.AdjustedPenalty * 1.05'},
+                {'condition': 'ELSE', 'outcome': 'S.AdjustedPenalty'},
+            ],
+        }
+    ]
+    blocks = [
+        {
+            'block_id': 'decision_block_004',
+            'source_chain_id': 'case_0117_0121_4529',
+            'name': 'Adjust penalty in #DpdStaging',
+            'output_fields': ['AdjustedPenalty'],
+            'rule_ids': ['rule__5'],
+            'branches': [
+                {'condition': "S.FacilityType IN ('CC', 'OD')", 'results': ['S.AdjustedPenalty * 1.10']},
+                {'condition': "S.FacilityType IN ('TL', 'DL')", 'results': ['polluted action text']},
+                {'condition': 'ELSE', 'results': ['S.AdjustedPenalty']},
+            ],
+        }
+    ]
+    merged = {
+        'decision_chains': [
+            {
+                'chain_id': 'case_0117_0121_4529',
+                'branches': [
+                    {
+                        'branch_condition': "S.FacilityType IN ('CC', 'OD')",
+                        'assignments': [{'field': 'AdjustedPenalty', 'value': 'S.AdjustedPenalty * 1.10'}],
+                    },
+                    {
+                        'branch_condition': "S.FacilityType IN ('TL', 'DL')",
+                        'assignments': [{'field': 'AdjustedPenalty', 'value': 'S.AdjustedPenalty * 1.05'}],
+                    },
+                    {
+                        'branch_condition': 'ELSE',
+                        'assignments': [{'field': 'AdjustedPenalty', 'value': 'S.AdjustedPenalty'}],
+                    },
+                ],
+            }
+        ]
+    }
+    projected = ReportFormatterAgent()._project_decision_rules(rules, blocks, merged)
+    assert len(projected) == 1
+    rule = projected[0]
+    assert rule['reconciliation_status'] == 'MATCHED'
+    rows = rule['decision_logic_rows']
+    assert len(rows) == 3
+    assert "('TL', 'DL')" in rows[1]['condition']
+    assert '1.05' in rows[1]['outcome']
+    assert 'polluted' not in rows[1]['outcome']
+    kept, suppressed = ReportFormatterAgent._exclude_conflicting_rules(projected)
+    assert suppressed == 0
+    assert len(kept) == 1
+
+
+def test_suppress_if_ladder_branch_fragment_when_full_block_exists():
+    ladder = {
+        'rule_id': 'block_if',
+        'rule_name': 'Determine BucketWorsened',
+        'output_field': 'BucketWorsened, GracePeriodApplied',
+        'fields_affected': ['BucketWorsened', 'GracePeriodApplied'],
+        'decision_block_id': 'decision_block_003',
+        'decision_logic_rows': [
+            {
+                'condition': 'EXISTS (...) — row filter: LastPaymentDueDate >= @GraceWindowStart',
+                'outcome': "BucketWorsened := 'N'",
+            },
+            {
+                'condition': (
+                    'EXISTS (...) — row filter: PrevDpdBucket IS NOT NULL AND '
+                    'DpdBucket <> PrevDpdBucket AND DpdDays > ISNULL(PrevDpdDays, 0)'
+                ),
+                'outcome': "BucketWorsened := 'Y'",
+            },
+            {'condition': 'ELSE', 'outcome': "BucketWorsened := 'N'"},
+        ],
+    }
+    fragment = {
+        'rule_id': 'frag',
+        'rule_name': 'Update bucket worsened',
+        'output_field': 'BucketWorsened',
+        'fields_affected': ['BucketWorsened'],
+        'decision_logic_rows': [
+            {
+                'condition': (
+                    'PrevDpdBucket IS NOT NULL AND DpdBucket <> PrevDpdBucket '
+                    'AND DpdDays > ISNULL(PrevDpdDays, 0)'
+                ),
+                'outcome': 'Y',
+            },
+        ],
+    }
+    kept = ReportFormatterAgent()._suppress_decision_ladder_branch_fragments([ladder, fragment])
+    assert [rule['rule_id'] for rule in kept] == ['block_if']
+
+
+def test_suppress_contentless_reset_when_if_ladder_covers_field():
+    ladder = {
+        'rule_id': 'block_if',
+        'rule_name': 'Determine BucketWorsened',
+        'output_field': 'BucketWorsened, GracePeriodApplied',
+        'fields_affected': ['BucketWorsened', 'GracePeriodApplied'],
+        'decision_block_id': 'decision_block_003',
+        'decision_logic_rows': [
+            {'condition': 'EXISTS (...)', 'outcome': "BucketWorsened := 'N'"},
+            {'condition': 'EXISTS (...)', 'outcome': "BucketWorsened := 'Y'"},
+            {'condition': 'ELSE', 'outcome': "BucketWorsened := 'N'"},
+        ],
+    }
+    reset = {
+        'rule_id': 'reset',
+        'rule_name': "Reset BucketWorsened to 'N'",
+        'output_field': 'BucketWorsened',
+        'fields_affected': ['BucketWorsened'],
+        'decision_logic_rows': [],
+    }
+    kept = ReportFormatterAgent()._suppress_decision_ladder_branch_fragments([ladder, reset])
+    assert [rule['rule_id'] for rule in kept] == ['block_if']
+
+
+def test_collapse_merge_matched_and_unmatched_into_one_upsert():
+    matched = {
+        'rule_id': 'm1',
+        'rule_name': 'Update existing records',
+        'output_field': 'DpdBucket, AdjustedPenalty, LastUpdatedDate',
+        'fields_affected': ['DpdBucket', 'AdjustedPenalty', 'LastUpdatedDate'],
+        'decision_context': ['Target: PRO.DpdBucketHistory'],
+        'decision_logic_rows': [
+            {
+                'condition': 'Target.AccountId = Source.AccountId',
+                'outcome': 'Source.DpdBucket, Source.AdjustedPenalty, @ProcessDate',
+            }
+        ],
+        'source_evidence': ['WHEN MATCHED THEN UPDATE SET Target.DpdBucket = Source.DpdBucket'],
+    }
+    unmatched = {
+        'rule_id': 'm2',
+        'rule_name': 'Insert new records',
+        'output_field': 'AccountId, DpdBucket, AdjustedPenalty, FirstFlaggedDate, LastUpdatedDate',
+        'fields_affected': [
+            'AccountId', 'DpdBucket', 'AdjustedPenalty', 'FirstFlaggedDate', 'LastUpdatedDate',
+        ],
+        'decision_context': ['Target: PRO.DpdBucketHistory'],
+        'decision_logic_rows': [
+            {
+                'condition': 'Record does not exist in DpdBucketHistory table',
+                'outcome': 'Source.AccountId',
+            }
+        ],
+        'source_evidence': ['WHEN NOT MATCHED BY TARGET THEN INSERT'],
+    }
+    kept = ReportFormatterAgent()._collapse_merge_upsert_halves([matched, unmatched])
+    assert len(kept) == 1
+    assert kept[0]['rule_name'].startswith('Upsert')
+    rows = kept[0]['decision_logic_rows']
+    assert [row['condition'] for row in rows] == ['WHEN MATCHED', 'WHEN NOT MATCHED BY TARGET']
+
+
+def test_collapse_per_column_matched_merge_fragments_with_insert():
+    """Sectioned synthesis sometimes emits one MATCHED rule per SET column."""
+    fragments = []
+    for field in ('OutstandingBalance', 'ProvisionAmount', 'CoverageRatio', 'LastUpdatedDate'):
+        fragments.append({
+            'rule_id': f'u_{field}',
+            'rule_name': f'Update {field}',
+            'output_field': field,
+            'fields_affected': [field],
+            # Live Nova output often omits decision_context Target: on
+            # sectioned MERGE halves - only summary/eligibility name the table.
+            'summary': [
+                f'Update the {field} for matched records in the ProvisionCoverageSummary table.'
+            ],
+            'eligibility': [
+                'Record exists in both ProvisionCoverageSummary and #ProvisionCoverage tables'
+            ],
+            'decision_logic_rows': [
+                {
+                    'condition': 'Record exists in both ProvisionCoverageSummary and #ProvisionCoverage tables',
+                    'outcome': f'Source.{field}' if field != 'LastUpdatedDate' else '@ProcessDate',
+                },
+            ],
+            'source_evidence': [
+                f'Target.{field} = Source.{field}'
+                if field != 'LastUpdatedDate'
+                else 'Target.LastUpdatedDate = @ProcessDate'
+            ],
+        })
+    insert = {
+        'rule_id': 'ins',
+        'rule_name': 'Insert new record',
+        'output_field': 'AccountId, OutstandingBalance, ProvisionAmount, CoverageRatio, FirstSeenDate, LastUpdatedDate',
+        'fields_affected': [
+            'AccountId', 'OutstandingBalance', 'ProvisionAmount',
+            'CoverageRatio', 'FirstSeenDate', 'LastUpdatedDate',
+        ],
+        'summary': [
+            'Insert a new record into the ProvisionCoverageSummary table for unmatched records.'
+        ],
+        'eligibility': ['Record does not exist in ProvisionCoverageSummary table'],
+        'decision_logic_rows': [
+            {
+                'condition': 'Record does not exist in ProvisionCoverageSummary table',
+                'outcome': 'Source.AccountId',
+            },
+        ],
+        'source_evidence': [
+            'INSERT (AccountId, OutstandingBalance, ProvisionAmount, CoverageRatio, '
+            'FirstSeenDate, LastUpdatedDate) VALUES (Source.AccountId, ...)'
+        ],
+    }
+    kept = ReportFormatterAgent()._collapse_merge_upsert_halves(fragments + [insert])
+    assert len(kept) == 1
+    assert kept[0]['rule_name'].startswith('Upsert')
+    assert 'OutstandingBalance' in kept[0]['output_field']
+    assert 'ProvisionAmount' in kept[0]['output_field']
+    assert [row['condition'] for row in kept[0]['decision_logic_rows']] == [
+        'WHEN MATCHED', 'WHEN NOT MATCHED BY TARGET',
+    ]
+
+def test_single_write_identity_collapses_competing_noncanonical_tables():
+    """Two model paraphrases of the same single-write field (e.g. RiskScore)
+    must collapse to one even when neither carries decision_block_id and
+    their WHERE predicates differ enough to miss content-signature dedup.
+    """
+    displayed = [
+        {
+            'rule_id': 'a',
+            'rule_name': 'Calculate RiskScore',
+            'output_field': 'RiskScore',
+            'fields_affected': ['RiskScore'],
+            'decision_logic_rows': [
+                {'condition': 'CreditLimit IS NOT NULL AND CreditLimit > 0',
+                 'outcome': '(ISNULL(OverdueDays, 0) * 0.5) + (ISNULL(UtilizationRatio, 0) * 100 * 0.3)'},
+            ],
+        },
+        {
+            'rule_id': 'b',
+            'rule_name': 'Calculate Risk Score',
+            'output_field': 'RiskScore',
+            'fields_affected': ['RiskScore'],
+            'decision_logic_rows': [
+                {'condition': 'OverdueDays, UtilizationRatio, PriorDefaultCount are available',
+                 'outcome': '(ISNULL(OverdueDays, 0) * 0.5) + (ISNULL(UtilizationRatio, 0) * 100 * 0.3)'},
+            ],
+        },
+    ]
+    merged = {
+        'tables_written': [
+            {
+                'table': 'PRO.CustomerRiskProfile',
+                'target_columns': ['RiskScore'],
+                'source_line_start': 42,
+                'source_char_start': 1000,
+            },
+        ],
+    }
+    # Confirm the helper sees RiskScore as globally single-write; if the
+    # table_operations shape drifts, fail loudly rather than silently skip.
+    assert 'riskscore' in ReportFormatterAgent._globally_single_write_fields(merged)
+    result = ReportFormatterAgent()._suppress_single_write_field_duplicates_by_identity(
+        displayed, merged
+    )
+    assert len(result) == 1
+    assert result[0]['rule_id'] == 'a'
+
+
 def test_consolidated_gap_ambiguity_does_not_duplicate_across_containers():
     """A truncated synthesis merges its coverage-gap summary into
     `synthesis.data["ambiguities"]`'s existing truncation bullet (the one
@@ -445,6 +924,75 @@ def test_rule_alias_map_resolves_aliases_from_source_context():
     assert alias_map["A"] == "PRO.ACCOUNTCAL"
     assert alias_map["B"] == "PRO.CUSTOMERCAL"
     assert alias_map["DPD"] == "#DPD"
+    assert alias_map["TARGET"] == "PRO.ACCOUNTCAL"
+
+
+def test_rule_alias_map_resolves_merge_target_and_source():
+    rule = {
+        "rule_name": "Upsert matched and new records",
+        "source_evidence": [
+            "MERGE PRO.DpdBucketHistory AS Target USING #DpdStaging AS Source "
+            "ON Target.AccountId = Source.AccountId "
+            "WHEN MATCHED THEN UPDATE SET Target.DpdBucket = Source.DpdBucket"
+        ],
+        "decision_logic_rows": [
+            {"condition": "WHEN MATCHED", "outcome": "Source.DpdBucket"},
+        ],
+    }
+    alias_map = ReportFormatterAgent._rule_alias_map(rule)
+    assert alias_map["TARGET"] == "PRO.DpdBucketHistory"
+    assert alias_map["SOURCE"] == "#DpdStaging"
+    assert (
+        ReportFormatterAgent._field_for_display("Source.DpdBucket", alias_map)
+        == "#DpdStaging.DpdBucket"
+    )
+    assert (
+        ReportFormatterAgent._field_for_display("Target.AccountId", alias_map)
+        == "PRO.DpdBucketHistory.AccountId"
+    )
+
+
+def test_field_for_display_strips_unresolved_merge_role_aliases():
+    assert ReportFormatterAgent._field_for_display("Target.AccountId") == "AccountId"
+    assert ReportFormatterAgent._field_for_display("Source.DpdBucket") == "DpdBucket"
+
+
+def test_context_line_drops_as_alias_suffix():
+    alias_map = {"S": "#DpdStaging"}
+    assert (
+        ReportFormatterAgent._context_line_for_display("FROM #DpdStaging AS S", alias_map)
+        == "FROM #DpdStaging"
+    )
+
+
+def test_field_for_display_does_not_double_hash_temp_tables():
+    alias_map = {"S": "#DpdStaging"}
+    # Resolving S → #DpdStaging.
+    assert (
+        ReportFormatterAgent._field_references_for_display("S.AdjustedPenalty * 1.10", alias_map)
+        == "#DpdStaging.AdjustedPenalty * 1.10"
+    )
+    # Already-qualified temp table must not become ##DpdStaging.
+    assert (
+        ReportFormatterAgent._field_references_for_display(
+            "#DpdStaging.AdjustedPenalty * 1.10", alias_map
+        )
+        == "#DpdStaging.AdjustedPenalty * 1.10"
+    )
+
+
+def test_alias_map_ignores_english_from_the_prose():
+    blob = "Insert records into the #DpdStaging table from the A.LoanAccountCal table where BucketWorsened is Y"
+    alias_map = ReportFormatterAgent._alias_map_from_statement_text(blob)
+    assert alias_map.get("A") != "the"
+    assert "THE" not in {k for k in alias_map}
+
+
+def test_field_for_display_keeps_pro_schema_qualifier():
+    assert ReportFormatterAgent._field_for_display("PRO.LoanAccountCal.DpdDays") == (
+        "PRO.LoanAccountCal.DpdDays"
+    )
+    assert ReportFormatterAgent._field_for_display("PRO.LoanAccountCal") == "PRO.LoanAccountCal"
 
 
 def test_field_for_display_replaces_known_alias_with_real_table_name():
@@ -476,8 +1024,11 @@ def test_render_decision_block_resolves_aliases_in_conditions_outcomes_and_eligi
         ],
     }
     lines = "\n".join(ReportFormatterAgent()._render_decision_block(1, [rule]))
-    assert "#DPD.DPD_IntService >= #DPD.DPD_NoCredit" in lines
+    # Alias → real table for Applies to / Source context; Decision Logic
+    # then drops the redundant `#DPD.` prefix because Target is already named.
+    assert "DPD_IntService >= DPD_NoCredit" in lines
     assert "#DPD.DPD_Overdrawn > 0 OR #DPD.DPD_Overdue > 0" in lines
+    assert "| DPD_IntService >= DPD_NoCredit | DPD_IntService |" in lines
     # No bare, unexplained "A." alias should survive in the rendered block.
     assert "A.DPD" not in lines
 
@@ -537,9 +1088,11 @@ def test_render_statement_decisions_resolves_aliases_but_preserves_everything_el
     lines = "\n".join(ReportFormatterAgent()._render_statement_decisions(1, rule))
     # Eligibility resolved (business text, not literal SQL evidence).
     assert "PRO.ACCOUNTCAL.BALANCE > 0" in lines
-    # Decision table condition: alias resolved to the real table, every other
-    # character (double space, "BETWEEN 1 AND 30") preserved exactly.
-    assert "PRO.ACCOUNTCAL.DPD_Max  BETWEEN 1 AND 30" in lines
+    # Decision Logic: alias resolved, then redundant Target table qualifier
+    # stripped because Source context already names PRO.ACCOUNTCAL. Spacing
+    # inside the predicate is preserved.
+    assert "DPD_Max  BETWEEN 1 AND 30" in lines
+    assert "PRO.ACCOUNTCAL.DPD_Max  BETWEEN 1 AND 30" not in lines
     # The "Expression:" bullet above the table gets the same treatment.
     assert "COALESCE(PRO.ACCOUNTCAL.SMA_CLASS, PRO.CUSTOMERCAL.SMA_CLASS_KEY)" in lines
     # An alias with no resolvable FROM/JOIN context falls back to stripping

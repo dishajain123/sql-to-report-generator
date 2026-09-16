@@ -30,6 +30,7 @@ orchestration framework is involved.
 from __future__ import annotations
 
 from src.parsing.sql_comments import executable_sql
+from src.parsing import alias_resolution as _alias_resolution
 from src.ir.rule_identity import unique_rule_ids
 
 import json
@@ -221,6 +222,38 @@ class RuleSynthesizerAgent:
     @staticmethod
     def _is_parse_error_housekeeping_ambiguity(text: Any) -> bool:
         return bool(isinstance(text, str) and RuleSynthesizerAgent._PARSE_ERROR_HOUSEKEEPING_RE.search(text))
+
+    _STEP_WORD_RE = re.compile(r"[A-Za-z0-9_]+")
+
+    @classmethod
+    def _drop_near_duplicate_steps(cls, steps: List[str]) -> List[str]:
+        """Drop a step_by_step_flow entry that near-restates an
+        already-kept one, catching a paraphrase exact-text dedup misses
+        (e.g. two sections each independently describing the same MERGE
+        statement in slightly different words). A step is dropped only
+        when its own content-word set overlaps an already-kept step's by
+        80% or more of its smaller side (i.e. it is essentially the same
+        step, not merely on a related topic), and only once it has at
+        least 4 content words - short steps are common and legitimately
+        similar-looking ("Commit the transaction.") without being
+        duplicates of each other.
+        """
+        kept: List[str] = []
+        kept_word_sets: List["set[str]"] = []
+        for step in steps:
+            words = {w.lower() for w in cls._STEP_WORD_RE.findall(step)}
+            is_near_duplicate = False
+            if len(words) >= 4:
+                for kept_words in kept_word_sets:
+                    smaller = min(len(words), len(kept_words))
+                    if smaller and len(words & kept_words) / smaller >= 0.8:
+                        is_near_duplicate = True
+                        break
+            if is_near_duplicate:
+                continue
+            kept.append(step)
+            kept_word_sets.append(words)
+        return kept
 
     @staticmethod
     def _clean_ambiguities(data: Dict[str, Any]) -> bool:
@@ -603,7 +636,41 @@ class RuleSynthesizerAgent:
         }]
 
     @staticmethod
-    def merge_section_results(results: Sequence["SynthesisResult"]) -> "SynthesisResult":
+    def _merge_scoped_written_tables(
+        merged_extraction: Optional[Dict[str, Any]],
+    ) -> Dict[str, str]:
+        """Bare (lowercased) written-table name -> original-casing display
+        name, for every table `tables_written` reports - excluding process
+        bookkeeping tables (same `runningprocessstatus`-name signal
+        `_remove_operational_status_rules` uses), since a purpose summary
+        is never expected to mention audit/status plumbing.
+        """
+        if not isinstance(merged_extraction, dict):
+            return {}
+        status_tables = {
+            str(row.get("table") or "").strip().split(".")[-1].strip("#").casefold()
+            for row in merged_extraction.get("table_operations", []) or []
+            if isinstance(row, dict)
+            and "runningprocessstatus" in str(row.get("table") or "").lower()
+        }
+        display_by_bare: Dict[str, str] = {}
+        for row in merged_extraction.get("tables_written", []) or []:
+            if not isinstance(row, dict):
+                continue
+            table = str(row.get("table") or "").strip()
+            if not table:
+                continue
+            bare_key = table.split(".")[-1].strip("#").casefold()
+            if not bare_key or bare_key in status_tables:
+                continue
+            display_by_bare.setdefault(bare_key, table.split(".")[-1].strip("#"))
+        return display_by_bare
+
+    @staticmethod
+    def merge_section_results(
+        results: Sequence["SynthesisResult"],
+        merged_extraction: Optional[Dict[str, Any]] = None,
+    ) -> "SynthesisResult":
         """Combine the per-section `SynthesisResult`s produced by sectioned
         synthesis (one call per `plan_synthesis_sections` entry) back into a
         single whole-object result shaped exactly like a normal `synthesize()`
@@ -639,11 +706,40 @@ class RuleSynthesizerAgent:
         # under "What This Does" in a live report. `purpose_summary` is a
         # single holistic field, not a per-section-contributed list like
         # `business_rules`, so the correct merge is to keep the single most
-        # complete attempt (the longest one, as a simple, deterministic
-        # proxy for "the section that had the fullest picture") rather than
-        # concatenating every section's restatement of the same idea.
+        # complete attempt - not simply the longest text (a section can pad
+        # its own single-table guess with verbose phrasing and still say
+        # less than a shorter, more complete attempt), but the one that
+        # actually names the most of the object's real written tables,
+        # tie-broken by length as before.
         purpose_summaries = [str(item.data.get("purpose_summary") or "").strip() for item in usable]
-        merged_purpose = max((text for text in purpose_summaries if text), key=len, default="")
+        known_written_tables = RuleSynthesizerAgent._merge_scoped_written_tables(merged_extraction)
+
+        def _table_coverage_score(text: str) -> int:
+            if not known_written_tables:
+                return 0
+            lowered = text.casefold()
+            return sum(1 for bare in known_written_tables if bare and bare in lowered)
+
+        purpose_candidates = [text for text in purpose_summaries if text]
+        merged_purpose = max(
+            purpose_candidates, key=lambda text: (_table_coverage_score(text), len(text)), default=""
+        )
+        if merged_purpose and known_written_tables:
+            lowered_purpose = merged_purpose.casefold()
+            missing_display = [
+                display for bare, display in known_written_tables.items()
+                if bare not in lowered_purpose
+            ]
+            # Only append when the winning summary still misses MORE than
+            # half of what the object actually writes to - a summary that
+            # already covers most tables doesn't need a bolted-on sentence,
+            # and this never invents anything beyond table names the
+            # deterministic extraction itself already reported.
+            if len(missing_display) > len(known_written_tables) / 2:
+                merged_purpose = (
+                    f"{merged_purpose} This procedure also writes to: "
+                    f"{', '.join(sorted(missing_display))}."
+                )
 
         exception_summaries = [
             str(item.data.get("exception_handling_summary") or "").strip() for item in usable
@@ -688,6 +784,7 @@ class RuleSynthesizerAgent:
                     continue
                 merged_steps.append(step_text)
         merged_steps = _dedup_preserve_order(merged_steps)
+        merged_steps = RuleSynthesizerAgent._drop_near_duplicate_steps(merged_steps)
 
         merged_rules: List[Dict[str, Any]] = []
         seen_rule_keys: set = set()
@@ -2284,7 +2381,7 @@ class RuleSynthesizerAgent:
             row for row in (merged_extraction or {}).get("table_operations", []) or []
             if isinstance(row, dict)
             and str(row.get("active_status") or "ACTIVE").upper() == "ACTIVE"
-            and str(row.get("operation") or "").upper() == "DROP"
+            and str(row.get("operation") or "").upper() in {"DROP", "CREATE"}
         ]
         cleanup_tables = {
             str(row.get("table") or "").strip().upper()
@@ -2304,17 +2401,23 @@ class RuleSynthesizerAgent:
                 str(item) for item in (rule.get("source_evidence") or [])
             )
             # Parser metadata is preferred, but a valid source citation is
-            # sufficient to classify a technical DROP when the statement
+            # sufficient to classify a technical DROP/CREATE when the statement
             # parser could not build an operation record for that dialect or
             # syntax variant. This remains deletion-only and does not infer
             # business meaning.
             cleanup_evidence = bool(re.search(
-                r"\bDROP\s+TABLE\b.*(?:#|TEMP|TMP|TEMPORARY)",
+                r"\b(?:DROP|CREATE)\s+TABLE\b.*(?:#|TEMP|TMP|TEMPORARY)",
                 evidence_text,
+                re.IGNORECASE | re.DOTALL,
+            )) or bool(re.search(
+                r"\b(?:DROP|CREATE)\s+TABLE\b.*(?:#|TEMP|TMP|TEMPORARY)",
+                str(rule.get("condition") or "") + " " + str(rule.get("action") or "") + " " + str(rule.get("rule_name") or ""),
                 re.IGNORECASE | re.DOTALL,
             ))
             is_cleanup_description = any(
-                marker in rule_text for marker in ("drop", "temporary", "temp table", "cleanup")
+                marker in rule_text for marker in (
+                    "drop", "create", "temporary", "temp table", "cleanup", "#dpdstaging",
+                )
             )
             decision_rows = [
                 row for row in (rule.get("decision_logic_rows") or [])
@@ -2333,9 +2436,20 @@ class RuleSynthesizerAgent:
             ))
             has_genuine_decision = len(distinct_outcomes) >= 2 or (
                 bool(condition) and not existence_guard
+                and not re.search(r"\b(?:DROP|CREATE)\s+TABLE\b", condition, re.IGNORECASE)
             )
             is_cleanup = bool(cleanup_tables) or cleanup_evidence or existence_guard
-            if is_cleanup and is_cleanup_description and not has_business_fields and not has_genuine_decision:
+            # A CREATE/DROP of a temp staging table with no multi-branch
+            # decision content is execution plumbing, not a business rule
+            # (observed: "Create #DpdStaging table" rendered as R1).
+            name_action = f"{rule.get('rule_name') or ''} {rule.get('action') or ''}".lower()
+            is_temp_ddl = bool(re.search(
+                r"\b(?:create|drop)\b.*(?:#\w+|temp(?:orary)?\s+table)",
+                name_action,
+                re.IGNORECASE,
+            )) and not has_genuine_decision
+            if ((is_cleanup and is_cleanup_description and not has_business_fields and not has_genuine_decision)
+                    or is_temp_ddl):
                 continue
             filtered.append(rule)
         return filtered
@@ -2347,19 +2461,41 @@ class RuleSynthesizerAgent:
         for rule in rules or []:
             if not isinstance(rule, dict):
                 continue
-            if rule.get("decision_logic_rows"):
-                filtered.append(rule)
-                continue
             evidence = " ".join(str(item) for item in rule.get("source_evidence") or []).upper()
+            condition = str(rule.get("condition") or "").upper()
             name = str(rule.get("rule_name") or "").lower()
             action = str(rule.get("action") or "").lower()
-            is_crud = bool(re.search(r"\b(SELECT|UPDATE|INSERT|DELETE|MERGE)\b", evidence))
+            meaning = str(rule.get("business_meaning") or "").lower()
+            prose = f"{name} {action} {meaning}"
+            evidence_blob = f"{evidence} {condition}"
+            # A rule titled "Read/Retrieve/..." is retrieval framing, not a
+            # business decision - even when the model pasted the INSERT's
+            # WHERE filter into a one-row "decision table" (observed live
+            # on Collateral Valuation Staging). Keep real multi-branch
+            # ladders even if poorly titled.
+            rows = rule.get("decision_logic_rows") or []
+            is_read_titled = bool(re.match(r"^(read|retrieve|fetch|look\s*up|select)\b", name.strip()))
+            if is_read_titled and len(rows) <= 1:
+                continue
+            if rows:
+                filtered.append(rule)
+                continue
+            is_crud = bool(re.search(r"\b(SELECT|UPDATE|INSERT|DELETE|MERGE)\b", evidence_blob))
             is_mechanical = (
                 "source-defined value" in action
                 or "source-defined value" in name
                 or (name.startswith(("update ", "insert ", "write ")) and not rule.get("eligibility"))
             )
-            if is_crud and is_mechanical:
+            # A bare SELECT framed as a "business rule" (e.g. "Read DPD
+            # bucket history") is technical retrieval, not a decision.
+            # Require: SELECT evidence, no write verb in the citation, no
+            # decision rows (already gated above), and read-oriented prose.
+            is_read_only_select = (
+                bool(re.search(r"\bSELECT\b", evidence_blob))
+                and not bool(re.search(r"\b(UPDATE|INSERT|DELETE|MERGE)\b", evidence_blob))
+                and bool(re.search(r"\b(read|retrieve|select|fetch|look\s*up|return)\b", prose))
+            )
+            if (is_crud and is_mechanical) or is_read_only_select:
                 continue
             filtered.append(rule)
         return filtered
@@ -2934,8 +3070,16 @@ class RuleSynthesizerAgent:
             # decision, and a synthetic backfill rule gets added right next
             # to the model's already-correct one - the real duplicate-rule
             # bug this normalization exists to close.
+            #
+            # Also strip display-only TSQL_IF annotations ("— row filter:",
+            # "— applies to all rows", [UNREACHABLE ...]) so coverage
+            # compares the structural IF/CASE predicates, not presentation.
             from src.parsing.decision_identity import normalized_condition_key
-            return normalized_condition_key(value)
+            text = str(value or "")
+            text = re.sub(r"\s*—\s*row filter:.*$", "", text, flags=re.S | re.I)
+            text = re.sub(r"\s*—\s*applies to all rows.*$", "", text, flags=re.S | re.I)
+            text = re.sub(r"\s*\[UNREACHABLE[^\]]*\]", "", text, flags=re.I)
+            return normalized_condition_key(text)
 
         def _rows_key(rows: List[Dict[str, Any]]) -> list:
             return [
@@ -2956,14 +3100,56 @@ class RuleSynthesizerAgent:
                     return True
             return False
 
+        def _repair_blank_outcome_cover(
+            chain: Dict[str, Any], field_key: str, rows: List[Dict[str, Any]]
+        ) -> bool:
+            """A model rule that already lists the correct ordered conditions
+            but left one-or-more outcome cells blank is a near-cover, not a
+            miss. Filling those blanks from the chain (never inventing a new
+            ladder) and treating the rule as covered avoids synthesizing a
+            second, duplicate table for the same field.
+            """
+            expected_conditions = [_normalized_condition(row.get("condition")) for row in rows]
+            if not expected_conditions:
+                return False
+            repaired = False
+            for rule in rules:
+                if _field_key(rule.get("output_field")) != field_key:
+                    continue
+                source_chain = rule.get("source_chain_id")
+                if source_chain and source_chain != chain.get("chain_id"):
+                    continue
+                rule_rows = rule.get("decision_logic_rows") or []
+                if not isinstance(rule_rows, list) or len(rule_rows) != len(rows):
+                    continue
+                rule_conditions = [
+                    _normalized_condition(row.get("condition"))
+                    for row in rule_rows if isinstance(row, dict)
+                ]
+                if rule_conditions != expected_conditions:
+                    continue
+                for rule_row, chain_row in zip(rule_rows, rows):
+                    if not isinstance(rule_row, dict):
+                        continue
+                    if str(rule_row.get("outcome") or "").strip():
+                        continue
+                    replacement = str(chain_row.get("outcome") or "").strip()
+                    if replacement:
+                        rule_row["outcome"] = replacement
+                        repaired = True
+                if repaired or _rows_key(rule_rows) == _rows_key(rows):
+                    return True
+            return repaired
+
         def _sanitize_covering_rule_name(chain: Dict[str, Any], field_key: str, display_field: str) -> None:
             """When a model-authored rule already covers a chain's rows, its
             `rule_name` is kept (it may carry genuine business framing this
             deterministic path cannot invent). But the model sometimes copies
             the evaluation-order/execution-semantics sentence verbatim into
-            `rule_name` instead of writing a short business label - that
-            sentence is meant as procedural commentary, not a title, and
-            reusing it produces near-duplicate rule titles across unrelated
+            `rule_name` (or `business_meaning`) instead of writing a short
+            business label - that sentence is meant as procedural commentary,
+            not a title/purpose, and reusing it produces near-duplicate rule
+            titles and overview "Business Purpose" cells across unrelated
             fields/tables in the report. Replace only that specific failure
             mode with the same deterministic naming convention used for
             synthesized rules; never touch a rule_name that isn't a copy of
@@ -2984,6 +3170,59 @@ class RuleSynthesizerAgent:
                         f"Determine inputs to {chain['aggregation']} for {display_field}"
                         if chain.get("aggregation") else f"Determine {display_field}"
                     )
+                existing_meaning = str(rule.get("business_meaning") or "").strip()
+                if existing_meaning.casefold() == semantics:
+                    # Empty meaning lets the formatter show "Not specified"
+                    # rather than echoing evaluation-order commentary into
+                    # the Business Purpose column.
+                    rule["business_meaning"] = ""
+
+        def _drop_incomplete_siblings(field_key: str, rows: List[Dict[str, Any]]) -> None:
+            """Once a complete cover exists for this field's ladder, drop any
+            sibling that restates the same ordered conditions - whether with
+            blank outcomes (incomplete paraphrase) or with a second complete
+            copy (two model rules for one CASE). Keep a single preferred
+            cover: deterministic tables win, then a non-boilerplate name.
+            """
+            expected = _rows_key(rows)
+            expected_conditions = [condition for condition, _outcome in expected]
+            if not expected_conditions:
+                return
+            complete = [
+                rule for rule in rules
+                if _field_key(rule.get("output_field")) == field_key
+                and _rows_key(rule.get("decision_logic_rows") or []) == expected
+            ]
+            if not complete:
+                return
+
+            def _cover_rank(rule: Dict[str, Any]) -> tuple:
+                is_det = 1 if rule.get("rule_type") == "deterministic_decision_table" else 0
+                name = str(rule.get("rule_name") or "").strip()
+                semantics = str(rule.get("execution_semantics") or "").strip().casefold()
+                boilerplate = 0 if (name and name.casefold() != semantics) else -1
+                meaning = 1 if str(rule.get("business_meaning") or "").strip() else 0
+                return (is_det, boilerplate, meaning, -len(name))
+
+            preferred = max(complete, key=_cover_rank)
+            preferred_id = id(preferred)
+            kept: List[Dict[str, Any]] = []
+            for rule in rules:
+                if _field_key(rule.get("output_field")) != field_key:
+                    kept.append(rule)
+                    continue
+                rule_rows = [row for row in (rule.get("decision_logic_rows") or []) if isinstance(row, dict)]
+                rule_key = _rows_key(rule_rows)
+                if rule_key == expected:
+                    if id(rule) == preferred_id:
+                        kept.append(rule)
+                    continue
+                rule_conditions = [condition for condition, _outcome in rule_key]
+                has_blank = any(not str(row.get("outcome") or "").strip() for row in rule_rows)
+                if rule_conditions == expected_conditions and has_blank:
+                    continue
+                kept.append(rule)
+            rules[:] = kept
 
         synthetic_rules: List[Dict[str, Any]] = []
         for chain in decision_chains:
@@ -2993,7 +3232,128 @@ class RuleSynthesizerAgent:
             if not isinstance(branches, list):
                 continue
 
-            fields_in_chain: "OrderedDict[str, str]" = OrderedDict()
+            chain_type = str(chain.get("chain_type") or "").strip().upper()
+            # T-SQL IF/ELSEIF/ELSE is one mutual-exclusive control-flow
+            # decision that may assign several fields per branch (e.g.
+            # BucketWorsened + GracePeriodApplied under the grace gate).
+            # Emitting one rule per field drops companion fields that only
+            # appear in a single branch (len(rows)<2), then
+            # ensure_statement_coverage re-floors them from the UPDATE's
+            # WHERE alone - losing the enclosing IF EXISTS gate. Keep the
+            # whole ladder as one multi-field rule instead.
+            if chain_type == "TSQL_IF_ELSE":
+                fields_in_chain: "OrderedDict[str, str]" = OrderedDict()
+                branch_payloads: List[Tuple[Dict[str, Any], str, List[Dict[str, str]]]] = []
+                for branch in branches:
+                    if not isinstance(branch, dict):
+                        continue
+                    assignments = [
+                        item for item in (branch.get("assignments") or [])
+                        if isinstance(item, dict) and str(item.get("field") or "").strip()
+                    ]
+                    if not assignments:
+                        continue
+                    for assignment in assignments:
+                        field = str(assignment.get("field") or "").strip()
+                        fields_in_chain.setdefault(_field_key(field), field)
+                    condition = (
+                        "ELSE"
+                        if branch.get("is_catch_all")
+                        or str(branch.get("branch_condition") or "").strip().upper() == "ELSE"
+                        else str(branch.get("branch_condition") or "").strip()
+                    )
+                    branch_payloads.append((branch, condition, assignments))
+                if len(branch_payloads) < 2 or not fields_in_chain:
+                    continue
+                multi_field = len(fields_in_chain) > 1
+                coverage_rows: List[Dict[str, Any]] = []
+                display_rows: List[Dict[str, Any]] = []
+                for branch, condition, assignments in branch_payloads:
+                    if multi_field:
+                        outcome = "; ".join(
+                            f"{str(item.get('field') or '').strip()} := "
+                            f"{str(item.get('value') or '').strip()}"
+                            for item in assignments
+                        )
+                    else:
+                        outcome = str(assignments[0].get("value") or "").strip()
+                    coverage_rows.append({"condition": condition, "outcome": outcome})
+                    display_condition = condition
+                    if RuleSynthesizerAgent._branch_is_unreachable(
+                        chain.get("eligibility"), display_condition
+                    ):
+                        display_condition = (
+                            f"{display_condition} [UNREACHABLE — contradicts this statement's own WHERE "
+                            "clause; never executes for any row it touches]"
+                        )
+                    display_condition = RuleSynthesizerAgent._annotate_row_condition_with_filter(
+                        display_condition, branch, chain_type
+                    )
+                    display_rows.append({"condition": display_condition, "outcome": outcome})
+                display_fields = list(fields_in_chain.values())
+                primary_field = display_fields[0]
+                primary_key = _field_key(primary_field)
+                if _field_is_covered(chain, primary_key, coverage_rows) or any(
+                    str(rule.get("source_chain_id") or "") == str(chain.get("chain_id") or "")
+                    and _rows_key(rule.get("decision_logic_rows") or []) == _rows_key(coverage_rows)
+                    for rule in rules
+                ):
+                    for field_key, display_field in fields_in_chain.items():
+                        _sanitize_covering_rule_name(chain, field_key, display_field)
+                        _drop_incomplete_siblings(field_key, coverage_rows)
+                    continue
+                # Also treat a model rule whose conditions match (ignoring
+                # row-filter annotations) as covering the ladder.
+                if _repair_blank_outcome_cover(chain, primary_key, coverage_rows):
+                    for field_key, display_field in fields_in_chain.items():
+                        _sanitize_covering_rule_name(chain, field_key, display_field)
+                        _drop_incomplete_siblings(field_key, coverage_rows)
+                    continue
+                synthetic_rules.append({
+                    "rule_id": f"deterministic_{chain.get('chain_id') or 'chain'}_{primary_key}",
+                    "source_chain_id": str(chain.get("chain_id") or ""),
+                    "evidence_spans": [{"line_start": chain.get("source_line_start", -1),
+                                        "line_end": chain.get("source_line_end", -1),
+                                        "char_start": chain.get("source_char_start", -1),
+                                        "char_end": chain.get("source_char_end", -1)}],
+                    "decision_role": str(chain.get("decision_role") or "assignment"),
+                    "rule_name": (
+                        f"Determine {', '.join(display_fields)}"
+                        if multi_field
+                        else f"Determine {primary_field}"
+                    ),
+                    "business_meaning": "",
+                    "condition": "",
+                    "action": (
+                        f"Sets {', '.join(display_fields)} based on the decision logic below, "
+                        "reconstructed directly from the source's IF/ELSEIF/ELSE branching."
+                    ),
+                    "output_field": ", ".join(display_fields),
+                    "eligibility": list(chain.get("eligibility") or []),
+                    "decision_context": list(chain.get("decision_context") or []),
+                    "execution_semantics": (
+                        "Exactly one IF/ELSEIF/ELSE branch runs; branch conditions are "
+                        "mutually exclusive. Row filters apply only after a branch is selected."
+                    ),
+                    "decision_logic": [],
+                    "tie_priority_handling": [],
+                    "default": [],
+                    "when_not_eligible": [],
+                    "fields_affected": list(display_fields),
+                    "source_evidence": [],
+                    "source_chunks": [],
+                    "technical_references": [],
+                    "unresolved_ambiguities": [],
+                    "dependencies": [],
+                    "decision_logic_rows": display_rows,
+                    "rule_type": "deterministic_decision_table",
+                    "confidence": "deterministic",
+                    "validation_status": "verified",
+                    "ambiguity_id": "",
+                })
+                continue
+
+            fields_in_chain = OrderedDict()
             for branch in branches:
                 if not isinstance(branch, dict):
                     continue
@@ -3041,6 +3401,11 @@ class RuleSynthesizerAgent:
                 # row was built from (tracked alongside it, not re-derived).
                 if _field_is_covered(chain, field_key, rows):
                     _sanitize_covering_rule_name(chain, field_key, display_field)
+                    _drop_incomplete_siblings(field_key, rows)
+                    continue
+                if _repair_blank_outcome_cover(chain, field_key, rows):
+                    _sanitize_covering_rule_name(chain, field_key, display_field)
+                    _drop_incomplete_siblings(field_key, rows)
                     continue
                 def _display_condition(row: Dict[str, Any], branch: Dict[str, Any]) -> str:
                     text = str(row["condition"])
@@ -3070,7 +3435,7 @@ class RuleSynthesizerAgent:
                     "business_meaning": (
                         f"The decision rows show per-row inputs to {chain['aggregation']}; "
                         f"{display_field} is the aggregate of those inputs over the SQL grouping."
-                        if chain.get("aggregation") else str(chain.get("execution_semantics") or "")
+                        if chain.get("aggregation") else ""
                     ),
                     "condition": "",
                     "action": (
@@ -3094,19 +3459,624 @@ class RuleSynthesizerAgent:
                     "decision_logic_rows": rows,
                     "rule_type": "deterministic_decision_table",
                     "confidence": "deterministic",
-                    # This rule was built directly from the parsed source
-                    # chain (`rows` above, and `source_chain_id` linking it
-                    # back to that exact chain) with no LLM step at all - it
-                    # cannot be "unverified" in the sense that label means
-                    # for a model claim. Leaving this "" made every such
-                    # rule display as "Needs Review" in the Source
-                    # Traceability table (the empty string fell through to
-                    # that default) despite being the most, not least,
-                    # trustworthy rule kind in the report.
                     "validation_status": "verified",
                     "ambiguity_id": "",
                 })
         return unique_rule_ids(rules + synthetic_rules)
+
+    @staticmethod
+    def _rule_has_substantive_decision(rule: Dict[str, Any]) -> bool:
+        """True when a rule carries a real decision table, not just prose.
+
+        Contentless shells (and shells that only paste a WHERE into
+        `eligibility`/`condition` with empty `decision_logic_rows`) must
+        not count as coverage: they block deterministic floors, then get
+        CONFLICT-excluded, and the write disappears from the report
+        (observed: DpdBucketAuditLog insert on DPD).
+        """
+        if not isinstance(rule, dict):
+            return False
+        if rule.get("decision_logic_rows") or rule.get("decision_block_id"):
+            return True
+        if rule.get("decision_rows_grounded"):
+            return True
+        return False
+
+    @staticmethod
+    def _rule_field_keys(rule: Dict[str, Any]) -> "set[str]":
+        values = rule.get("fields_affected") or []
+        if isinstance(values, str):
+            values = [values]
+        if not values and rule.get("output_field"):
+            values = [rule["output_field"]]
+        keys: "set[str]" = set()
+        for value in values:
+            for token in str(value or "").split(","):
+                key = RuleSynthesizerAgent._bare_field_key(token)
+                if key:
+                    keys.add(key)
+        return keys
+
+    @staticmethod
+    def _rule_targets_write_table(rule: Dict[str, Any], bare_table: str) -> bool:
+        """True when the rule's *write target* is `bare_table`.
+
+        Deliberately ignores USING/FROM mentions: a MERGE into
+        DpdBucketHistory that reads `#DpdStaging` must not count as
+        covering the staging INSERT itself.
+        """
+        if not bare_table:
+            return False
+        needle = bare_table.casefold().strip("#")
+        for item in rule.get("decision_context") or []:
+            text = str(item or "").strip()
+            if text.lower().startswith("target:") and needle in text.casefold():
+                return True
+        name = str(rule.get("rule_name") or "").casefold()
+        if needle in name and any(
+            token in name
+            for token in ("insert", "into", "merge", "upsert", "update", "log", "write", "record")
+        ):
+            return True
+        output = str(rule.get("output_field") or "").casefold()
+        # Model sometimes puts the target table name in output_field
+        # (e.g. output_field="DpdBucketAuditLog") instead of columns.
+        if output and needle == output.split(".")[-1].strip("#"):
+            return True
+        return False
+
+    @staticmethod
+    def _enrich_contentless_rule_from_operation(
+        rule: Dict[str, Any],
+        *,
+        where_predicate: str,
+        display_fields: List[str],
+        outcome: str,
+        table: str,
+    ) -> None:
+        """Backfill a contentless model shell from deterministic ops."""
+        rule["decision_logic_rows"] = [
+            {"condition": where_predicate, "outcome": outcome}
+        ]
+        rule["fields_affected"] = list(display_fields)
+        rule["output_field"] = ", ".join(display_fields)
+        if table and not any(
+            str(item).lower().startswith("target:")
+            for item in (rule.get("decision_context") or [])
+        ):
+            context = list(rule.get("decision_context") or [])
+            context.insert(0, f"Target: {table}")
+            rule["decision_context"] = context
+        rule["rule_type"] = "deterministic_decision_table"
+        rule["decision_rows_grounded"] = True
+        rule["confidence"] = "deterministic"
+        rule["validation_status"] = "verified"
+        # Clear a stale CONFLICT/LLM_ONLY so reconciliation re-evaluates
+        # against the grounded rows rather than empty model prose.
+        if str(rule.get("reconciliation_status") or "").upper() in {
+            "CONFLICT", "LLM_ONLY", "UNRESOLVED", ""
+        }:
+            rule["reconciliation_status"] = "MATCHED"
+
+    @staticmethod
+    def ensure_statement_coverage(
+        rules: List[Dict[str, Any]],
+        merged_extraction: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Deterministic floor for a conditional write that never branches.
+
+        `ensure_decision_chain_coverage` above guarantees a table for every
+        multi-branch CASE/IF ladder, but a single UPDATE/INSERT statement
+        that assigns a literal/simple value under its own WHERE clause -
+        with no ELSE, no second branch, nothing `extract_*_decision_chains`
+        would ever recognize as a "chain" - has no equivalent guarantee.
+        That write is a real, single-row business rule (e.g. "set
+        DpdBucket to NOT_APPLICABLE where LastPaymentDueDate is null") that
+        can otherwise vanish from the report entirely if the model's own
+        synthesis pass happens to miss it.
+
+        Call this last, once, after `ensure_decision_chain_coverage`
+        (same call-site pattern): for every write in
+        `merged_extraction["table_operations"]` with a non-empty WHERE
+        predicate whose assigned column is not already documented by a
+        *substantive* rule (decision rows / eligibility / condition - not
+        a contentless field-name shell), synthesize a minimal one-row
+        canonical rule directly from that statement's own parsed
+        predicate/assignment - no LLM call, so it cannot omit or
+        misdescribe the write. An assignment whose value is itself a CASE
+        expression (`assigned_values[i]["case_branches"]` non-empty) is
+        skipped here - that is exactly the shape `ensure_decision_chain_coverage`
+        already covers, and re-synthesizing it here would create a second,
+        redundant table for the same statement.
+
+        INSERT ... SELECT ... WHERE statements are floored as one
+        multi-field rule for the whole statement (not one rule per
+        column): an audit/queue insert is a single business write. INSERT
+        statements that already carry a CASE-valued column are left to
+        the CASE coverage path (the CASE field is the decision; companion
+        passthrough columns like EscalationDate = @ProcessDate are not
+        separate business rules).
+        """
+        rules = unique_rule_ids(rules)
+        table_operations = (merged_extraction or {}).get("table_operations") or []
+        if not isinstance(table_operations, list) or not table_operations:
+            return rules
+
+        def _field_key(value: Any) -> str:
+            return RuleSynthesizerAgent._bare_field_key(value)
+
+        def _rebuild_covered() -> "set[str]":
+            covered: "set[str]" = set()
+            for rule in rules:
+                if not RuleSynthesizerAgent._rule_has_substantive_decision(rule):
+                    continue
+                covered.update(RuleSynthesizerAgent._rule_field_keys(rule))
+            for rule in synthetic_rules:
+                covered.update(RuleSynthesizerAgent._rule_field_keys(rule))
+            return covered
+
+        # Spans of complete TSQL_IF_ELSE ladders: writes inside these are
+        # owned by ensure_decision_chain_coverage (including companion
+        # fields assigned in only one branch). Flooring them again from
+        # the UPDATE's own WHERE drops the enclosing IF/ELSEIF gate and
+        # invents contradictory single-branch rules.
+        tsql_if_spans: List[Tuple[int, int, "set[str]"]] = []
+        for chain in (merged_extraction or {}).get("decision_chains") or []:
+            if not isinstance(chain, dict):
+                continue
+            if str(chain.get("chain_type") or "").strip().upper() != "TSQL_IF_ELSE":
+                continue
+            start = chain.get("source_line_start")
+            end = chain.get("source_line_end")
+            if not isinstance(start, int) or not isinstance(end, int):
+                continue
+            if start < 0 or end < 0:
+                continue
+            fields: "set[str]" = set()
+            for branch in chain.get("branches") or []:
+                if not isinstance(branch, dict):
+                    continue
+                for assignment in branch.get("assignments") or []:
+                    if isinstance(assignment, dict):
+                        key = _field_key(assignment.get("field"))
+                        if key:
+                            fields.add(key)
+            tsql_if_spans.append((start, end, fields))
+
+        def _owned_by_tsql_if_ladder(row: Dict[str, Any]) -> bool:
+            line = row.get("source_line_start")
+            if not isinstance(line, int) or line < 0:
+                return False
+            for start, end, _fields in tsql_if_spans:
+                if start <= line <= end:
+                    return True
+            return False
+
+        def _condition_with_control_flow(row: Dict[str, Any], where_predicate: str) -> str:
+            """Prefixed enclosing IF gate when statement coverage still floors.
+
+            Used for single-IF wrappers that never became a multi-branch
+            TSQL_IF_ELSE chain, or ops annotated with control_flow by the
+            parser. Never invents gates - only uses explicit annotations.
+            """
+            control = row.get("control_flow") or row.get("control_flow_predicates") or []
+            gates: List[str] = []
+            if isinstance(control, list):
+                for item in control:
+                    if isinstance(item, dict):
+                        text = str(item.get("condition") or item.get("predicate") or "").strip()
+                    else:
+                        text = str(item or "").strip()
+                    if text:
+                        gates.append(text)
+            elif isinstance(control, str) and control.strip():
+                gates.append(control.strip())
+            gate = str(row.get("control_flow_gate") or "").strip()
+            if gate:
+                gates.append(gate)
+            # Deduplicate while preserving order
+            seen: "set[str]" = set()
+            unique_gates: List[str] = []
+            for text in gates:
+                key = text.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique_gates.append(text)
+            if not unique_gates:
+                return where_predicate
+            gate_text = " AND ".join(unique_gates)
+            if where_predicate:
+                return f"{gate_text} — row filter: {where_predicate}"
+            return gate_text
+
+        # Same process-bookkeeping signal `_remove_operational_status_rules`
+        # uses - this floor exists to surface real business decisions, not
+        # to manufacture a rule for every RUNNINGPROCESSSTATUS audit write.
+        status_tables = {
+            str(row.get("table") or "").strip().split(".")[-1].strip("#").casefold()
+            for row in table_operations
+            if isinstance(row, dict)
+            and "runningprocessstatus" in str(row.get("table") or "").lower()
+        }
+
+        synthetic_rules: List[Dict[str, Any]] = []
+        seen_statement_fields: "set[Tuple[str, str]]" = set()
+        seen_insert_statements: "set[str]" = set()
+        case_insert_tables: "set[str]" = set()
+        covered_fields = _rebuild_covered()
+
+        def _make_synthetic(
+            *,
+            row: Dict[str, Any],
+            statement_id: str,
+            field_key: str,
+            display_fields: List[str],
+            where_predicate: str,
+            outcome: str,
+            rule_name: str,
+        ) -> Dict[str, Any]:
+            return {
+                "rule_id": f"deterministic_statement_{statement_id or 'stmt'}_{field_key}",
+                "source_statement_id": statement_id,
+                "evidence_spans": [{
+                    "line_start": row.get("source_line_start", -1),
+                    "line_end": row.get("source_line_end", -1),
+                    "char_start": row.get("source_char_start", -1),
+                    "char_end": row.get("source_char_end", -1),
+                }],
+                "decision_role": "assignment",
+                "rule_name": rule_name,
+                "business_meaning": "",
+                "condition": "",
+                "action": (
+                    f"Sets {', '.join(display_fields)} based on the condition below, "
+                    "reconstructed directly from this statement's own WHERE clause."
+                ),
+                "output_field": ", ".join(display_fields),
+                "eligibility": [],
+                "decision_context": (
+                    [f"Target: {row.get('table')}"] if row.get("table") else []
+                ),
+                "execution_semantics": "",
+                "decision_logic": [],
+                "tie_priority_handling": [],
+                "default": [],
+                "when_not_eligible": [],
+                "fields_affected": list(display_fields),
+                "source_evidence": [],
+                "source_chunks": [row.get("source_chunk_id")] if row.get("source_chunk_id") else [],
+                "technical_references": [],
+                "unresolved_ambiguities": [],
+                "dependencies": [],
+                "decision_logic_rows": [{"condition": where_predicate, "outcome": outcome}],
+                "rule_type": "deterministic_decision_table",
+                "decision_rows_grounded": True,
+                "confidence": "deterministic",
+                "validation_status": "verified",
+                "ambiguity_id": "",
+            }
+
+        for row in table_operations:
+            if not isinstance(row, dict) or row.get("operation") not in ("UPDATE", "INSERT"):
+                continue
+            # Nested under a complete IF/ELSEIF/ELSE ladder → chain coverage.
+            if _owned_by_tsql_if_ladder(row):
+                continue
+            table = str(row.get("table") or "").strip()
+            bare_table = table.split(".")[-1].strip("#").casefold()
+            if bare_table and bare_table in status_tables:
+                continue
+            where_predicate = str(row.get("where_predicate") or "").strip()
+            where_predicate = _condition_with_control_flow(row, where_predicate)
+            if not where_predicate:
+                continue
+            statement_id = str(row.get("source_statement_id") or row.get("statement_id") or "")
+            assignments = [
+                item for item in (row.get("assigned_values") or [])
+                if isinstance(item, dict)
+            ]
+            if not assignments:
+                continue
+
+            if row.get("operation") == "INSERT":
+                has_case = any(
+                    item.get("case_branches")
+                    or re.search(
+                        r"(?i)\bCASE\b", str(item.get("expression") or "")
+                    )
+                    for item in assignments
+                )
+                # CASE-valued INSERT columns are owned by decision-chain
+                # coverage (e.g. CollectionsQueue.Reason). Companion
+                # passthrough columns on the same INSERT are not separate
+                # business rules.
+                if has_case:
+                    if bare_table:
+                        case_insert_tables.add(bare_table)
+                    continue
+                simple = [
+                    item for item in assignments
+                    if not item.get("case_branches")
+                    and not re.search(
+                        r"(?i)\bCASE\b", str(item.get("expression") or "")
+                    )
+                    and str(item.get("column") or "").strip()
+                    and str(item.get("expression") or "").strip()
+                ]
+                if not simple:
+                    continue
+                # Dedupe by table+WHERE: deterministic + LLM table_operations
+                # often both describe the same INSERT with different ids.
+                insert_key = f"{bare_table}|{where_predicate.casefold()}"
+                if insert_key in seen_insert_statements:
+                    continue
+                display_fields = [
+                    str(item.get("column") or "").split(".")[-1].strip()
+                    for item in simple
+                ]
+                field_keys = [_field_key(name) for name in display_fields if name]
+                # Skip only when every column is already documented by a
+                # substantive rule that *targets* this same insert table
+                # (global field coverage alone is wrong: AccountId on a
+                # MERGE must not suppress an audit INSERT of AccountId;
+                # USING #temp mentions must not suppress the temp INSERT).
+                if field_keys and all(
+                    any(
+                        RuleSynthesizerAgent._rule_has_substantive_decision(rule)
+                        and _field_key(name) in RuleSynthesizerAgent._rule_field_keys(rule)
+                        and RuleSynthesizerAgent._rule_targets_write_table(rule, bare_table)
+                        for rule in list(rules) + synthetic_rules
+                    )
+                    for name in display_fields
+                    if _field_key(name)
+                ):
+                    seen_insert_statements.add(insert_key)
+                    continue
+                seen_insert_statements.add(insert_key)
+                outcome_parts = [
+                    f"{str(item.get('column') or '').split('.')[-1].strip()} := "
+                    f"{str(item.get('expression') or '').strip()}"
+                    for item in simple
+                ]
+                outcome = (
+                    outcome_parts[0]
+                    if len(outcome_parts) == 1
+                    else "; ".join(outcome_parts)
+                )
+                # Prefer enriching the model's own shell (keeps its title)
+                # over adding a parallel synthetic that then fights the
+                # shell through CONFLICT exclusion.
+                shell = next(
+                    (
+                        rule for rule in rules
+                        if not RuleSynthesizerAgent._rule_has_substantive_decision(rule)
+                        and RuleSynthesizerAgent._rule_targets_write_table(rule, bare_table)
+                    ),
+                    None,
+                )
+                if shell is not None:
+                    RuleSynthesizerAgent._enrich_contentless_rule_from_operation(
+                        shell,
+                        where_predicate=where_predicate,
+                        display_fields=display_fields,
+                        outcome=outcome,
+                        table=table,
+                    )
+                    for key in field_keys:
+                        covered_fields.add(key)
+                        seen_statement_fields.add((statement_id, key))
+                    continue
+                short_table = table.split(".")[-1] if table else "rows"
+                synthetic_rules.append(
+                    _make_synthetic(
+                        row=row,
+                        statement_id=statement_id,
+                        field_key=field_keys[0] if field_keys else "insert",
+                        display_fields=display_fields,
+                        where_predicate=where_predicate,
+                        outcome=outcome,
+                        rule_name=f"Insert into {short_table}",
+                    )
+                )
+                for key in field_keys:
+                    covered_fields.add(key)
+                    seen_statement_fields.add((statement_id, key))
+                continue
+
+            for assignment in assignments:
+                if assignment.get("case_branches"):
+                    continue
+                column = str(assignment.get("column") or "").strip()
+                expression = str(assignment.get("expression") or "").strip()
+                field_key = _field_key(column)
+                if not field_key or not expression or field_key in covered_fields:
+                    continue
+                dedupe_key = (statement_id, field_key)
+                if dedupe_key in seen_statement_fields:
+                    continue
+                seen_statement_fields.add(dedupe_key)
+                covered_fields.add(field_key)
+                display_field = column.split(".")[-1].strip() or column
+                synthetic_rules.append(
+                    _make_synthetic(
+                        row=row,
+                        statement_id=statement_id,
+                        field_key=field_key,
+                        display_fields=[display_field],
+                        where_predicate=where_predicate,
+                        outcome=expression,
+                        rule_name=f"Determine {display_field}",
+                    )
+                )
+
+        # MERGE floor: per-branch (WHEN MATCHED / WHEN NOT MATCHED BY
+        # TARGET / WHEN NOT MATCHED BY SOURCE) coverage from
+        # `assigned_values`' `merge_branch`-tagged entries (see
+        # `_render_merge_assigned_values` in technical_sql_ops.py).
+        # Historically a MERGE operation record always carried
+        # `assigned_values=[]`, so no column of a MERGE statement had any
+        # deterministic backstop - the model had to independently author a
+        # rule for every SET column, and routinely missed one (observed:
+        # AdjustedPenalty silently absent from a MERGE's WHEN MATCHED
+        # UPDATE while DpdBucket/LastUpdatedDate were both covered).
+        #
+        # One synthetic rule PER MISSING COLUMN (not one per branch) -
+        # deliberately mirrors the plain-UPDATE floor above rather than
+        # combining a branch's columns into one rule here, so that
+        # `_collapse_merge_upsert_halves` (report_formatter.py /
+        # rule_shape.py), which already knows how to fold same-table
+        # per-column MATCHED fragments into one upsert rule, does that
+        # combining exactly once in one place - a model-authored fragment
+        # for the same branch and a deterministic one for the column it
+        # missed end up in the very same collapse group instead of two
+        # competing partial upserts.
+        #
+        # The condition text literally includes the branch's own SQL
+        # keyword (`WHEN MATCHED` / `WHEN NOT MATCHED BY TARGET` / `WHEN
+        # NOT MATCHED BY SOURCE`) followed by the MERGE's own ON predicate
+        # (and that WHEN's own extra condition, if any) - grounded
+        # directly in the parsed SQL, not invented, and exactly the marker
+        # `_collapse_merge_upsert_halves`'s matched/unmatched classifier
+        # already recognizes.
+        # A field name (e.g. `AdjustedPenalty`) can legitimately be
+        # assigned by MORE THAN ONE branch of the SAME MERGE targeting the
+        # SAME table - once on the MATCHED/UPDATE side, once again on the
+        # NOT MATCHED/INSERT side - so the plain (table, field) scoping
+        # `_rule_targets_write_table` gives the INSERT floor above is not
+        # enough here: an existing rule documenting the INSERT half's
+        # AdjustedPenalty must never be mistaken for covering the UPDATE
+        # half's AdjustedPenalty too. Classify each candidate EXISTING
+        # rule's own text (same MATCHED/NOT-MATCHED regex
+        # `_collapse_merge_upsert_halves` uses, shared via
+        # `alias_resolution` so both sides agree) and only treat a field
+        # as covered when an existing, substantive, same-table rule
+        # classifies to the SAME branch side. A rule that can't be
+        # classified either way is treated conservatively as covering the
+        # field (never risk inventing a duplicate when the branch can't be
+        # determined).
+        def _merge_field_covered(bare_table: str, branch_is_matched: bool, field_key: str) -> bool:
+            for candidate in list(rules) + synthetic_rules:
+                if not isinstance(candidate, dict):
+                    continue
+                if not RuleSynthesizerAgent._rule_has_substantive_decision(candidate):
+                    continue
+                if not RuleSynthesizerAgent._rule_targets_write_table(candidate, bare_table):
+                    continue
+                if field_key not in RuleSynthesizerAgent._rule_field_keys(candidate):
+                    continue
+                blob_parts = [
+                    str(candidate.get("rule_name") or ""),
+                    str(candidate.get("business_meaning") or ""),
+                    str(candidate.get("condition") or ""),
+                    str(candidate.get("action") or ""),
+                    " ".join(str(x) for x in (candidate.get("eligibility") or [])),
+                    " ".join(str(x) for x in (candidate.get("decision_context") or [])),
+                ]
+                for logic_row in candidate.get("decision_logic_rows") or []:
+                    if isinstance(logic_row, dict):
+                        blob_parts.append(str(logic_row.get("condition") or ""))
+                        blob_parts.append(str(logic_row.get("outcome") or ""))
+                blob = " ".join(blob_parts).casefold()
+                candidate_matched = _alias_resolution.merge_branch_text_is_matched(blob)
+                candidate_unmatched = _alias_resolution.merge_branch_text_is_unmatched(blob)
+                if candidate_matched == candidate_unmatched:
+                    return True
+                if candidate_matched == branch_is_matched:
+                    return True
+            return False
+
+        for row in table_operations:
+            if not isinstance(row, dict) or row.get("operation") != "MERGE":
+                continue
+            if _owned_by_tsql_if_ladder(row):
+                continue
+            table = str(row.get("table") or "").strip()
+            bare_table = table.split(".")[-1].strip("#").casefold()
+            if bare_table and bare_table in status_tables:
+                continue
+            on_predicate = str(row.get("merge_on_predicate") or "").strip()
+            statement_id = str(row.get("source_statement_id") or row.get("statement_id") or "")
+            by_branch: Dict[str, List[Dict[str, Any]]] = {}
+            for item in row.get("assigned_values") or []:
+                if not isinstance(item, dict):
+                    continue
+                branch = str(item.get("merge_branch") or "").strip()
+                if branch:
+                    by_branch.setdefault(branch, []).append(item)
+            branch_labels = {
+                "MATCHED": "WHEN MATCHED",
+                "NOT_MATCHED_BY_TARGET": "WHEN NOT MATCHED BY TARGET",
+                "NOT_MATCHED_BY_SOURCE": "WHEN NOT MATCHED BY SOURCE",
+            }
+            for branch, items in by_branch.items():
+                label = branch_labels.get(branch, branch)
+                branch_condition = f"{label}: {on_predicate}" if on_predicate else label
+                branch_is_matched = branch == "MATCHED"
+                for item in items:
+                    if item.get("case_branches") or re.search(
+                        r"(?i)\bCASE\b", str(item.get("expression") or "")
+                    ):
+                        # CASE-valued MERGE assignments are owned by
+                        # decision-chain coverage, same as CASE-valued
+                        # INSERT columns above.
+                        continue
+                    when_condition = str(item.get("merge_condition") or "").strip()
+                    full_condition = (
+                        f"{branch_condition} AND {when_condition}"
+                        if when_condition else branch_condition
+                    )
+                    column = str(item.get("column") or "").strip()
+                    expression = str(item.get("expression") or "").strip()
+                    field_key = _field_key(column)
+                    if not field_key or not expression:
+                        continue
+                    dedupe_key = (f"{statement_id}:{branch}", field_key)
+                    if dedupe_key in seen_statement_fields:
+                        continue
+                    if _merge_field_covered(bare_table, branch_is_matched, field_key):
+                        seen_statement_fields.add(dedupe_key)
+                        continue
+                    seen_statement_fields.add(dedupe_key)
+                    display_field = column.split(".")[-1].strip() or column
+                    synthetic_rules.append(
+                        _make_synthetic(
+                            row=row,
+                            statement_id=f"{statement_id}:{branch}",
+                            field_key=field_key,
+                            display_fields=[display_field],
+                            where_predicate=full_condition,
+                            outcome=expression,
+                            rule_name=f"Determine {display_field}",
+                        )
+                    )
+
+        combined = unique_rule_ids(rules + synthetic_rules)
+        # Drop contentless shells whose fields are now fully documented by
+        # substantive rules (deterministic floors or real model tables).
+        # This removes "Reset BucketWorsened" / empty audit shells that
+        # would otherwise survive as noise next to the real ladder/floor.
+        substantive_fields: "set[str]" = set()
+        for rule in combined:
+            if RuleSynthesizerAgent._rule_has_substantive_decision(rule):
+                substantive_fields.update(RuleSynthesizerAgent._rule_field_keys(rule))
+        pruned: List[Dict[str, Any]] = []
+        for rule in combined:
+            if RuleSynthesizerAgent._rule_has_substantive_decision(rule):
+                pruned.append(rule)
+                continue
+            # Contentless shell for an INSERT whose business decision is a
+            # CASE column already floored by decision-chain coverage.
+            if any(
+                RuleSynthesizerAgent._rule_targets_write_table(rule, table)
+                for table in case_insert_tables
+            ):
+                continue
+            fields = RuleSynthesizerAgent._rule_field_keys(rule)
+            if fields and fields <= substantive_fields:
+                continue
+            pruned.append(rule)
+        return unique_rule_ids(pruned)
 
     @staticmethod
     def _scan_for_jargon(data: Dict[str, Any]) -> List[str]:

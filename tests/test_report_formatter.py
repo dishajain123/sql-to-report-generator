@@ -439,3 +439,79 @@ def test_business_report_never_shows_a_findings_or_needs_review_section():
     assert "Dynamic SQL detected" not in report
     assert "appears to be unused" not in report
     assert "could not be resolved with confidence" not in report
+
+
+def test_field_token_set_drops_a_table_name_mistakenly_listed_as_a_field():
+    """A model-authored rule occasionally lists its own TARGET TABLE (not a
+    column) in fields_affected/output_field - e.g. "fields_affected:
+    ACCOUNT_STATUS_HISTORY" for a rule that really writes several columns
+    into that table. Left in, that token defeats every exact-set
+    field-identity comparison the 5 duplicate-suppression passes rely on
+    (this rule's set can never equal another representation of the same
+    write's real per-column set). It must be dropped - but only when it
+    names a KNOWN table and is not ALSO a known column name somewhere in
+    the procedure, so a genuine column that happens to share a table's
+    name is never dropped by mistake.
+    """
+    merged_extraction = {
+        "tables_read": [],
+        "tables_written": [
+            {"table": "ACCOUNT_STATUS_HISTORY", "target_columns": ["STATUS", "UPDATED_AT"]},
+        ],
+    }
+    rule = {"fields_affected": "STATUS, ACCOUNT_STATUS_HISTORY"}
+    fields = ReportFormatterAgent._field_token_set(rule, merged_extraction)
+    assert fields == {"status"}
+
+
+def test_field_token_set_keeps_a_field_that_also_happens_to_be_a_table_name():
+    merged_extraction = {
+        "tables_read": [],
+        "tables_written": [
+            {"table": "STATUS", "target_columns": ["STATUS", "REASON"]},
+        ],
+    }
+    rule = {"fields_affected": "STATUS"}
+    fields = ReportFormatterAgent._field_token_set(rule, merged_extraction)
+    assert fields == {"status"}
+
+
+def test_field_token_set_without_merged_extraction_keeps_every_token():
+    rule = {"fields_affected": "STATUS, ACCOUNT_STATUS_HISTORY"}
+    fields = ReportFormatterAgent._field_token_set(rule, None)
+    assert fields == {"status", "account_status_history"}
+
+
+def test_calculations_section_excludes_process_bookkeeping_table():
+    """A MAX/COUNT-style calculation whose target table is the same
+    RUNNINGPROCESSSTATUS-style bookkeeping table
+    `_remove_operational_status_rules` already keeps out of the
+    business-rule collection must also be kept out of the Calculations
+    section, rather than showing up as if it were a real business
+    calculation.
+    """
+    merged_extraction = {
+        "table_operations": [
+            {"table": "ACLRUNNINGPROCESSSTATUS", "operation": "UPDATE"},
+        ],
+        "calculations": [],
+    }
+    synthesis = SynthesisResult(data={
+        "calculations": [
+            {"field": "ACLRUNNINGPROCESSSTATUS.COMPLETED", "expression": "COUNT(*)"},
+            {"field": "TOTAL_SCORE", "expression": "BASE + BONUS"},
+        ],
+    })
+    section = ReportFormatterAgent()._calculations(synthesis, merged_extraction)
+    assert "TOTAL_SCORE" in section
+    assert "COMPLETED" not in section
+    assert "ACLRUNNINGPROCESSSTATUS" not in section
+
+
+def test_calculations_section_keeps_all_calculations_when_no_status_table_exists():
+    merged_extraction = {"table_operations": [], "calculations": []}
+    synthesis = SynthesisResult(data={
+        "calculations": [{"field": "TOTAL_SCORE", "expression": "BASE + BONUS"}],
+    })
+    section = ReportFormatterAgent()._calculations(synthesis, merged_extraction)
+    assert "TOTAL_SCORE" in section

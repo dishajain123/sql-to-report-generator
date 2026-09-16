@@ -1259,6 +1259,67 @@ def test_report_formatter_does_not_derive_business_meaning_from_other_fields():
     assert meaning == "Set STANDARD classification and 15 provision pct"
 
 
+def test_report_formatter_rejects_execution_semantics_as_business_purpose():
+    """Evaluation-order commentary must never appear as Business Purpose."""
+    assert ReportFormatterAgent._business_rule_business_meaning({
+        "business_meaning": "First matching row wins; ELSE includes false or NULL predicates.",
+    }) == "Not specified"
+    assert ReportFormatterAgent._business_rule_business_meaning({
+        "business_meaning": "Same as semantics",
+        "execution_semantics": "Same as semantics",
+    }) == "Not specified"
+
+
+def test_remove_operation_only_rules_drops_read_only_select_framed_as_business_rule():
+    read_rule = {
+        "rule_id": "r_read",
+        "rule_name": "Read DPD bucket history",
+        "business_meaning": "Retrieve the last updated DPD bucket for each account.",
+        "action": "Read the last updated DPD bucket",
+        "output_field": "DpdBucket",
+        "condition": "SELECT DpdBucket FROM DpdBucketHistory",
+        "source_evidence": ["SELECT TOP 1 DpdBucket FROM DpdBucketHistory"],
+        "decision_logic_rows": [],
+    }
+    keep_rule = {
+        "rule_id": "r_keep",
+        "rule_name": "Classify DPD bucket",
+        "business_meaning": "Assign the overdue bucket.",
+        "output_field": "DpdBucket",
+        "decision_logic_rows": [
+            {"condition": "DpdDays = 0", "outcome": "'CURRENT'"},
+            {"condition": "ELSE", "outcome": "'BUCKET_90_PLUS'"},
+        ],
+    }
+    kept = RuleSynthesizerAgent._remove_operation_only_rules([read_rule, keep_rule])
+    assert [rule["rule_id"] for rule in kept] == ["r_keep"]
+
+
+def test_remove_operation_only_rules_drops_read_titled_one_row_where_filter():
+    """Model often pastes an INSERT's WHERE into a one-row table and titles
+    the rule "Read ..." - still retrieval framing, not a business ladder.
+    """
+    read_rule = {
+        "rule_id": "r_read",
+        "rule_name": "Read loan and valuation details",
+        "business_meaning": "Read the SecuredFlag from LoanAccountCal.",
+        "fields_affected": ["SecuredFlag", "AccountId"],
+        "decision_logic_rows": [
+            {"condition": "SecuredFlag = 'Y' AND NOT EXISTS (...)", "outcome": "AccountId"},
+        ],
+    }
+    keep_rule = {
+        "rule_id": "r_keep",
+        "rule_name": "Readiness gate",  # not a Read/Retrieve verb title
+        "decision_logic_rows": [
+            {"condition": "ReadyFlag = 'Y'", "outcome": "'GO'"},
+            {"condition": "ELSE", "outcome": "'HOLD'"},
+        ],
+    }
+    kept = RuleSynthesizerAgent._remove_operation_only_rules([read_rule, keep_rule])
+    assert [rule["rule_id"] for rule in kept] == ["r_keep"]
+
+
 def test_formatter_preserves_llm_rule_fields_in_report():
     rule = {
         "rule_name": "LLM supplied label",

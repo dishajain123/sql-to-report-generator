@@ -24,6 +24,7 @@ from src.parsing.decision_identity import (
     rule_decision_identity,
     strip_qualifiers,
 )
+from src.output.report_formatter import ReportFormatterAgent
 from src.synthesis.rule_synthesizer import RuleSynthesizerAgent
 
 
@@ -83,11 +84,16 @@ def test_normalized_condition_key_matches_qualified_and_bare_condition():
 
 def test_normalized_condition_key_protects_string_literal_contents():
     # A literal containing something bracket/dot-shaped must never be
-    # mistaken for a qualifier chain and rewritten.
+    # mistaken for a qualifier chain and rewritten to its trailing segment.
+    # Quote marks themselves are normalized away so `'NOT_APPLICABLE'` and
+    # bare `NOT_APPLICABLE` still compare equal for coverage/dedup.
     left = normalized_condition_key("Status = 'A.B'")
     right = normalized_condition_key("Status = 'A.B'")
     assert left == right
-    assert "'A.B'" in left  # literal survives untouched, not collapsed to 'B'
+    assert "a.b" in left  # literal contents survive; not collapsed to bare 'b'
+    # Unquoted A.B is a qualifier chain and correctly collapses to B; that is
+    # distinct from the quoted-literal protection asserted above.
+    assert normalized_condition_key("'NOT_APPLICABLE'") == normalized_condition_key("NOT_APPLICABLE")
 
 
 def test_normalized_condition_key_is_case_and_whitespace_insensitive():
@@ -440,3 +446,64 @@ def test_tautology_filter_keeps_a_null_check_that_is_not_paired_with_a_bare_oper
     rule = {"rule_id": "real", "output_field": "PenalInterestAmount",
             "decision_logic_rows": [{"condition": "OutstandingBalance is not null", "outcome": "OutstandingBalance * 0.02"}]}
     assert RuleSynthesizerAgent._remove_tautological_rules([rule]) == [rule]
+
+
+# --------------------------------------------------------------------------
+# _strip_blank_outcome_decision_rows
+# --------------------------------------------------------------------------
+
+
+def test_strip_blank_outcome_drops_the_table_but_keeps_the_rule():
+    # backfill_blank_outcomes_from_decision_chains gets first chance to
+    # fill a blank cell from real chain evidence (see the backfill tests
+    # above); this is the final safety net for when no matching evidence
+    # existed - the malformed half-blank table is stripped in favor of the
+    # rule's own prose, never the rule itself.
+    rule = {
+        "rule_id": "r1",
+        "rule_name": "Determine Status",
+        "business_meaning": "Classifies the account.",
+        "decision_logic_rows": [
+            {"condition": "Score > 90", "outcome": "'HIGH'"},
+            {"condition": "ELSE", "outcome": ""},
+        ],
+    }
+    result = ReportFormatterAgent()._strip_blank_outcome_decision_rows([rule])
+    assert len(result) == 1
+    assert result[0]["decision_logic_rows"] == []
+    assert result[0]["rule_name"] == "Determine Status"
+    assert result[0]["business_meaning"] == "Classifies the account."
+
+
+def test_strip_blank_outcome_keeps_a_fully_populated_table_untouched():
+    rule = {
+        "rule_id": "r1",
+        "decision_logic_rows": [
+            {"condition": "Score > 90", "outcome": "'HIGH'"},
+            {"condition": "ELSE", "outcome": "'LOW'"},
+        ],
+    }
+    result = ReportFormatterAgent()._strip_blank_outcome_decision_rows([rule])
+    assert result == [rule]
+
+
+def test_strip_blank_outcome_never_flags_an_assignments_only_row():
+    # A row can legitimately carry a blank `outcome` string while its
+    # `assignments` list supplies the real displayed content (a
+    # multi-field row) - checking `outcome` alone would wrongly strip a
+    # perfectly well-formed table.
+    rule = {
+        "rule_id": "r1",
+        "decision_logic_rows": [
+            {"condition": "Score > 90", "outcome": "",
+             "assignments": [{"field": "Tier", "value": "'A'"}]},
+        ],
+    }
+    result = ReportFormatterAgent()._strip_blank_outcome_decision_rows([rule])
+    assert result == [rule]
+
+
+def test_strip_blank_outcome_ignores_a_rule_with_no_decision_rows():
+    rule = {"rule_id": "r1", "business_meaning": "No table here."}
+    result = ReportFormatterAgent()._strip_blank_outcome_decision_rows([rule])
+    assert result == [rule]

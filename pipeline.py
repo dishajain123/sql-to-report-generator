@@ -51,9 +51,14 @@ from src.synthesis.rule_synthesizer import (
     rule_identity_key,
     PromptTooLargeForRateLimitError,
 )
+from src.synthesis.rule_shape import finalize_business_rule_shape
 from src.output.report_formatter import ReportFormatterAgent
 from src.parsing.technical_sql_ops import extract_table_operations_from_chunks, split_table_operations
 from src.parsing.calculations import calculations_from_operations
+from src.parsing.alias_resolution import (
+    resolve_aliases_in_business_rules,
+    resolve_aliases_in_merged_extraction,
+)
 from src.ingestion.guardrails import InputGuardrailError, run_input_guardrails, strip_inactive_code_for_llm
 from src.dialect.detector import UnsupportedDialectError, detect_dialect
 from src.core.llm_client import LLMConfig, create_llm_client, load_llm_config, resolve_model_output_ceiling
@@ -745,6 +750,12 @@ class LogicRulesExtractorPipeline:
             merged_extraction.get("table_operations", []),
             merged_extraction.get("statement_provenance", []),
         )
+        # Permanent alias → real-table rewrite on deterministic evidence
+        # (decision chains + table_operations) before synthesis / IR / report
+        # so every downstream stage sees PRO.Table.col rather than A.col /
+        # Target.col / Source.col. Report formatter remains a display safety
+        # net for residual LLM prose only.
+        merged_extraction = resolve_aliases_in_merged_extraction(merged_extraction)
         synthesis_input = self._build_synthesis_input(merged_extraction)
         parameter_summary = self._summarize_parameters(ingestion)
         synthesis = self._run_rule_synthesis(
@@ -939,6 +950,23 @@ class LogicRulesExtractorPipeline:
             synthesis.data.get("business_rules", []), merged_extraction
         )
 
+        # Second, independent guarantee: a single-statement conditional
+        # write (a WHERE-gated UPDATE/INSERT with no second branch at all,
+        # so `extract_*_decision_chains` never recognizes it as a "chain")
+        # has no coverage guarantee above - `ensure_decision_chain_coverage`
+        # only fires for multi-branch ladders. Run right after it, from the
+        # same deterministic `table_operations` extraction, so a write like
+        # "set DpdBucket to NOT_APPLICABLE where LastPaymentDueDate is
+        # null" cannot silently vanish from the report just because the
+        # model's own synthesis pass missed it. See
+        # `RuleSynthesizerAgent.ensure_statement_coverage`.
+        synthesis.data["business_rules"] = RuleSynthesizerAgent.ensure_statement_coverage(
+            synthesis.data.get("business_rules", []), merged_extraction
+        )
+        synthesis.data["business_rules"] = RuleSynthesizerAgent._remove_operational_status_rules(
+            synthesis.data.get("business_rules", []), merged_extraction
+        )
+
         # Drop rules whose entire "decision" is a null-check guarding its
         # own field's write (`X IS NOT NULL -> update X`) - zero business
         # content, just a restatement of the write itself. Run after the
@@ -946,6 +974,16 @@ class LogicRulesExtractorPipeline:
         # status_rules` is re-run here: a synthetic chain-derived rule can
         # be just as tautological as a model-authored one.
         synthesis.data["business_rules"] = RuleSynthesizerAgent._remove_tautological_rules(
+            synthesis.data.get("business_rules", [])
+        )
+        # Re-apply the technical-cleanup / read-only SELECT filters after
+        # coverage floors and revision: those stages can reintroduce a
+        # CREATE #temp or "Read history" rule that synthesize() already
+        # excluded once from the model's own output.
+        synthesis.data["business_rules"] = RuleSynthesizerAgent._remove_non_business_cleanup_rules(
+            synthesis.data.get("business_rules", []), merged_extraction
+        )
+        synthesis.data["business_rules"] = RuleSynthesizerAgent._remove_operation_only_rules(
             synthesis.data.get("business_rules", [])
         )
 
@@ -975,6 +1013,21 @@ class LogicRulesExtractorPipeline:
         synthesis.data["business_rules"] = RuleSynthesizerAgent.backfill_blank_outcomes_from_decision_chains(
             synthesis.data.get("business_rules", []), merged_extraction.get("decision_chains", [])
         )
+        # Permanent alias rewrite on the final business-rule set (model +
+        # deterministic floors) so IR / reconciliation / report all share
+        # table-qualified text rather than SQL aliases.
+        synthesis.data["business_rules"] = resolve_aliases_in_business_rules(
+            synthesis.data.get("business_rules", []), merged_extraction
+        )
+        # Permanent structural shaping (MERGE upsert collapse, IF-ladder
+        # fragment suppress). Rule counts follow SQL decisions, not sample
+        # "-- Rule N" comments; those comments are a soft reference only.
+        # Formatter re-applies the same shaping as a safety net for older IRs.
+        synthesis.data["business_rules"] = finalize_business_rule_shape(
+            synthesis.data.get("business_rules", []),
+            merged_extraction,
+            after_reconciliation=False,
+        )
 
         # Same exception-handler exclusion as merged_extraction["calculations"]
         # above, applied to the model-authored calculations list too - a
@@ -1003,6 +1056,13 @@ class LogicRulesExtractorPipeline:
         )
         if reconciliation is None or not hasattr(reconciliation, "to_dict"):
             raise RuntimeError("Report generation requires completed reconciliation evidence.")
+        # Keep SQL-grounded decision tables; drop ungrounded CONFLICT shells
+        # from the permanent rule list before IR so reports and IR agree.
+        synthesis.data["business_rules"] = finalize_business_rule_shape(
+            synthesis.data.get("business_rules", []),
+            merged_extraction,
+            after_reconciliation=True,
+        )
         merged_extraction["reconciliation"] = reconciliation.to_dict()
         merged_extraction["coverage"] = reconciliation.coverage
         merged_extraction["quality"] = reconciliation.quality
@@ -1930,7 +1990,7 @@ class LogicRulesExtractorPipeline:
         else:
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
                 section_results = list(executor.map(_run_section, sections))
-        return RuleSynthesizerAgent.merge_section_results(section_results)
+        return RuleSynthesizerAgent.merge_section_results(section_results, merged_extraction)
 
     @staticmethod
     def _build_synthesis_input(merged_extraction: Dict[str, Any]) -> Dict[str, Any]:

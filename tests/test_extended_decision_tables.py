@@ -77,6 +77,21 @@ def test_coverage_is_order_sensitive_and_preserves_literal_case():
     assert decision_text_key("label='A'") != decision_text_key("label='a'")
 
 
+def test_deterministic_rule_business_meaning_never_echoes_execution_semantics():
+    # ensure_decision_chain_coverage's synthetic rule must not put procedural
+    # commentary ("First matching row wins...") into business_meaning - that
+    # text belongs only in the separate execution_semantics field. Leaving
+    # business_meaning empty here lets the formatter's own "Not specified"
+    # fallback apply honestly instead of printing something that reads like
+    # an answered business question but isn't one.
+    sql = "SELECT ISNULL(a.label, CHOOSE(b.rank, 'A', 'B', 'C')) result FROM a LEFT JOIN b ON a.id=b.id"
+    chain = _extract_deterministic_decision_chains(sql)[0]
+    assert 'SQL type conversion' in chain['execution_semantics']
+    rules = RuleSynthesizerAgent.ensure_decision_chain_coverage([], [chain])
+    assert rules[0]['business_meaning'] == ''
+    assert rules[0]['execution_semantics'] == chain['execution_semantics']
+
+
 def test_sequential_updates_keep_duplicate_predicates_and_later_overrides():
     sql = "UPDATE t SET label='A' WHERE code=1;\nUPDATE t SET label='B' WHERE code=1;\nUPDATE t SET label='C' WHERE code=2;"
     chains = _extract_deterministic_decision_chains(sql)
@@ -130,7 +145,9 @@ def test_real_sample_scope_fallback_and_sequential_maps_reach_full_report():
         assert any('ELSE of IF EXISTS' in item and table in item for item in chain['decision_context'])
     rules = RuleSynthesizerAgent.ensure_decision_chain_coverage([], chains)
     report = ReportFormatterAgent().format(ingestion, {'decision_chains': chains}, SynthesisResult(data={'business_rules': rules}))
-    assert 'GROUP BY A.UCIF_ID' in report
+    # Alias A is resolved to PRO.ACCOUNTCAL in Source context / GROUP BY.
+    assert 'GROUP BY PRO.ACCOUNTCAL.UCIF_ID' in report
+    assert 'GROUP BY A.UCIF_ID' not in report
     assert 'later matching updates can overwrite' in report
     # The `B.` alias is resolved to its real table (PRO.CUSTOMERCAL, from
     # this rule's own FROM/JOIN source context: "... INNER JOIN

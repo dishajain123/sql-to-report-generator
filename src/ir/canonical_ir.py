@@ -10,6 +10,7 @@ from src.validation.semantic_validation import (
     extract_case_assignment_decision_chains,
     extract_nested_decision_chains,
     extract_procedural_decision_chains,
+    extract_tsql_if_elseif_chains,
     merge_decision_chains,
 )
 
@@ -642,7 +643,17 @@ def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[D
         # different winner. Only match the actual expression (allow aliases
         # and formatting differences); prose remains an independent rule.
         def key(value: Any) -> str:
-            tokens = re.findall(r"'(?:''|[^'])*'|[A-Za-z_][\w$#]*|>=|<=|<>|!=|[^\s]", str(value or ""))
+            # Deterministic coverage annotates some row conditions with
+            # presentational suffixes ("[UNREACHABLE ...]", " — row filter:
+            # ...") that never appear on the raw chain branch_condition.
+            # Strip those before tokenizing or an otherwise-identical
+            # recovered row fails to match and the projected Result cell
+            # is left blank in the business report.
+            text = str(value or "")
+            text = re.sub(r"\s*—\s*row filter:.*$", "", text, flags=re.S)
+            text = re.sub(r"\s*\[UNREACHABLE.*$", "", text, flags=re.S)
+            text = re.sub(r"\s*—\s*applies to all rows \(no additional filter\)\s*$", "", text)
+            tokens = re.findall(r"'(?:''|[^'])*'|[A-Za-z_][\w$#]*|>=|<=|<>|!=|[^\s]", text)
             normalized = []
             i = 0
             while i < len(tokens):
@@ -768,6 +779,24 @@ def _build_decision_blocks(rules: List["BusinessRuleIR"], chains: Any) -> List[D
                     results.extend(row_results)
                 elif rule.action or rule.business_meaning:
                     results.append(rule.action or rule.business_meaning)
+            # Last-resort for a recovered deterministic rule: when every
+            # matched row failed the condition-text compare (e.g. a stale
+            # presentational annotation the stripper missed), still surface
+            # the chain's own assignment values rather than leave a blank
+            # Result cell for a branch the source clearly defines.
+            if not results and recovered:
+                for assignment in branch.get("assignments") or []:
+                    if not isinstance(assignment, dict):
+                        continue
+                    value = assignment.get("value")
+                    if value in (None, ""):
+                        continue
+                    field = str(assignment.get("field") or "").strip()
+                    results.append(
+                        {"field": field, "value": value}
+                        if field and len(chain_fields) > 1
+                        else value
+                    )
             block_branches.append({
                 "branch_index": branch_index,
                 "condition": condition,
@@ -904,13 +933,22 @@ class CanonicalBusinessIR:
         ) if isinstance(chains, list) else False
         if not has_structural_chain:
             source_text = getattr(ingestion, "raw_code", "")
+            dialect_name = str(getattr(ingestion, "concrete_dialect", "") or getattr(ingestion, "dialect", "") or "").strip().lower()
+            if dialect_name not in {"tsql", "oracle"}:
+                dialect_name = "tsql"
+            # Keep this fallback aligned with pipeline._extract_deterministic_decision_chains:
+            # T-SQL IF/ELSE IF ladders are invisible to the Oracle-oriented
+            # procedural extractors and must not be dropped when IR rebuilds
+            # chains from source because the earlier merge left none.
+            tsql_chains = extract_tsql_if_elseif_chains(source_text) if dialect_name == "tsql" else []
             chains = merge_decision_chains(
                 extract_case_assignment_decision_chains(source_text),
                 extract_nested_decision_chains(source_text),
                 extract_procedural_decision_chains(source_text),
+                tsql_chains,
             )
             from src.parsing.decision_tables import enrich_decision_tables
-            chains = enrich_decision_tables(source_text, chains, dialect=getattr(ingestion, "dialect", "tsql") if getattr(ingestion, "dialect", "tsql") in {"tsql", "oracle"} else "tsql")
+            chains = enrich_decision_tables(source_text, chains, dialect=dialect_name)
         decision_blocks = _build_decision_blocks(business_rules, chains)
         decision_chains = [
             {

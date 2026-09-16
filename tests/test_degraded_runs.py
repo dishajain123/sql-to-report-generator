@@ -252,11 +252,14 @@ def test_truncated_synthesis_response_still_renders_the_rule_without_any_marker(
     pipeline-level telemetry tests) is untouched. Uses a small, self-
     contained source (rather than the large SMA_MARKING sample used
     elsewhere in this file) so synthesis takes the single-call path and
-    this is the only rule in the report.
+    this is the only rule in the report. The UPDATE carries no WHERE
+    clause so `ensure_statement_coverage`'s deterministic floor (a real,
+    separate guarantee unrelated to what this test checks) has nothing
+    conditional to synthesize a second rule from.
     """
     small_sql = tmp_path / "small.sql"
     small_sql.write_text(
-        "CREATE PROCEDURE dbo.DemoProc\nAS\nBEGIN\n    UPDATE t SET x = 1 WHERE y = 2\nEND\n",
+        "CREATE PROCEDURE dbo.DemoProc\nAS\nBEGIN\n    UPDATE t SET x = 1\nEND\n",
         encoding="utf-8",
     )
     client = _FakeClient(synthesis_script=[(_synthesis_json_with_one_rule(), "length")])

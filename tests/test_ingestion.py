@@ -451,6 +451,55 @@ def test_temp_tables_are_not_marked_low_confidence_when_present_in_source():
     assert data["tables_read"][0]["confidence"] == "high"
 
 
+def test_calculation_with_hallucinated_function_wrapper_is_dropped():
+    # Table/column grounding above never inspects the calculation
+    # *expression* text - a genuine, grounded column can still be wrapped
+    # in an invented function call (e.g. a CAST the source never uses).
+    # ground_extraction_against_source must drop that calculation outright
+    # rather than let the fabricated wrapper reach the report as fact.
+    source = "UPDATE t SET DPD_MAX = MAX(DPD_MAX) FROM #DPD"
+    data = {
+        "tables_read": [], "tables_written": [], "conditions": [], "loops": [],
+        "calculations": [
+            {"field": "DPD_MAX", "expression": "CAST(MAX(DPD_MAX) AS DATETIME2)"},
+        ],
+        "exception_handling": [], "ambiguities": [],
+    }
+    warnings = ground_extraction_against_source(data, source)
+    assert data["calculations"] == []
+    assert any("CAST" in w for w in warnings)
+
+
+def test_calculation_with_only_grounded_functions_is_kept():
+    source = "UPDATE t SET DPD_MAX = MAX(DPD_MAX) FROM #DPD"
+    data = {
+        "tables_read": [], "tables_written": [], "conditions": [], "loops": [],
+        "calculations": [
+            {"field": "DPD_MAX", "expression": "MAX(DPD_MAX)"},
+        ],
+        "exception_handling": [], "ambiguities": [],
+    }
+    warnings = ground_extraction_against_source(data, source)
+    assert len(data["calculations"]) == 1
+    assert warnings == []
+
+
+def test_calculation_expression_with_parenthesized_grouping_is_not_flagged():
+    # Ordinary parenthesized grouping/logic (not a function call) must
+    # never be mistaken for a hallucinated function name.
+    source = "UPDATE t SET SCORE = (BASE + 1) WHERE STATUS IN (1, 2)"
+    data = {
+        "tables_read": [], "tables_written": [], "conditions": [], "loops": [],
+        "calculations": [
+            {"field": "SCORE", "expression": "(BASE + 1)"},
+        ],
+        "exception_handling": [], "ambiguities": [],
+    }
+    warnings = ground_extraction_against_source(data, source)
+    assert len(data["calculations"]) == 1
+    assert warnings == []
+
+
 def test_ingest_uses_filename_fallback_when_header_is_missing(tmp_path):
     agent = CodeIngestionAgent(max_chunk_chars=2000, dialect="tsql")
     sql_file = tmp_path / "loan_status_recalc_procedure.sql"

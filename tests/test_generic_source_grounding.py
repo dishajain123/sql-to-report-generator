@@ -252,9 +252,13 @@ def test_each_calculation_renders_its_own_output_field():
     }))
     first = report.index("### Calculation — first_total")
     second = report.index("### Calculation — second_total")
-    assert "**Output:**\n`target.first_total`" in report[first:second]
-    assert "**Output:**\n`target.second_total`" in report[second:]
-    assert "target.second_total" not in report[first:second]
+    # Unresolved MERGE-style `target.` role aliases are stripped for display
+    # so the business report never shows Target/Source as qualifiers.
+    assert "**Output:**\n`first_total`" in report[first:second]
+    assert "**Output:**\n`second_total`" in report[second:]
+    assert "second_total" not in report[first:second] or report[first:second].count("second_total") == 0
+    assert "target.first_total" not in report
+    assert "target.second_total" not in report
 
 
 def test_decision_block_keeps_authored_secondary_result_in_action():
@@ -345,8 +349,8 @@ def test_parser_preserves_insert_expression_to_target_column_relationship():
     ], "oracle")
     insert = next(row for row in operations if row["operation"] == "INSERT")
     assert insert["assigned_values"] == [
-        {"column": "total_value", "expression": "base_value * rate_value"},
-        {"column": "item_id", "expression": "source_id"},
+        {"column": "total_value", "expression": "base_value * rate_value", "case_branches": []},
+        {"column": "item_id", "expression": "source_id", "case_branches": []},
     ]
 
 
