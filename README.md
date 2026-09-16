@@ -1,18 +1,26 @@
 # AI-Powered DB Logic & Business Rules Extractor
 
 An **Agentic RAG** pipeline that reads banking database objects — stored
-procedures, functions, views, triggers, or standalone PL/SQL blocks — and
+procedures, functions, views, triggers, or standalone SQL blocks — and
 reverse-engineers them into structured, **business-focused** Markdown
 documentation. The primary target use case is core-banking / lending
 logic such as NPA (Non-Performing Asset) classification and provisioning
 calculation procedures governed by RBI IRAC norms.
 
+Both **Oracle PL/SQL and T-SQL (SQL Server) are fully supported**, with
+automatic dialect detection (`--dialect auto`, the default) or an
+explicit `--dialect oracle`/`--dialect tsql` override. T-SQL support is
+not a second code path bolted on — dialect detection, statement-boundary
+parsing, and structural SQL validation are dialect-aware throughout the
+same pipeline.
+
 Orchestration is **pure Python** — there is no agent framework. Each
 agent is a plain class; `pipeline.py` calls their methods in order and
 passes data between them as ordinary Python objects/dicts. The two
 LLM-calling agents talk to an OpenAI-compatible chat completion API
-configured entirely through environment variables, and the RAG layer
-talks to `chromadb` directly.
+configured entirely through environment variables (OpenAI, Groq, Ollama,
+or AWS Bedrock — see Setup below), and the RAG layer talks to `chromadb`
+directly.
 
 The critical design goal: the output explains **what business rule is
 being enforced and why**, not a line-by-line restatement of SQL syntax.
@@ -59,12 +67,13 @@ being enforced and why**, not a line-by-line restatement of SQL syntax.
                         structured .md report
 ```
 
-Each agent lives in its own module under `agents/` and is orchestrated by
-`pipeline.py` — plain Python method calls, no agent framework. Agents 1
-and 5 are pure/deterministic (no LLM call); agents 3 and 4 call the
-configured chat model through the OpenAI SDK; agent 2 is a local,
-file-based `chromadb` collection queried directly with the deterministic
-local embedding function in `agents/retriever.py`.
+Each agent lives in its own module under `src/` and is orchestrated by
+`pipeline.py` — plain Python method calls, no agent framework. Ingestion
+and report formatting are pure/deterministic (no LLM call); extraction
+and rule synthesis call the configured chat model through the OpenAI SDK
+(or the Bedrock-compatible client for AWS); retrieval is a local,
+file-based `chromadb` collection queried directly with a deterministic
+local embedding function.
 
 ---
 
@@ -72,30 +81,44 @@ local embedding function in `agents/retriever.py`.
 
 ```
 logic-rules-extractor/
-├── agents/
-│   ├── __init__.py
-│   ├── ingestion.py          # Code Ingestion Agent
-│   ├── retriever.py          # Pattern Retrieval Agent (RAG / ChromaDB)
-│   ├── logic_extractor.py    # Logic Extraction Agent
-│   ├── rule_synthesizer.py   # Rule Synthesizer Agent (business-language)
-│   └── report_formatter.py   # Report Formatter Agent
+├── src/
+│   ├── ingestion/          # Code Ingestion: dialect detection, decoding,
+│   │                       # parameter/statement parsing, chunking,
+│   │                       # deterministic decision-chain + table-op
+│   │                       # extraction, called-procedure detection
+│   ├── parsing/            # Shared statement-boundary detector used by
+│   │                       # both ingestion and the deterministic
+│   │                       # extraction path (single implementation)
+│   ├── dialect/            # Oracle / T-SQL dialect auto-detection
+│   ├── extraction/         # Logic Extraction Agent (LLM, per-chunk)
+│   ├── synthesis/          # Rule Synthesizer Agent (LLM, business-
+│   │                       # language rules; sectioned/hierarchical
+│   │                       # synthesis for large objects)
+│   ├── validation/         # Semantic validation, decision-chain merge,
+│   │                       # reconciliation/grounding against source,
+│   │                       # coverage checking
+│   ├── retrieval/          # Pattern Retrieval Agent (RAG / ChromaDB)
+│   ├── output/             # Report Formatter Agent
+│   ├── batch/              # Batch runner: multi-file runs, call-graph
+│   │                       # cross-referencing, batch manifest/index
+│   ├── ir/                 # Canonical business-rule intermediate repr.
+│   ├── telemetry/          # LLM call telemetry tracking
+│   ├── core/               # LLM client (OpenAI/Groq/Ollama/Bedrock),
+│   │                       # response cache, shared pipeline utilities
+│   └── benchmark/          # Offline evaluation harness
 ├── knowledge_base/           # Seed docs used to build the vector store
 │   ├── rbi_irac_norms.md
 │   └── plsql_construct_patterns.md
 ├── samples/                  # Sample banking .sql inputs
-│   ├── npa_classification.sql
-│   ├── provisioning_summary_view.sql
-│   └── batch_overdue_ageing_block.sql
 ├── config/
 │   └── .env.example
-├── tests/
-│   ├── test_ingestion.py
-│   └── test_rule_synthesizer.py
+├── tests/                     # pytest suite (500+ tests, all deterministic
+│                               # paths + fake-LLM-client integration tests)
 ├── .streamlit/
 │   └── config.toml            # Streamlit theme
 ├── app.py                     # Streamlit frontend
 ├── pipeline.py                # Orchestrator
-├── main.py                    # CLI entry point
+├── main.py                    # CLI entry point (single file or batch)
 ├── requirements.txt
 └── README.md
 ```
@@ -158,6 +181,9 @@ This prints progress and writes the Markdown report to
 # custom output path
 python main.py samples/provisioning_summary_view.sql -o out/report.md
 
+# explicit dialect instead of auto-detection
+python main.py samples/some_tsql_proc.sql --dialect tsql
+
 # force-rebuild the ChromaDB knowledge base (e.g. after editing knowledge_base/*.md)
 python main.py samples/npa_classification.sql --rebuild-kb
 
@@ -166,6 +192,29 @@ python main.py samples/npa_classification.sql -v
 ```
 
 Full flag reference: `python main.py --help`
+
+### Batch mode (multiple files)
+
+Passing more than one file processes them as a batch — each object still
+gets its own independent report, but the batch runner additionally:
+
+- resolves each object's statically-detected `EXEC`/procedure calls
+  against the *other* objects in the same batch and adds a "Report"
+  column linking straight to the callee's own report (a call to a name
+  outside the batch is left as plain text, not guessed at);
+- writes a `batch_manifest.json` with per-file status plus a `call_graph`
+  (caller/callee/resolved edges, purely derived from the calls actually
+  found — no child business logic is invented or copied between reports);
+- writes a generated `_batch_index.md` listing objects nothing else in
+  the batch calls first (typically the orchestrators — the most useful
+  starting point for a reviewer), then everything else.
+
+```bash
+python main.py samples/*.sql --output-dir samples/output/batches
+```
+
+Single-object-per-file is still the unit of analysis — a batch does not
+merge multiple objects declared in one `.sql` file (see Known Limitations).
 
 ---
 
@@ -216,28 +265,48 @@ structure:
 ## Running Tests
 
 ```bash
-pip install pytest
+pip install -r requirements.txt   # includes chromadb, boto3, openai, pytest
 pytest tests/ -v
 ```
 
-`test_ingestion.py` exercises the deterministic parsing/chunking logic
-directly. `test_rule_synthesizer.py` mocks the LLM call so JSON-parsing,
-fallback, and jargon-detection behavior can be verified without a live
-API key.
+The suite (500+ tests) covers the deterministic ingestion/parsing/
+chunking/decision-chain paths directly against real SQL, plus the
+LLM-calling agents against fake, OpenAI-shaped clients (no live API key
+needed to run the suite) — including scripted failure/retry scenarios for
+the LLM reliability behavior described below.
 
 ---
 
 ## Known Limitations
 
-- **Dynamic SQL** (`EXECUTE IMMEDIATE` with a runtime-built string) cannot
-  be statically resolved to a fixed table/condition; it is always flagged
-  under "Ambiguities / Needs Review" rather than guessed.
-- **sqlglot** validates embedded SQL statements (SELECT/INSERT/UPDATE/
-  DELETE/MERGE) structurally, but does not parse PL/SQL procedural
-  control flow (IF/LOOP/CURSOR/EXCEPTION) — those regions are chunked via
-  structural heuristics instead.
+- **Dynamic SQL** (Oracle `EXECUTE IMMEDIATE`, T-SQL `EXEC(@sql)` /
+  `sp_executesql`) cannot be statically resolved to a fixed table/
+  condition; it is always flagged under "Ambiguities / Needs Review"
+  rather than guessed.
+- Embedded DML (SELECT/INSERT/UPDATE/DELETE/MERGE) is structurally
+  validated with `sqlglot`; procedural control flow around it
+  (IF/BEGIN/WHILE/CURSOR/EXCEPTION handling) is not itself SQL and is
+  handled by the shared statement-boundary detector
+  (`src/parsing/statement_boundaries.py`) rather than passed to sqlglot.
 - Multi-object `.sql` files (more than one procedure/view/etc. in a
-  single file) are not supported — provide one DB object per file.
+  single file) are not supported — provide one DB object per file. Batch
+  mode (see above) cross-references calls *between* files in a batch, but
+  does not merge multiple objects declared inside one file.
+- Very large objects (100KB+, tens of chunks) are handled by boundary-
+  aware chunking plus hierarchical/sectioned rule synthesis rather than
+  one oversized call, but chunk/section count still scales with object
+  size — expect proportionally more LLM calls for very large procedures.
+- A single LLM call failing after bounded retry degrades just that
+  chunk/section to empty evidence rather than aborting the whole run, and
+  the report is marked with a visible "DEGRADED RUN" banner when this
+  happens — the affected portion should be reviewed or the run retried,
+  since the report is not necessarily complete.
+- Retry/backoff for transient LLM failures (rate limits, timeouts, 5xx)
+  is applied automatically: the `openai`-SDK-backed providers (OpenAI,
+  Groq, Ollama) retry via the SDK's own defaults; the AWS Bedrock client
+  has its own bounded exponential-backoff retry layer (`src/core/
+  llm_client.py`), on top of botocore's standard retry mode when the
+  `boto3` client path is available.
 - Extraction quality depends on the curated `knowledge_base/` content;
   extending it with more domain-specific patterns (e.g. additional RBI
   circular thresholds specific to your institution) will materially
@@ -248,6 +317,6 @@ API key.
 - Add Excel/JSON output formats alongside Markdown (`openpyxl` /
   pydantic models are already listed as suggested stack components).
 - Add a confidence score per extracted business rule.
-- Support T-SQL / other dialects beyond Oracle PL/SQL.
+- Merge multiple objects declared in a single `.sql` file.
 - Add a lightweight LangGraph-based agent graph for retry/self-critique
   loops on low-confidence chunks before final synthesis.

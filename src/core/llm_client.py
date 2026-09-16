@@ -89,9 +89,50 @@ _NOVA_DETERMINISTIC_TOP_K = 1
 try:  # pragma: no cover - optional dependency in developer environments
     import boto3  # type: ignore
     from botocore.config import Config as BotoConfig  # type: ignore
+    from botocore.exceptions import ClientError as BotoClientError  # type: ignore
 except Exception:  # pragma: no cover - boto3 is installed in production
     boto3 = None
     BotoConfig = None
+    BotoClientError = None
+
+
+class LLMTransientError(RuntimeError):
+    """A genuinely transient LLM call failure - rate limit, timeout,
+    connection error, or a 5xx server error. Callers (specifically
+    `call_with_retry` below) may retry these. Every other failure (auth,
+    malformed request, invalid/unparsable response body) is a permanent
+    `RuntimeError` and must never be retried - retrying a bad request just
+    burns the same bounded attempt budget for a result that will never
+    change.
+    """
+
+
+# Bounded, generic retry helper for the one LLM call site with no built-in
+# retry of its own: `_BedrockRuntimeTransport`'s raw HTTP fallback (used
+# when boto3 isn't installed). The boto3 path already gets botocore's own
+# "standard" retry mode, and the openai-SDK-backed providers (openai/groq/
+# ollama) already retry transient errors by default via the `openai`
+# package itself - wrapping those again here would risk compounding
+# backoff on top of backoff already applied by the underlying client.
+def call_with_retry(fn, *, max_attempts: int = 3, base_delay: float = 1.0, max_delay: float = 8.0):
+    """Call `fn()`, retrying with bounded exponential backoff (+ jitter)
+    only when it raises `LLMTransientError`. Any other exception - a
+    permanent failure, or a transient one already exhausted - propagates
+    immediately on the attempt that raised it.
+    """
+    import random
+    import time as _time
+
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return fn()
+        except LLMTransientError:
+            if attempt >= max_attempts:
+                raise
+            delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+            _time.sleep(delay * (0.5 + random.random()))
 
 
 @dataclass(frozen=True)
@@ -389,24 +430,42 @@ class _BedrockRuntimeTransport:
         # fail with a signature mismatch.
         encoded_model_id = quote(model_id, safe="-_.~")
         url = f"https://bedrock-runtime.{self.region}.amazonaws.com/model/{encoded_model_id}/converse"
-        request = self._signed_request(url=url, body=body)
-        try:
-            response = self._request_sender(request)
-            raw = response.read()
-            if hasattr(response, "close"):
-                try:
-                    response.close()
-                except Exception:
-                    pass
-        except HTTPError as exc:
-            detail = ""
+
+        def _send_once() -> bytes:
+            # A fresh signed request is built on every attempt (not just
+            # the first) - SigV4 signs its own embedded timestamp, and
+            # rebuilding it keeps every retry attempt's signature valid
+            # even if backoff delay pushes it into a new second.
+            request = self._signed_request(url=url, body=body)
             try:
-                detail = exc.read().decode("utf-8", errors="ignore")
-            except Exception:
-                detail = str(exc)
-            raise RuntimeError(f"Bedrock invocation failed: {exc.code} {detail or exc.reason}") from exc
-        except URLError as exc:
-            raise RuntimeError(f"Bedrock invocation failed: {exc.reason}") from exc
+                response = self._request_sender(request)
+                raw = response.read()
+                if hasattr(response, "close"):
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
+                return raw
+            except HTTPError as exc:
+                detail = ""
+                try:
+                    detail = exc.read().decode("utf-8", errors="ignore")
+                except Exception:
+                    detail = str(exc)
+                message = f"Bedrock invocation failed: {exc.code} {detail or exc.reason}"
+                # Rate-limited (429) and server-side (5xx) responses are
+                # genuinely transient - worth a bounded retry. Everything
+                # else (4xx like bad request/auth/not-found) is a
+                # permanent failure that retrying can never fix.
+                if exc.code == 429 or exc.code >= 500:
+                    raise LLMTransientError(message) from exc
+                raise RuntimeError(message) from exc
+            except URLError as exc:
+                # Network-level failure (DNS, connection refused, timeout)
+                # below the HTTP layer - always treated as transient.
+                raise LLMTransientError(f"Bedrock invocation failed: {exc.reason}") from exc
+
+        raw = call_with_retry(_send_once)
 
         try:
             decoded = json.loads(raw.decode("utf-8"))
@@ -459,39 +518,69 @@ class _BedrockRuntimeTransport:
         self._boto3_client = boto3.client("bedrock-runtime", **client_kwargs)
         return self._boto3_client
 
+    # AWS error codes that mean "the service is temporarily unable to keep
+    # up / unavailable", not "this request is wrong" - worth a bounded
+    # retry. botocore's own "standard" retry mode (configured in
+    # `_build_boto3_client`) already retries a subset of these internally
+    # before this method ever sees an exception; this is a second,
+    # explicit layer specifically so codes botocore doesn't already know
+    # about (Bedrock-specific throttling/timeout codes) still get bounded
+    # retry rather than propagating as a permanent failure on the first hit.
+    _RETRYABLE_BOTO_ERROR_CODES = frozenset(
+        {
+            "ThrottlingException",
+            "TooManyRequestsException",
+            "ServiceUnavailableException",
+            "ServiceUnavailable",
+            "ModelTimeoutException",
+            "InternalServerException",
+            "RequestTimeout",
+            "RequestTimeoutException",
+        }
+    )
+
     def _invoke_via_boto3(self, *, client, model_id: str, payload: dict):
-        try:
-            if hasattr(client, "converse"):
-                converse_kwargs = {
-                    "modelId": model_id,
-                    "messages": payload.get("messages") or [],
-                    "inferenceConfig": payload.get("inferenceConfig") or {},
-                }
-                system = payload.get("system") or []
-                if system:
-                    converse_kwargs["system"] = system
-                additional_fields = payload.get("additionalModelRequestFields")
-                if additional_fields:
-                    converse_kwargs["additionalModelRequestFields"] = additional_fields
-                response = client.converse(**converse_kwargs)
-                decoded = response if isinstance(response, dict) else {}
-            elif hasattr(client, "invoke_model"):
-                response = client.invoke_model(
-                    modelId=model_id,
-                    contentType="application/json",
-                    accept="application/json",
-                    body=json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
-                )
-                body = response.get("body") if isinstance(response, dict) else getattr(response, "body", None)
-                raw = body.read() if hasattr(body, "read") else body
-                if isinstance(raw, bytes):
-                    decoded = json.loads(raw.decode("utf-8"))
-                else:
-                    decoded = json.loads(str(raw or "{}"))
-            else:  # pragma: no cover - defensive fallback for unusual stubs
-                raise RuntimeError("Bedrock client does not expose converse() or invoke_model().")
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"Bedrock invocation failed: {exc}") from exc
+        def _call_once() -> dict:
+            try:
+                if hasattr(client, "converse"):
+                    converse_kwargs = {
+                        "modelId": model_id,
+                        "messages": payload.get("messages") or [],
+                        "inferenceConfig": payload.get("inferenceConfig") or {},
+                    }
+                    system = payload.get("system") or []
+                    if system:
+                        converse_kwargs["system"] = system
+                    additional_fields = payload.get("additionalModelRequestFields")
+                    if additional_fields:
+                        converse_kwargs["additionalModelRequestFields"] = additional_fields
+                    response = client.converse(**converse_kwargs)
+                    return response if isinstance(response, dict) else {}
+                elif hasattr(client, "invoke_model"):
+                    response = client.invoke_model(
+                        modelId=model_id,
+                        contentType="application/json",
+                        accept="application/json",
+                        body=json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
+                    )
+                    body = response.get("body") if isinstance(response, dict) else getattr(response, "body", None)
+                    raw = body.read() if hasattr(body, "read") else body
+                    if isinstance(raw, bytes):
+                        return json.loads(raw.decode("utf-8"))
+                    return json.loads(str(raw or "{}"))
+                else:  # pragma: no cover - defensive fallback for unusual stubs
+                    raise RuntimeError("Bedrock client does not expose converse() or invoke_model().")
+            except RuntimeError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                error_code = None
+                if BotoClientError is not None and isinstance(exc, BotoClientError):
+                    error_code = (exc.response or {}).get("Error", {}).get("Code")
+                if error_code in self._RETRYABLE_BOTO_ERROR_CODES:
+                    raise LLMTransientError(f"Bedrock invocation failed: {exc}") from exc
+                raise RuntimeError(f"Bedrock invocation failed: {exc}") from exc
+
+        decoded = call_with_retry(_call_once)
 
         content = self._extract_content(decoded)
         usage = self._extract_usage(decoded)
@@ -588,7 +677,7 @@ class _BedrockRuntimeTransport:
     def _signed_request(self, *, url: str, body: bytes) -> Request:
         parsed = url.split("://", 1)[-1]
         host, _, path = parsed.partition("/")
-        amz_date = _dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        amz_date = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         date_stamp = amz_date[:8]
         payload_hash = hashlib.sha256(body).hexdigest()
         canonical_uri = "/" + path

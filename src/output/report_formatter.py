@@ -106,6 +106,21 @@ _PLACEHOLDER_FIELD_VALUES = {
 }
 
 
+def normalize_call_target(name: str) -> str:
+    """Normalize a called-procedure name (from `IngestionResult.
+    called_procedures`) or an object's own identity (`IngestionResult.
+    object_name`, optionally schema-qualified) into one comparison key, so
+    e.g. `[PRO].[SMA_MARKING]`, `PRO.SMA_MARKING`, and `sma_marking`
+    resolve to the same batch-mode cross-reference target. Shared between
+    this module (rendering the "Report" column) and
+    `src.batch.batch_runner` (building the resolved-name map after a
+    batch completes) - the single source of truth for what "the same
+    procedure" means across those two call sites.
+    """
+    text = str(name or "").replace("[", "").replace("]", "").strip()
+    return text.lower()
+
+
 class ReportFormatterAgent:
     """Assembles the final Markdown business logic report."""
 
@@ -176,6 +191,7 @@ class ReportFormatterAgent:
         """
         ctx = self._prepare(ingestion, merged_extraction, synthesis, canonical_ir, run_metadata)
         synthesis = ctx["synthesis"]
+        run_metadata_resolved = ctx["run_metadata"]
         business_rules_for_display = self._project_decision_rules(
             ctx["business_rules_for_display"], ctx["decision_blocks"], ctx["merged_extraction"]
         )
@@ -191,6 +207,7 @@ class ReportFormatterAgent:
         sections = [
             self._title_block(ingestion, synthesis),
             self._source_truncation_banner(extraction_guardrail_warnings or []),
+            self._degraded_run_banner(run_metadata_resolved),
             self._at_a_glance(
                 ingestion,
                 synthesis,
@@ -211,7 +228,7 @@ class ReportFormatterAgent:
             # re-add this call without checking with the client first.
             self._what_this_does(synthesis, business_rules_for_display, resolved_merged_extraction),
             self._end_to_end_flow(synthesis, business_rules_for_display, resolved_merged_extraction),
-            self._called_procedures_section(ingestion),
+            self.render_called_procedures_section(ingestion),
             self._business_rule_overview_table(business_rules_for_display),
             self._business_rules_section(
                 business_rules_for_display,
@@ -254,6 +271,39 @@ class ReportFormatterAgent:
                     "Do not treat this report as complete."
                 )
         return ""
+
+    @staticmethod
+    def _degraded_run_banner(run_metadata: Optional[RunMetadata]) -> str:
+        """A loud, top-of-document statement when one or more chunk
+        extraction calls or synthesis sections failed (after bounded
+        retry) and were degraded to empty evidence rather than aborting
+        the whole run - see pipeline.py's `telemetry_payload["degraded"]`.
+
+        Without this, a report missing evidence for a failed chunk/section
+        is visually indistinguishable from a fully clean one - the exact
+        risk the robustness audit flagged for a large batch run where a
+        single transient LLM failure is a "when," not an "if." This is
+        distinct from (and in addition to) the per-chunk
+        `guardrail_warnings` text, which is verification-report-only and
+        easy to miss.
+        """
+        telemetry = getattr(run_metadata, "telemetry", None) if run_metadata else None
+        if not isinstance(telemetry, dict) or not telemetry.get("degraded"):
+            return ""
+        failed_chunks = telemetry.get("failed_chunk_count") or 0
+        failed_sections = telemetry.get("failed_section_count") or 0
+        parts = []
+        if failed_chunks:
+            parts.append(f"{failed_chunks} chunk extraction call(s)")
+        if failed_sections:
+            parts.append(f"{failed_sections} rule synthesis section(s)")
+        detail = " and ".join(parts) if parts else "part of this run"
+        return (
+            "> **⚠ DEGRADED RUN — POSSIBLY INCOMPLETE**\n"
+            f"> {detail} failed after retries and were excluded rather than aborting "
+            "the whole run. This report may be missing evidence or business rules "
+            "from the affected portion of the source. Re-run to attempt full coverage."
+        )
 
     @staticmethod
     def _reconciliation_notice(merged_extraction: Dict[str, Any], synthesis: SynthesisResult) -> str:
@@ -839,7 +889,9 @@ class ReportFormatterAgent:
         return "## Process Flow\n\n" + "\n".join(lines)
 
     @staticmethod
-    def _called_procedures_section(ingestion: IngestionResult) -> str:
+    def render_called_procedures_section(
+        ingestion: IngestionResult, resolved: Optional[Dict[str, str]] = None
+    ) -> str:
         """List statically-callable EXEC targets in source order.
 
         222 EXEC calls were measured across 76/91 client procedures, with
@@ -850,15 +902,36 @@ class ReportFormatterAgent:
         with no indication of what it actually does (call other
         procedures, in order), and a called child's report gave no hint
         of when or in what order it runs relative to its siblings.
+
+        `resolved`, when given, maps a normalized called-procedure name
+        (see `normalize_call_target` in this module) to the
+        sibling report's filename within the same batch run - added as a
+        "Report" column linking straight to that procedure's own report.
+        This is the single rendering implementation used both for a
+        single-file report (`resolved=None`, unchanged from before) and
+        for `batch_runner.run_batch`'s post-processing pass that
+        cross-references sibling calls after a whole batch completes (see
+        that module for why this can only happen as a second pass: which
+        other object identities exist in the batch isn't known until
+        every file in it has been ingested).
         """
         calls = getattr(ingestion, "called_procedures", None) or []
         if not calls:
             return ""
-        rows = ["| Order | Procedure | Arguments |", "|---|---|---|"]
+        include_report_column = resolved is not None
+        if include_report_column:
+            rows = ["| Order | Procedure | Arguments | Report |", "|---|---|---|---|"]
+        else:
+            rows = ["| Order | Procedure | Arguments |", "|---|---|---|"]
         for i, call in enumerate(calls, start=1):
             name = str(call.get("name") or "").strip() or "Not specified"
             arguments = str(call.get("arguments") or "").strip() or "_none_"
-            rows.append(f"| {i} | `{name}` | `{arguments}` |")
+            if include_report_column:
+                report_filename = (resolved or {}).get(normalize_call_target(name))
+                report_cell = f"[{report_filename}]({report_filename})" if report_filename else "_not in this batch_"
+                rows.append(f"| {i} | `{name}` | `{arguments}` | {report_cell} |")
+            else:
+                rows.append(f"| {i} | `{name}` | `{arguments}` |")
         return (
             "## Called Procedures\n\n"
             f"This procedure calls {len(calls)} other stored procedure(s), in this order:\n\n"

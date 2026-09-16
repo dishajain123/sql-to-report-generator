@@ -77,6 +77,10 @@ class SynthesisResult:
     jargon_flags: List[str] = field(default_factory=list)
     guardrail_warnings: List[str] = field(default_factory=list)
     truncated: bool = False
+    # True exactly when this synthesis call (single-call or one section of
+    # a sectioned run) raised and the pipeline degraded it to an empty
+    # result to keep the run alive, mirroring `ChunkExtraction.llm_call_failed`.
+    synthesis_failed: bool = False
 
 
 _BASE_SYNTHESIS_TOKENS = int(os.environ.get("BASE_SYNTHESIS_TOKENS", "16000"))
@@ -634,6 +638,7 @@ class RuleSynthesizerAgent:
             jargon_flags=merged_jargon,
             guardrail_warnings=merged_warnings,
             truncated=any(item.truncated for item in usable),
+            synthesis_failed=any(item.synthesis_failed for item in usable),
         )
 
     def synthesize(

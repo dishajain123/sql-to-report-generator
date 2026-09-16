@@ -322,3 +322,47 @@ def test_quality_summary_does_not_claim_chain_coverage_when_no_chains_exist():
 
     assert "**Decision-chain coverage:** Not applicable" in verification
     assert "Decision-chain coverage: 0 / 0 branches (100.0%)" not in verification
+
+
+# --------------------------------------------------------------------------
+# render_called_procedures_section: batch-mode cross-reference resolution
+# --------------------------------------------------------------------------
+
+
+def test_render_called_procedures_section_without_resolver_matches_original_rendering():
+    """Single-file mode (resolved=None) must render exactly the original
+    3-column table with no "Report" column - unchanged behavior."""
+    ingestion = _ingestion()
+    ingestion.called_procedures = [
+        {"name": "PRO.ChildProc", "arguments": "@TimeKey"},
+    ]
+
+    section = ReportFormatterAgent.render_called_procedures_section(ingestion)
+
+    assert "## Called Procedures" in section
+    assert "| Order | Procedure | Arguments |" in section
+    assert "Report" not in section
+    assert "PRO.ChildProc" in section
+
+
+def test_render_called_procedures_section_with_resolver_links_to_sibling_report():
+    ingestion = _ingestion()
+    ingestion.called_procedures = [
+        {"name": "[PRO].[ChildProc]", "arguments": "@TimeKey"},
+        {"name": "PRO.UnknownSiblingProc", "arguments": ""},
+    ]
+    resolved = {"pro.childproc": "PRO.ChildProc_report.md"}
+
+    section = ReportFormatterAgent.render_called_procedures_section(ingestion, resolved)
+
+    assert "| Order | Procedure | Arguments | Report |" in section
+    assert "[PRO.ChildProc_report.md](PRO.ChildProc_report.md)" in section
+    assert "_not in this batch_" in section
+
+
+def test_render_called_procedures_section_empty_when_no_calls():
+    ingestion = _ingestion()
+    ingestion.called_procedures = []
+
+    assert ReportFormatterAgent.render_called_procedures_section(ingestion) == ""
+    assert ReportFormatterAgent.render_called_procedures_section(ingestion, {}) == ""

@@ -246,3 +246,43 @@ def test_oversized_source_selects_existing_chunked_path():
     estimated = pipeline._estimate_single_pass_tokens(ingestion.raw_code, "context")
     assert estimated > pipeline.single_pass_token_budget
     assert not pipeline._use_single_pass(ingestion, estimated)
+
+
+def test_pipeline_default_chunk_size_matches_ingestion_agent_default(monkeypatch):
+    """Regression test: pipeline.py used to hardcode its own
+    max_chunk_chars=6000 default independently of
+    CodeIngestionAgent.__init__'s own default (3000) - a footgun for
+    anyone constructing CodeIngestionAgent directly (tests, notebooks,
+    scripts) instead of going through the pipeline, since the two
+    silently disagreed. Both must now resolve to the single
+    MAX_CHUNK_CHARS constant in src.ingestion.ingestion."""
+    import inspect
+
+    import pipeline as pipeline_module
+    from src.ingestion.ingestion import MAX_CHUNK_CHARS, CodeIngestionAgent
+
+    class _DummyConfig:
+        provider = "openai"
+        api_key = "x"
+        model_name = "test-model"
+        base_url = None
+
+    monkeypatch.setattr(pipeline_module, "load_llm_config", lambda: _DummyConfig())
+    monkeypatch.setattr(pipeline_module, "create_llm_client", lambda config: object())
+
+    pipeline_default = inspect.signature(
+        pipeline_module.LogicRulesExtractorPipeline.__init__
+    ).parameters["max_chunk_chars"].default
+    agent_default = inspect.signature(CodeIngestionAgent.__init__).parameters[
+        "max_chunk_chars"
+    ].default
+
+    assert pipeline_default == agent_default == MAX_CHUNK_CHARS
+
+    built_pipeline = pipeline_module.LogicRulesExtractorPipeline(
+        llm_config=_DummyConfig(),
+        persist_directory="chroma_store",
+        knowledge_base_dir="knowledge_base",
+        dialect="auto",
+    )
+    assert built_pipeline.ingestion_agent.max_chunk_chars == MAX_CHUNK_CHARS

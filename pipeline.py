@@ -37,7 +37,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from src.ingestion.ingestion import CodeIngestionAgent, IngestionResult, build_object_identity_stem
+from src.ingestion.ingestion import (
+    MAX_CHUNK_CHARS,
+    CodeIngestionAgent,
+    IngestionResult,
+    build_object_identity_stem,
+)
 from src.retrieval.retriever import PatternRetrievalAgent
 from src.extraction.logic_extractor import LogicExtractionAgent, ChunkExtraction
 from src.synthesis.rule_synthesizer import RuleSynthesizerAgent, SynthesisResult
@@ -347,7 +352,7 @@ class LogicRulesExtractorPipeline:
         seed: Optional[int] = DEFAULT_SEED,
         persist_directory: str = "chroma_store",
         knowledge_base_dir: str = "knowledge_base",
-        max_chunk_chars: int = 6000,
+        max_chunk_chars: int = MAX_CHUNK_CHARS,
         retrieval_k: int = 4,
         chunk_workers: Optional[int] = None,
         dialect: str = "auto",
@@ -831,6 +836,21 @@ class LogicRulesExtractorPipeline:
             run_metadata.run_timestamp if run_metadata else "",
         )
         telemetry_payload = telemetry_tracker.snapshot(telemetry_run_id).to_dict()
+        # Aggregate the per-chunk/per-section LLM-failure markers
+        # (ChunkExtraction.llm_call_failed, SynthesisResult.synthesis_failed)
+        # into one explicit "degraded run" signal, stashed in run telemetry
+        # (an existing, schema-free extension point - see RunMetadata) so
+        # report_formatter can render a prominent banner. Without this, a
+        # report with silently-empty evidence for a failed chunk/section
+        # looks identical to a fully clean run - the exact "when, not if"
+        # risk the audit flagged for a ~1,000-LLM-call batch.
+        failed_chunk_count = sum(
+            1 for item in chunk_extractions if getattr(item, "llm_call_failed", False)
+        )
+        failed_section = bool(getattr(synthesis, "synthesis_failed", False))
+        telemetry_payload["degraded"] = failed_chunk_count > 0 or failed_section
+        telemetry_payload["failed_chunk_count"] = failed_chunk_count
+        telemetry_payload["failed_section_count"] = 1 if failed_section else 0
         run_metadata = attach_run_telemetry(run_metadata, telemetry_payload)
         ingestion.run_metadata = run_metadata
         merged_extraction["run_metadata"] = run_metadata_to_dict(run_metadata)
@@ -972,6 +992,7 @@ class LogicRulesExtractorPipeline:
                 },
                 parse_error=str(exc),
                 guardrail_warnings=[f"Full-source extraction failed: {exc}"],
+                llm_call_failed=True,
             )
         if inactive_snippets:
             # Verification-report-only note (see format_verification's
@@ -1194,6 +1215,7 @@ class LogicRulesExtractorPipeline:
                 raw_response="",
                 parse_error=str(exc),
                 guardrail_warnings=[f"Chunk extraction failed: {exc}"],
+                llm_call_failed=True,
             )
         if inactive_snippets:
             # Verification-report-only note - see the matching comment in
@@ -1450,15 +1472,31 @@ class LogicRulesExtractorPipeline:
         raw_source = ingestion.raw_code
 
         def _run_single_call() -> SynthesisResult:
-            return self.synthesizer_agent.synthesize(
-                object_name=ingestion.object_name,
-                object_type=ingestion.object_type,
-                parameter_summary=parameter_summary,
-                merged_extraction=synthesis_input,
-                dialect=dialect,
-                raw_source=raw_source,
-                telemetry_tracker=telemetry_tracker,
-            )
+            # Mirrors the per-chunk extraction degrade pattern
+            # (_extract_one_chunk's except block): a transient LLM failure
+            # here must not abort the whole run - it previously did,
+            # unlike extraction, because there was no exception boundary
+            # around this call at all. Degrading to an empty-but-valid
+            # SynthesisResult (SynthesisResult's own `data` default factory
+            # already supplies the correct empty schema) keeps the run
+            # alive and marks it for the run-level "degraded run" signal.
+            try:
+                return self.synthesizer_agent.synthesize(
+                    object_name=ingestion.object_name,
+                    object_type=ingestion.object_type,
+                    parameter_summary=parameter_summary,
+                    merged_extraction=synthesis_input,
+                    dialect=dialect,
+                    raw_source=raw_source,
+                    telemetry_tracker=telemetry_tracker,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Rule synthesis failed for '%s': %s", ingestion.object_name, exc)
+                return SynthesisResult(
+                    parse_error=str(exc),
+                    guardrail_warnings=[f"Rule synthesis failed: {exc}"],
+                    synthesis_failed=True,
+                )
 
         # Duck-typed defensively: some callers (tests, lightweight synthesizer
         # stand-ins) swap in a `synthesizer_agent` that only implements the
@@ -1523,15 +1561,34 @@ class LogicRulesExtractorPipeline:
                     if chunk_id in chunk_lookup
                 ]
                 section_raw_source = "\n".join(text for text in section_texts if text) or raw_source
-            return self.synthesizer_agent.synthesize(
-                object_name=ingestion.object_name,
-                object_type=ingestion.object_type,
-                parameter_summary=parameter_summary,
-                merged_extraction=section_synthesis_input,
-                dialect=dialect,
-                raw_source=section_raw_source,
-                telemetry_tracker=telemetry_tracker,
-            )
+            # Unlike _run_single_call, this previously had NO exception
+            # boundary at all - one section's LLM call failing aborted the
+            # entire run, even though the other sections' calls had
+            # already succeeded (or were about to). Degrading just this
+            # section to an empty-but-valid result lets its siblings'
+            # rules survive `merge_section_results` untouched.
+            try:
+                return self.synthesizer_agent.synthesize(
+                    object_name=ingestion.object_name,
+                    object_type=ingestion.object_type,
+                    parameter_summary=parameter_summary,
+                    merged_extraction=section_synthesis_input,
+                    dialect=dialect,
+                    raw_source=section_raw_source,
+                    telemetry_tracker=telemetry_tracker,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Rule synthesis section failed for '%s' (chunks %s): %s",
+                    ingestion.object_name,
+                    chunk_id_list,
+                    exc,
+                )
+                return SynthesisResult(
+                    parse_error=str(exc),
+                    guardrail_warnings=[f"Synthesis section failed (chunks {chunk_id_list}): {exc}"],
+                    synthesis_failed=True,
+                )
 
         # Sections are independent synthesis calls over disjoint parts of
         # the same object - nothing in one section's prompt or result

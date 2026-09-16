@@ -259,9 +259,13 @@ def build_object_identity_stem(ingestion: "IngestionResult", fallback_stem: str 
 # Constants
 # --------------------------------------------------------------------------
 
-MAX_CHUNK_CHARS = 3000  # ceiling per chunk sent to the LLM - generous headroom
+MAX_CHUNK_CHARS = 6000  # ceiling per chunk sent to the LLM - generous headroom
 # chosen to minimize the number of LLM calls per object while still
-# keeping any single call well within budget.
+# keeping any single call well within budget. Single authoritative default -
+# pipeline.py imports this rather than hardcoding its own value, so
+# CodeIngestionAgent() constructed directly (tests, notebooks, scripts) and
+# the real pipeline always agree on chunk size unless a caller explicitly
+# overrides it.
 
 _OBJECT_TYPE_PATTERNS = {
     ORACLE: [
@@ -329,6 +333,15 @@ _PARAM_LINE_TSQL = re.compile(
 )
 
 _GO_BATCH_SPLIT = re.compile(r"^[ \t]*GO[ \t]*$", re.IGNORECASE | re.MULTILINE)
+# Spans from split_top_level_statement_spans() that are worth validating as
+# embedded SQL via sqlglot - the same DML/SET/CASE keyword set the old,
+# now-removed private splitter restricted itself to. Every other span kind
+# (IF/BEGIN/WHILE/EXEC/PRINT/RETURN/DROP/CREATE/ELSE/END/GO, or a leading
+# comment-only span) is procedural/control-flow text, not a SQL statement to
+# structurally validate - see _extract_and_validate_sql.
+_DML_SPAN_LEADING_KEYWORD_RE = re.compile(
+    r"^(WITH|SELECT|INSERT|UPDATE|DELETE|MERGE|SET|CASE)\b", re.IGNORECASE
+)
 _DYNAMIC_SQL_ORACLE = re.compile(r"\b(?:EXECUTE\s+IMMEDIATE|DBMS_SQL(?:\b|\.)?)", re.IGNORECASE)
 _DYNAMIC_SQL_TSQL = re.compile(
     r"\b(?:SP_EXECUTESQL\b|EXEC(?:UTE)?\s*\(\s*|EXEC(?:UTE)?\s+@)",
@@ -1920,9 +1933,23 @@ class CodeIngestionAgent:
             return []
 
         sqlglot_dialect = "tsql" if dialect == TSQL else "oracle"
-        for start, end in self._find_sql_statement_spans(masked):
+        for start, end in split_top_level_statement_spans(text, masked):
             stmt = text[start:end].strip()
             if not stmt:
+                continue
+            # split_top_level_statement_spans() partitions the *entire*
+            # text with zero gaps, including pure control-flow spans
+            # (IF/BEGIN/WHILE/EXEC/PRINT/RETURN/DROP/CREATE/ELSE/END/GO)
+            # that are no more "embedded SQL statements" than a plain
+            # comment is - this function's contract (see docstring) is
+            # only to validate SELECT/INSERT/UPDATE/DELETE/MERGE/SET/CASE
+            # content. Feeding a bare "IF OBJECT_ID(...) IS NOT NULL" span
+            # into sqlglot would itself fail to parse and manufacture a
+            # brand new spurious warning in place of the one this fixed -
+            # so spans that aren't DML/SET/CASE are skipped outright,
+            # exactly as the old (now-removed) private splitter already
+            # only ever emitted spans for that same keyword set.
+            if not _DML_SPAN_LEADING_KEYWORD_RE.match(stmt):
                 continue
             try:
                 sqlglot.parse_one(stmt, read=sqlglot_dialect)
@@ -1965,135 +1992,3 @@ class CodeIngestionAgent:
             )
             validated.append(stmt)
         return validated
-
-    @staticmethod
-    def _find_sql_statement_spans(masked: str) -> List[Tuple[int, int]]:
-        """Return top-level SQL statement spans from masked source text.
-
-        CTEs starting with WITH are captured, and nested subqueries are
-        skipped because spans only begin at depth 0.
-
-        A span closes on: a top-level semicolon; the start of the next
-        top-level statement (WITH/SELECT/INSERT/UPDATE/DELETE/MERGE,
-        immediately after a newline); a bare block-terminating END (closes
-        BEGIN/TRY/CATCH/IF - never a CASE, see below); or a batch
-        separator (T-SQL "GO" alone on its own line). These matter
-        because T-SQL and PL/SQL procedure bodies routinely omit
-        semicolons between statements entirely - relying on ";" alone
-        means a semicolon-free body silently merges every remaining
-        statement (and any trailing END/GO/block-closing text) into one
-        span, which then fails to structurally parse as a single SQL
-        statement even though each individual statement is perfectly
-        valid on its own.
-
-        SET and CASE can each legitimately start a new top-level span (a
-        bare "SET @x = ..." variable assignment, or a standalone CASE
-        expression), so they remain valid *openers* - but neither is used
-        as an implicit *statement-to-statement* closer, since both
-        routinely appear as a continuation of an already-open statement
-        (e.g. "UPDATE t SET col = (CASE WHEN ... END)"); treating them as
-        closers would incorrectly split a single UPDATE statement apart.
-
-        CASE...END is tracked with its own depth counter, separate from
-        paren depth, specifically so a bare (non-parenthesized)
-        "CASE ... END" expression - valid SQL, and common - is never
-        mistaken for a block-terminating END: only an END encountered
-        while no CASE is currently open is treated as a span boundary.
-        """
-        spans: List[Tuple[int, int]] = []
-        n = len(masked)
-        start_keyword_re = re.compile(
-            r"\b(WITH|SELECT|INSERT|UPDATE|DELETE|MERGE|SET|CASE)\b",
-            re.IGNORECASE,
-        )
-        boundary_keyword_re = re.compile(
-            r"\b(WITH|SELECT|INSERT|UPDATE|DELETE|MERGE)\b",
-            re.IGNORECASE,
-        )
-        case_re = re.compile(r"\bCASE\b", re.IGNORECASE)
-        end_re = re.compile(r"\bEND\b", re.IGNORECASE)
-        go_re = re.compile(r"\bGO\b", re.IGNORECASE)
-        depth = 0
-        case_depth = 0
-        i = 0
-        start = None
-
-        def prev_nonspace(idx: int) -> int:
-            j = idx - 1
-            while j >= 0 and masked[j] in " \t\r":
-                j -= 1
-            return j
-
-        while i < n:
-            ch = masked[i]
-            if ch == "(":
-                depth += 1
-                i += 1
-                continue
-            if ch == ")":
-                depth = max(0, depth - 1)
-                i += 1
-                continue
-            if depth != 0:
-                i += 1
-                continue
-
-            # depth == 0 from this point on.
-            case_m = case_re.match(masked, i)
-            if case_m:
-                case_depth += 1
-                # CASE may also be a valid statement opener in its own
-                # right - fall through to the normal start-detection
-                # below rather than consuming/continuing here.
-            else:
-                end_m = end_re.match(masked, i)
-                if end_m:
-                    if case_depth > 0:
-                        case_depth -= 1
-                    elif start is not None:
-                        spans.append((start, i))
-                        start = None
-                    i = end_m.end()
-                    continue
-
-            if start is None:
-                m = start_keyword_re.match(masked, i)
-                if m:
-                    prev = prev_nonspace(i)
-                    if prev < 0 or masked[prev] in ";\n":
-                        start = i
-                        i = m.end()
-                        continue
-                i += 1
-                continue
-
-            if ch == ";":
-                spans.append((start, i + 1))
-                start = None
-                i += 1
-                continue
-
-            bm = boundary_keyword_re.match(masked, i)
-            if bm:
-                prev = prev_nonspace(i)
-                if prev >= 0 and masked[prev] == "\n" and i > start:
-                    spans.append((start, i))
-                    start = i
-                    i = bm.end()
-                    continue
-
-            gm = go_re.match(masked, i)
-            if gm:
-                prev = prev_nonspace(i)
-                if prev >= 0 and masked[prev] == "\n":
-                    spans.append((start, i))
-                    start = None
-                    i = gm.end()
-                    continue
-
-            i += 1
-
-        if start is not None:
-            spans.append((start, n))
-
-        return spans

@@ -13,6 +13,7 @@ from typing import Callable, Iterable, Optional, Sequence
 
 from pipeline import LogicRulesExtractorPipeline, PipelineInputError
 from src.ingestion.ingestion import build_object_identity_stem
+from src.output.report_formatter import ReportFormatterAgent, normalize_call_target
 
 logger = logging.getLogger("logic_rules_extractor.batch")
 
@@ -231,6 +232,16 @@ def run_batch(
                 progress_callback(f"[{index}/{len(inputs)}] [{display_name}] Failed: {exc}")
             continue
 
+    # Second pass, now that every file in the batch has been processed:
+    # resolve each item's called_procedures (already captured per-file by
+    # ingestion - see IngestionResult.called_procedures) against the other
+    # objects in this same batch. This can only happen as a post-process
+    # step, not threaded through pipeline.run() itself, because which
+    # other object identities exist in the batch isn't known until every
+    # file in it has finished. No child business rules are invented or
+    # copied here - this only cross-links to the sibling's own report.
+    call_graph = _cross_reference_batch(results)
+
     batch_end_time = datetime.now(timezone.utc).isoformat()
     manifest = _build_manifest(
         batch_id=resolved_batch_id,
@@ -239,6 +250,7 @@ def run_batch(
         output_dir=batch_dir,
         inputs=inputs,
         items=results,
+        call_graph=call_graph,
     )
     manifest_path = batch_dir / "batch_manifest.json"
     try:
@@ -247,6 +259,12 @@ def run_batch(
         logger.warning("Failed to write batch manifest for %s: %s", resolved_batch_id, exc)
     else:
         manifest["manifest_filename"] = manifest_path.name
+
+    index_path = batch_dir / "_batch_index.md"
+    try:
+        index_path.write_text(_build_batch_index_markdown(results, call_graph), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to write batch index for %s: %s", resolved_batch_id, exc)
 
     return BatchRunResult(
         batch_id=resolved_batch_id,
@@ -267,6 +285,7 @@ def _build_manifest(
     output_dir: Path,
     inputs: Sequence[BatchInput],
     items: Sequence[BatchItemResult],
+    call_graph: Sequence[dict[str, object]] = (),
 ) -> dict[str, object]:
     file_entries: list[dict[str, object]] = []
     for source_input, item in zip(inputs, items):
@@ -296,7 +315,143 @@ def _build_manifest(
         "successful_files": success_count,
         "failed_files": failure_count,
         "files": file_entries,
+        "call_graph": list(call_graph),
     }
+
+
+def _identity_keys_for_item(item: BatchItemResult) -> tuple[str, str]:
+    """Returns (bare_key, full_key) normalized lookup keys for one
+    successfully-run batch item's own object identity - `full_key` is
+    empty when no schema is known. Both keys resolve through
+    `normalize_call_target` so bracket/case noise never causes a false
+    non-match (see that function's docstring)."""
+    ingestion = getattr(item.run_result, "ingestion", None)
+    if ingestion is None:
+        return "", ""
+    name = str(getattr(ingestion, "canonical_object_name", "") or "").strip()
+    if not name or name.upper() in {"UNKNOWN_OBJECT", "UNKNOWN", "ANONYMOUS_BLOCK"}:
+        name = str(getattr(ingestion, "object_name", "") or "").strip()
+    if not name:
+        return "", ""
+    schema = str(getattr(ingestion, "schema", "") or "").strip()
+    bare_key = normalize_call_target(name)
+    full_key = normalize_call_target(f"{schema}.{name}") if schema else ""
+    return bare_key, full_key
+
+
+def _cross_reference_batch(results: Sequence[BatchItemResult]) -> list[dict[str, object]]:
+    """Resolve every successful item's called_procedures against the
+    other objects known in this batch, rewriting each item's own
+    already-written report with a "Report" cross-reference column where a
+    call resolves - and return the underlying call-graph edges (purely
+    derived from called_procedures + identity matching; no child business
+    logic is invented or copied) for the manifest/index.
+
+    A schema-qualified match (`full_key`) is always trusted. A bare
+    unqualified name match is only trusted when it is unique across the
+    whole batch - an unqualified call name that happens to match two
+    different schemas' same-named object is genuinely ambiguous, and
+    silently picking one would be exactly the kind of guess this
+    pipeline's design otherwise refuses to make (see guardrails.py).
+    """
+    successful = [item for item in results if item.status == "success" and item.run_result is not None]
+
+    full_key_map: dict[str, BatchItemResult] = {}
+    bare_key_counts: dict[str, int] = {}
+    bare_key_map: dict[str, BatchItemResult] = {}
+    for item in successful:
+        bare_key, full_key = _identity_keys_for_item(item)
+        if not bare_key:
+            continue
+        bare_key_counts[bare_key] = bare_key_counts.get(bare_key, 0) + 1
+        bare_key_map[bare_key] = item
+        if full_key:
+            full_key_map[full_key] = item
+
+    def _resolve(call_name: str) -> Optional[BatchItemResult]:
+        key = normalize_call_target(call_name)
+        if key in full_key_map:
+            return full_key_map[key]
+        if key in bare_key_map and bare_key_counts.get(key) == 1:
+            return bare_key_map[key]
+        return None
+
+    edges: list[dict[str, object]] = []
+    for item in successful:
+        ingestion = getattr(item.run_result, "ingestion", None)
+        calls = getattr(ingestion, "called_procedures", None) or []
+        resolved: dict[str, str] = {}
+        for call in calls:
+            call_name = str(call.get("name") or "").strip()
+            if not call_name:
+                continue
+            target_item = _resolve(call_name)
+            is_resolved = target_item is not None and target_item is not item
+            edges.append(
+                {
+                    "caller": item.object_identity or item.display_name,
+                    "caller_report": item.report_filename,
+                    "callee": call_name,
+                    "resolved": is_resolved,
+                    "callee_report": target_item.report_filename if is_resolved else "",
+                }
+            )
+            if is_resolved:
+                resolved[normalize_call_target(call_name)] = target_item.report_filename
+        if not resolved or not ingestion:
+            continue
+        old_section = ReportFormatterAgent.render_called_procedures_section(ingestion)
+        if not old_section or old_section not in (item.run_result.report or ""):
+            continue
+        new_section = ReportFormatterAgent.render_called_procedures_section(ingestion, resolved)
+        updated_report = item.run_result.report.replace(old_section, new_section, 1)
+        item.run_result.report = updated_report
+        try:
+            Path(item.report_path).write_text(updated_report, encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to rewrite cross-referenced report for %s: %s", item.display_name, exc)
+
+    return edges
+
+
+def _build_batch_index_markdown(
+    results: Sequence[BatchItemResult], call_graph: Sequence[dict[str, object]]
+) -> str:
+    """A generated, generic starting point for reviewing a batch: objects
+    that nothing else in this batch calls (in-degree 0 - typically
+    orchestrators) are listed first, since a reviewer benefits most from
+    starting there, then everything else. Purely derived from in-degree
+    computed over `call_graph`'s resolved edges - no hardcoded ordering,
+    no procedure-name-specific logic.
+    """
+    successful = [item for item in results if item.status == "success"]
+    callee_reports = {
+        str(edge.get("callee_report")) for edge in call_graph if edge.get("resolved") and edge.get("callee_report")
+    }
+    roots = [item for item in successful if item.report_filename not in callee_reports]
+    leaves = [item for item in successful if item.report_filename in callee_reports]
+
+    lines = ["# Batch Index", ""]
+    if roots:
+        lines.append("## Not called by anything else in this batch (start here)")
+        lines.append("")
+        for item in roots:
+            lines.append(f"- [{item.display_name}]({item.report_filename})")
+        lines.append("")
+    if leaves:
+        lines.append("## Called by at least one other object in this batch")
+        lines.append("")
+        for item in leaves:
+            lines.append(f"- [{item.display_name}]({item.report_filename})")
+        lines.append("")
+    failed = [item for item in results if item.status != "success"]
+    if failed:
+        lines.append("## Failed")
+        lines.append("")
+        for item in failed:
+            lines.append(f"- {item.display_name}: {item.error}")
+        lines.append("")
+    return "\n".join(lines)
 
 
 def build_batch_archive_bytes(batch_result: BatchRunResult) -> bytes:

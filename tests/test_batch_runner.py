@@ -12,9 +12,10 @@ import main as main_module
 from pipeline import PipelineRunResult
 from src.batch.batch_runner import BatchInput, build_batch_archive_bytes, run_batch, _normalize_dialect_mode
 from src.ingestion.ingestion import IngestionResult
+from src.output.report_formatter import ReportFormatterAgent
 
 
-def _make_ingestion(object_name: str, schema: str = "dbo") -> IngestionResult:
+def _make_ingestion(object_name: str, schema: str = "dbo", called_procedures=None) -> IngestionResult:
     return IngestionResult(
         object_name=object_name,
         object_type="PROCEDURE",
@@ -23,6 +24,7 @@ def _make_ingestion(object_name: str, schema: str = "dbo") -> IngestionResult:
         chunks=[],
         schema=schema,
         canonical_object_name=object_name,
+        called_procedures=called_procedures or [],
     )
 
 
@@ -358,3 +360,100 @@ def test_main_single_file_workflow_still_writes_report_and_verification(tmp_path
     assert (
         tmp_path / "samples" / "output" / "verification" / "dbo.demo_proc.StoredProcedure_verification.md"
     ).exists()
+
+
+# --------------------------------------------------------------------------
+# Batch-level cross-procedure orchestration (audit fix: called_procedures
+# was already captured per-file and rendered per-object, but batch mode
+# never resolved a call against the *other* files in the same batch, so
+# an orchestrator's report gave no link to what its children actually do).
+# --------------------------------------------------------------------------
+
+
+def _make_result_with_called_procedures(object_name: str, schema: str, called_procedures) -> PipelineRunResult:
+    ingestion = _make_ingestion(object_name, schema=schema, called_procedures=called_procedures)
+    # Build a real report body containing the real (unresolved) rendering
+    # of the Called Procedures section, exactly as pipeline.run() would -
+    # so the batch runner's find/replace against the real rendering
+    # function actually has something to find.
+    called_section = ReportFormatterAgent.render_called_procedures_section(ingestion)
+    report = f"# {object_name} report\n\n{called_section}\n\n## Other Section\n\ncontent\n"
+    return PipelineRunResult(report=report, verification_report="verification", ingestion=ingestion)
+
+
+def test_batch_cross_references_resolved_call_to_sibling_report(tmp_path):
+    parent_file = tmp_path / "parent.sql"
+    child_file = tmp_path / "child.sql"
+    parent_file.write_text("exec dbo.ChildProc;", encoding="utf-8")
+    child_file.write_text("select 1;", encoding="utf-8")
+
+    parent_result = _make_result_with_called_procedures(
+        "ParentProc", "dbo", [{"name": "dbo.ChildProc", "arguments": ""}]
+    )
+    child_result = _make_result_with_called_procedures("ChildProc", "dbo", [])
+    pipeline = _FakePipeline({str(parent_file): parent_result, str(child_file): child_result})
+
+    batch_result = run_batch(
+        pipeline,
+        [
+            BatchInput(source_path=str(parent_file), display_name=parent_file.name),
+            BatchInput(source_path=str(child_file), display_name=child_file.name),
+        ],
+        output_dir=tmp_path / "outputs",
+        batch_id="batch_xref",
+    )
+
+    parent_item = next(i for i in batch_result.items if i.display_name == "parent.sql")
+    child_item = next(i for i in batch_result.items if i.display_name == "child.sql")
+
+    # The rewritten report on disk (and the in-memory run_result) must
+    # link to the child's actual report filename.
+    rewritten = Path(parent_item.report_path).read_text(encoding="utf-8")
+    assert child_item.report_filename in rewritten
+    assert "| Order | Procedure | Arguments | Report |" in rewritten
+
+    manifest = _load_manifest(batch_result)
+    edges = manifest["call_graph"]
+    assert len(edges) == 1
+    assert edges[0]["callee"] == "dbo.ChildProc"
+    assert edges[0]["resolved"] is True
+    assert edges[0]["callee_report"] == child_item.report_filename
+
+    index_text = (batch_result.output_dir / "_batch_index.md").read_text(encoding="utf-8")
+    # The parent calls nothing that's called by the child (in-degree 0) -
+    # it should be listed as a root/starting point; the child, being
+    # called by the parent, should be listed as "called by" instead.
+    assert "parent.sql" in index_text.split("## Called by")[0]
+    assert "child.sql" in index_text.split("## Called by")[1]
+
+
+def test_batch_unresolved_call_to_name_outside_batch_is_left_as_plain_text(tmp_path):
+    single_file = tmp_path / "solo.sql"
+    single_file.write_text("exec dbo.SomeExternalThing;", encoding="utf-8")
+
+    result = _make_result_with_called_procedures(
+        "SoloProc", "dbo", [{"name": "dbo.SomeExternalThing", "arguments": ""}]
+    )
+    pipeline = _FakePipeline({str(single_file): result})
+
+    batch_result = run_batch(
+        pipeline,
+        [BatchInput(source_path=str(single_file), display_name=single_file.name)],
+        output_dir=tmp_path / "outputs",
+        batch_id="batch_unresolved",
+    )
+
+    item = batch_result.items[0]
+    rewritten = Path(item.report_path).read_text(encoding="utf-8")
+    # Nothing in this batch resolves the call, so the report is left
+    # exactly as the single-file rendering produced it - plain text, no
+    # "Report" column added, no rewriting attempted.
+    assert "dbo.SomeExternalThing" in rewritten
+    assert "| Order | Procedure | Arguments |" in rewritten
+    assert "Report" not in rewritten
+
+    manifest = _load_manifest(batch_result)
+    edges = manifest["call_graph"]
+    assert len(edges) == 1
+    assert edges[0]["resolved"] is False
+    assert edges[0]["callee_report"] == ""

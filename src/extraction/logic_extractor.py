@@ -85,6 +85,15 @@ class ChunkExtraction:
     parse_error: str = ""
     guardrail_warnings: List[str] = field(default_factory=list)
     truncated: bool = False
+    # True exactly when this chunk's LLM extraction call itself raised
+    # (network/timeout/rate-limit exhausted retries, or any other
+    # exception) and the pipeline degraded it to an empty extraction to
+    # keep the run alive - distinct from `parse_error`, which can also be
+    # set for a non-fatal, non-degrading condition. Aggregated by the
+    # pipeline into a run-level "degraded run" signal (see pipeline.py /
+    # report_formatter.py) so a report with missing evidence is never
+    # visually indistinguishable from a clean one.
+    llm_call_failed: bool = False
 
 
 _BASE_EXTRACTION_TOKENS = int(os.environ.get("BASE_EXTRACTION_TOKENS", "6000"))

@@ -449,6 +449,152 @@ def test_run_rule_synthesis_sections_large_object_and_merges_results():
 
 
 # --------------------------------------------------------------------------
+# LLM-failure isolation regression tests (audit fix: unlike per-chunk
+# extraction, a synthesis call - single-call or one section of a
+# sectioned run - previously had no exception boundary at all, so one
+# failed LLM call aborted the entire pipeline run instead of degrading
+# gracefully like extraction already did).
+# --------------------------------------------------------------------------
+
+
+class _SingleCallFailingSynthesizer:
+    """`synthesize()` always raises - no sectioning support at all, so
+    `_run_rule_synthesis` must take the single-call path and degrade it."""
+
+    def synthesize(self, **kwargs) -> SynthesisResult:
+        raise RuntimeError("simulated transient LLM failure")
+
+
+def test_run_rule_synthesis_single_call_failure_degrades_instead_of_raising():
+    pipeline = _make_bare_pipeline()
+    pipeline.synthesizer_agent = _SingleCallFailingSynthesizer()
+
+    ingestion = IngestionResult(
+        object_name="SMALL_PROC",
+        object_type="PROCEDURE",
+        parameters=[],
+        raw_code="UPDATE t SET x = 1",
+        original_code="UPDATE t SET x = 1",
+        chunks=[_chunk("00_main_body", "UPDATE t SET x = 1", 0, 19)],
+        dialect="TSQL",
+    )
+
+    result = pipeline._run_rule_synthesis(
+        ingestion=ingestion,
+        merged_extraction={},
+        synthesis_input={},
+        parameter_summary="No parameters.",
+        dialect="tsql",
+        telemetry_tracker=None,
+    )
+
+    assert result.synthesis_failed is True
+    assert result.data["business_rules"] == []
+    assert any("Rule synthesis failed" in w for w in result.guardrail_warnings)
+
+
+class _OneSectionFailingSynthesizer:
+    """Delegates sectioning decisions to a real agent, but the section
+    whose first scoped chunk id is `_failing_chunk_id` always raises -
+    every other section succeeds normally, and must survive the merge."""
+
+    def __init__(self, delegate: RuleSynthesizerAgent, failing_chunk_id: str):
+        self._delegate = delegate
+        self._failing_chunk_id = failing_chunk_id
+        self.calls: List[Dict[str, Any]] = []
+
+    def requires_sectioned_synthesis(self, raw_source: str) -> bool:
+        return self._delegate.requires_sectioned_synthesis(raw_source)
+
+    def plan_synthesis_sections(self, chunks, raw_source):
+        return self._delegate.plan_synthesis_sections(chunks, raw_source)
+
+    def synthesize(self, **kwargs) -> SynthesisResult:
+        self.calls.append(kwargs)
+        conditions = (kwargs.get("merged_extraction") or {}).get("conditions") or []
+        first_chunk_id = conditions[0]["source_chunk_id"] if conditions else "none"
+        if first_chunk_id == self._failing_chunk_id:
+            raise RuntimeError("simulated transient LLM failure for this section")
+        rule_id = f"rule_{first_chunk_id}"
+        return SynthesisResult(
+            data={
+                "purpose_summary": f"Section {first_chunk_id} summary.",
+                "step_by_step_flow": [f"Section {first_chunk_id} step."],
+                "business_rules": [{"rule_id": rule_id, "rule_name": rule_id}],
+                "calculations": [],
+                "exception_handling_summary": "",
+                "ambiguities": [],
+            }
+        )
+
+
+def test_run_rule_synthesis_one_failing_section_does_not_abort_the_run():
+    pipeline = _make_bare_pipeline()
+    delegate = _make_agent(max_tokens=16000)
+
+    chunks = []
+    cursor = 0
+    conditions = []
+    for i in range(60):
+        text = _CASE_BLOCK
+        chunk_id = f"{i:02d}_main_body"
+        start, end = cursor, cursor + len(text)
+        chunks.append(_chunk(chunk_id, text, start, end))
+        conditions.append({"source_chunk_id": chunk_id, "field": f"field_{i}"})
+        cursor = end + 1
+    raw_source = "\n".join(_CASE_BLOCK for _ in range(60))
+
+    ingestion = IngestionResult(
+        object_name="BIG_PROC",
+        object_type="PROCEDURE",
+        parameters=[],
+        raw_code=raw_source,
+        original_code=raw_source,
+        chunks=chunks,
+        dialect="TSQL",
+    )
+    merged_extraction = {
+        "conditions": conditions,
+        "decision_chains": [],
+        "loops": [],
+        "calculations": [],
+        "exception_handling": [],
+        "tables_read": [],
+        "tables_written": [],
+        "table_operations": [],
+        "chunk_provenance": [{"chunk_id": c.chunk_id} for c in chunks],
+        "ambiguities": [],
+    }
+    expected_sections = delegate.plan_synthesis_sections(chunks, raw_source)
+    assert len(expected_sections) > 1  # meaningful test needs >1 section
+    failing_chunk_id = expected_sections[0]["chunk_ids"][0]
+    recorder = _OneSectionFailingSynthesizer(delegate, failing_chunk_id)
+    pipeline.synthesizer_agent = recorder
+
+    result = pipeline._run_rule_synthesis(
+        ingestion=ingestion,
+        merged_extraction=merged_extraction,
+        synthesis_input=merged_extraction,
+        parameter_summary="No parameters.",
+        dialect="tsql",
+        telemetry_tracker=None,
+    )
+
+    # The run completed (no exception propagated) and is marked degraded.
+    assert result.synthesis_failed is True
+    assert any("Synthesis section failed" in w for w in result.guardrail_warnings)
+    # Every OTHER section's rule survived the merge untouched.
+    expected_rule_ids = [
+        f"rule_{section['chunk_ids'][0]}"
+        for section in expected_sections
+        if section["chunk_ids"][0] != failing_chunk_id
+    ]
+    actual_rule_ids = [r["rule_id"] for r in result.data["business_rules"]]
+    assert actual_rule_ids == expected_rule_ids
+    assert f"rule_{failing_chunk_id}" not in actual_rule_ids
+
+
+# --------------------------------------------------------------------------
 # merge_section_results: dedup + repetition-degeneration screening
 # --------------------------------------------------------------------------
 

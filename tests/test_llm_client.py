@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import io
 import json
 from types import SimpleNamespace
+from urllib.error import HTTPError, URLError
 
 import pytest
 
 import src.core.llm_client as llm_client
-from src.core.llm_client import create_llm_client, load_llm_config, supports_chat_completion_seed
+from src.core.llm_client import (
+    LLMTransientError,
+    call_with_retry,
+    create_llm_client,
+    load_llm_config,
+    supports_chat_completion_seed,
+)
 
 
 def test_load_llm_config_infers_bedrock_from_legacy_model_and_aws_env(monkeypatch):
@@ -145,6 +153,30 @@ def test_bedrock_client_caps_output_limit_for_nova_lite(monkeypatch):
     assert payload["inferenceConfig"]["maxTokens"] == 9999
 
 
+def test_signed_request_date_header_is_valid_amz_date_format(monkeypatch):
+    """Regression test for the datetime.utcnow() deprecation fix (Python
+    3.12+ warns on the naive-UTC utcnow()/utcfromtimestamp() APIs): the
+    SigV4 signing helper must keep producing the exact same amz-date
+    format (YYYYMMDDTHHMMSSZ) using the timezone-aware
+    datetime.now(timezone.utc) replacement."""
+    monkeypatch.setattr(llm_client, "boto3", None)
+    monkeypatch.setattr(llm_client, "BotoConfig", None)
+
+    transport = llm_client._BedrockRuntimeTransport(
+        access_key_id="AKIAEXAMPLE",
+        secret_access_key="secret-example",
+        region="us-east-1",
+        session_token=None,
+    )
+    request = transport._signed_request(url="https://example.amazonaws.com/model/x/converse", body=b"{}")
+
+    amz_date = request.headers.get("X-amz-date") or request.get_header("X-amz-date")
+    assert amz_date is not None
+    import re as _re
+
+    assert _re.fullmatch(r"\d{8}T\d{6}Z", amz_date)
+
+
 def test_bedrock_client_uses_boto3_default_chain_when_explicit_credentials_are_absent(monkeypatch):
     calls = {}
 
@@ -196,3 +228,125 @@ def test_bedrock_client_uses_boto3_default_chain_when_explicit_credentials_are_a
     assert calls["converse_kwargs"]["modelId"] == "amazon.nova-lite-v1:0"
     assert calls["converse_kwargs"]["messages"]
     assert calls["converse_kwargs"]["system"]
+
+
+# --------------------------------------------------------------------------
+# Retry/backoff regression tests (audit fix: the Bedrock raw-HTTP fallback
+# path previously had zero retry logic at all - a single rate-limit or
+# timeout blip aborted the whole call). `call_with_retry` is the generic,
+# reusable retry primitive; the tests below cover it directly plus its two
+# wiring points in `_BedrockRuntimeTransport`.
+# --------------------------------------------------------------------------
+
+
+def test_call_with_retry_succeeds_after_transient_failure(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_args, **_kwargs: None)
+    attempts = {"count": 0}
+
+    def flaky():
+        attempts["count"] += 1
+        if attempts["count"] < 2:
+            raise LLMTransientError("temporary rate limit")
+        return "ok"
+
+    result = call_with_retry(flaky, max_attempts=3, base_delay=0.01, max_delay=0.02)
+
+    assert result == "ok"
+    assert attempts["count"] == 2
+
+
+def test_call_with_retry_exhausts_and_reraises(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_args, **_kwargs: None)
+    attempts = {"count": 0}
+
+    def always_flaky():
+        attempts["count"] += 1
+        raise LLMTransientError("still rate limited")
+
+    with pytest.raises(LLMTransientError):
+        call_with_retry(always_flaky, max_attempts=3, base_delay=0.01, max_delay=0.02)
+
+    assert attempts["count"] == 3
+
+
+def test_call_with_retry_does_not_retry_permanent_errors(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_args, **_kwargs: None)
+    attempts = {"count": 0}
+
+    def permanently_broken():
+        attempts["count"] += 1
+        raise RuntimeError("bad request")
+
+    with pytest.raises(RuntimeError, match="bad request"):
+        call_with_retry(permanently_broken, max_attempts=3, base_delay=0.01, max_delay=0.02)
+
+    assert attempts["count"] == 1
+
+
+def _make_raw_http_transport(monkeypatch) -> "llm_client._BedrockRuntimeTransport":
+    monkeypatch.setattr(llm_client, "boto3", None)
+    monkeypatch.setattr(llm_client, "BotoConfig", None)
+    monkeypatch.setattr("time.sleep", lambda *_args, **_kwargs: None)
+    return llm_client._BedrockRuntimeTransport(
+        access_key_id="AKIAEXAMPLE",
+        secret_access_key="secret-example",
+        region="us-east-1",
+        session_token=None,
+    )
+
+
+def test_bedrock_raw_http_retries_on_429_then_succeeds(monkeypatch):
+    transport = _make_raw_http_transport(monkeypatch)
+    calls = {"count": 0}
+    success_body = json.dumps(
+        {
+            "output": {"message": {"content": [{"text": "hello"}]}},
+            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+        }
+    ).encode("utf-8")
+
+    def fake_sender(request):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise HTTPError(request.full_url, 429, "Too Many Requests", {}, io.BytesIO(b"rate limited"))
+        return SimpleNamespace(read=lambda: success_body, close=lambda: None)
+
+    transport._request_sender = fake_sender
+
+    response = transport.invoke(model="amazon.nova-lite-v1:0", messages=[{"role": "user", "content": "hi"}])
+
+    assert calls["count"] == 2
+    assert response.choices[0].message.content == "hello"
+
+
+def test_bedrock_raw_http_400_is_not_retried(monkeypatch):
+    transport = _make_raw_http_transport(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_sender(request):
+        calls["count"] += 1
+        raise HTTPError(request.full_url, 400, "Bad Request", {}, io.BytesIO(b"malformed payload"))
+
+    transport._request_sender = fake_sender
+
+    with pytest.raises(RuntimeError, match="Bedrock invocation failed: 400"):
+        transport.invoke(model="amazon.nova-lite-v1:0", messages=[{"role": "user", "content": "hi"}])
+
+    assert calls["count"] == 1
+
+
+def test_bedrock_raw_http_network_error_is_retried_then_exhausts(monkeypatch):
+    transport = _make_raw_http_transport(monkeypatch)
+    calls = {"count": 0}
+
+    def fake_sender(request):
+        calls["count"] += 1
+        raise URLError("connection refused")
+
+    transport._request_sender = fake_sender
+
+    with pytest.raises(RuntimeError, match="Bedrock invocation failed: connection refused"):
+        transport.invoke(model="amazon.nova-lite-v1:0", messages=[{"role": "user", "content": "hi"}])
+
+    # Default max_attempts=3 inside call_with_retry.
+    assert calls["count"] == 3

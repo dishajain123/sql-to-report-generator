@@ -1035,18 +1035,21 @@ def test_build_object_identity_stem_generic_for_other_object_types():
 
 
 # --------------------------------------------------------------------------
-# Regression tests for _find_sql_statement_spans' semicolon-free boundary
+# Regression tests for _extract_and_validate_sql's semicolon-free boundary
 # detection (see coverage/grounding fix for SMA_Stage_Marking_Simple-style
-# T-SQL bodies that never use ";" between statements).
+# T-SQL bodies that never use ";" between statements). These exercise the
+# public validation entry point rather than a private span helper, since
+# ingestion.py now delegates span-finding to the shared, authoritative
+# src.parsing.statement_boundaries.split_top_level_statement_spans() used
+# everywhere else in the codebase - see also test_statement_boundaries_*
+# in test_extended_decision_tables.py for that module's own coverage.
 # --------------------------------------------------------------------------
 
 def test_semicolon_free_updates_are_split_into_separate_parseable_statements(agent):
     """Regression test for the real bug: a semicolon-free T-SQL body with
     several UPDATE...SET...(CASE...END)...FROM...WHERE statements back to
-    back used to be merged into one unparseable span by
-    _find_sql_statement_spans (it only closed a span on ";"). Each
-    statement here must come back separately and parse cleanly.
-    """
+    back used to be merged into one unparseable span. Each statement here
+    must come back separately and parse cleanly."""
     body = (
         "UPDATE A\n"
         "SET A.SmaStage = (\n"
@@ -1068,15 +1071,15 @@ def test_semicolon_free_updates_are_split_into_separate_parseable_statements(age
         "    )\n"
         "FROM PRO.AccountCal A\n"
     )
-    spans = CodeIngestionAgent._find_sql_statement_spans(body)
-    assert len(spans) == 2
-    first = body[spans[0][0]:spans[0][1]].strip()
-    second = body[spans[1][0]:spans[1][1]].strip()
-    assert first.startswith("UPDATE A")
-    assert "SmaStage" in first
-    assert "FlagSma" not in first
-    assert second.startswith("UPDATE A")
-    assert "FlagSma" in second
+    warnings: list = []
+    stmts = agent._extract_and_validate_sql(body, warnings, dialect="tsql")
+    assert len(stmts) == 2
+    assert stmts[0].startswith("UPDATE A")
+    assert "SmaStage" in stmts[0]
+    assert "FlagSma" not in stmts[0]
+    assert stmts[1].startswith("UPDATE A")
+    assert "FlagSma" in stmts[1]
+    assert not any("Could not fully structurally parse" in w for w in warnings)
 
 
 def test_semicolon_free_update_before_block_end_is_bounded_by_end(agent):
@@ -1084,7 +1087,9 @@ def test_semicolon_free_update_before_block_end_is_bounded_by_end(agent):
     end of a TRY block) with no semicolon and no following statement
     keyword must still be closed at the END, not left open until EOF
     (which would swallow trailing BEGIN CATCH / END CATCH text into the
-    statement and break parsing)."""
+    statement and break parsing). The IF/BEGIN/END wrapper text itself is
+    control flow, not SQL, and must not appear in either validated
+    statement or produce a spurious parse warning."""
     body = (
         "BEGIN TRY\n"
         "UPDATE PRO.RunStatus\n"
@@ -1097,15 +1102,15 @@ def test_semicolon_free_update_before_block_end_is_bounded_by_end(agent):
         "WHERE ProcessName = 'demo'\n"
         "END CATCH\n"
     )
-    spans = CodeIngestionAgent._find_sql_statement_spans(body)
-    assert len(spans) == 2
-    first = body[spans[0][0]:spans[0][1]].strip()
-    second = body[spans[1][0]:spans[1][1]].strip()
-    assert "END TRY" not in first
-    assert "BEGIN CATCH" not in first
-    assert "COMPLETED = 'Y'" in first
-    assert "END CATCH" not in second
-    assert "COMPLETED = 'N'" in second
+    warnings: list = []
+    stmts = agent._extract_and_validate_sql(body, warnings, dialect="tsql")
+    assert len(stmts) == 2
+    assert "END TRY" not in stmts[0]
+    assert "BEGIN CATCH" not in stmts[0]
+    assert "COMPLETED = 'Y'" in stmts[0]
+    assert "END CATCH" not in stmts[1]
+    assert "COMPLETED = 'N'" in stmts[1]
+    assert not any("Could not fully structurally parse" in w for w in warnings)
 
 
 def test_bare_case_end_is_not_mistaken_for_a_block_boundary(agent):
@@ -1116,16 +1121,19 @@ def test_bare_case_end_is_not_mistaken_for_a_block_boundary(agent):
         "UPDATE t SET x = CASE WHEN a = 1 THEN 'Y' ELSE 'N' END\n"
         "UPDATE t2 SET y = 1 WHERE z = 2\n"
     )
-    spans = CodeIngestionAgent._find_sql_statement_spans(body)
-    assert len(spans) == 2
-    first = body[spans[0][0]:spans[0][1]].strip()
-    assert first == "UPDATE t SET x = CASE WHEN a = 1 THEN 'Y' ELSE 'N' END"
+    warnings: list = []
+    stmts = agent._extract_and_validate_sql(body, warnings, dialect="tsql")
+    assert len(stmts) == 2
+    assert stmts[0] == "UPDATE t SET x = CASE WHEN a = 1 THEN 'Y' ELSE 'N' END"
+    assert not any("Could not fully structurally parse" in w for w in warnings)
 
 
 def test_update_inside_if_begin_end_block_is_isolated_by_the_block_end(agent):
     """A single UPDATE wrapped in IF EXISTS(...) BEGIN ... END must be
     recognized as its own statement bounded by that END, and a following
-    statement after the block must not be merged into it."""
+    statement after the block must not be merged into it. Neither the IF
+    guard nor the BEGIN/END wrapper is a SQL statement in its own right,
+    so validation must not warn about them."""
     body = (
         "IF EXISTS (SELECT 1 FROM t)\n"
         "BEGIN\n"
@@ -1133,19 +1141,68 @@ def test_update_inside_if_begin_end_block_is_isolated_by_the_block_end(agent):
         "END\n"
         "UPDATE t2 SET z = 3\n"
     )
-    spans = CodeIngestionAgent._find_sql_statement_spans(body)
-    assert len(spans) == 2
-    assert body[spans[0][0]:spans[0][1]].strip() == "UPDATE t SET x = 1 WHERE y = 2"
-    assert body[spans[1][0]:spans[1][1]].strip() == "UPDATE t2 SET z = 3"
+    warnings: list = []
+    stmts = agent._extract_and_validate_sql(body, warnings, dialect="tsql")
+    assert len(stmts) == 2
+    assert stmts[0] == "UPDATE t SET x = 1 WHERE y = 2"
+    assert stmts[1] == "UPDATE t2 SET z = 3"
+    assert not any("Could not fully structurally parse" in w for w in warnings)
 
 
 def test_semicolon_terminated_statements_are_unaffected(agent):
     """Existing semicolon-terminated behavior must be unchanged."""
     body = "UPDATE t SET x = 1;\nUPDATE t2 SET y = 2;\n"
-    spans = CodeIngestionAgent._find_sql_statement_spans(body)
-    assert len(spans) == 2
-    assert body[spans[0][0]:spans[0][1]].strip() == "UPDATE t SET x = 1;"
-    assert body[spans[1][0]:spans[1][1]].strip() == "UPDATE t2 SET y = 2;"
+    warnings: list = []
+    stmts = agent._extract_and_validate_sql(body, warnings, dialect="tsql")
+    assert len(stmts) == 2
+    assert stmts[0] == "UPDATE t SET x = 1;"
+    assert stmts[1] == "UPDATE t2 SET y = 2;"
+    assert not any("Could not fully structurally parse" in w for w in warnings)
+
+
+def test_update_immediately_followed_by_guard_and_child_call_is_not_flagged(agent):
+    """Reproduces the audit's exact failure mode: an UPDATE...FROM
+    statement immediately followed (no semicolon) by an IF-guarded
+    DROP TABLE temp-cleanup block and then a static EXEC call to a child
+    procedure. Before the splitter fix, the control-flow lines were
+    swallowed into the preceding UPDATE's span and broke its parse;
+    now the UPDATE must validate cleanly and the control-flow lines must
+    simply be skipped (not sent to sqlglot, not warned about)."""
+    body = (
+        "UPDATE A SET A.TOTPROVISION = B.TOTALPROVISION\n"
+        "FROM ##CUSTOMERCAL A INNER JOIN #TOTALPROVCUST B\n"
+        "    ON A.CUSTOMERENTITYID = B.CUSTOMERENTITYID\n"
+        "\n"
+        "IF OBJECT_ID('TEMPDB..#tempACCOUNTCAL_1') IS NOT NULL\n"
+        "    DROP TABLE #tempACCOUNTCAL_1\n"
+        "\n"
+        "EXEC dbo.ChildProc\n"
+    )
+    warnings: list = []
+    stmts = agent._extract_and_validate_sql(body, warnings, dialect="tsql")
+    assert len(stmts) == 1
+    assert stmts[0].startswith("UPDATE A SET A.TOTPROVISION")
+    assert not any("Could not fully structurally parse" in w for w in warnings)
+
+
+def test_nested_if_begin_while_blocks_do_not_produce_spurious_warnings(agent):
+    """A deeper nesting of IF/BEGIN/WHILE control flow around a single
+    UPDATE must not itself generate any structural-parse warnings - only
+    the embedded DML is ever validated."""
+    body = (
+        "IF @Flag = 1\n"
+        "BEGIN\n"
+        "    WHILE @Counter < 10\n"
+        "    BEGIN\n"
+        "        UPDATE t SET x = x + 1 WHERE id = @Counter\n"
+        "    END\n"
+        "END\n"
+        "PRINT 'done'\n"
+    )
+    warnings: list = []
+    stmts = agent._extract_and_validate_sql(body, warnings, dialect="tsql")
+    assert any(s.startswith("UPDATE t SET x = x + 1") for s in stmts)
+    assert not any("Could not fully structurally parse" in w for w in warnings)
 
 
 def test_sma_stage_marking_style_statements_structurally_parse_end_to_end(agent):
