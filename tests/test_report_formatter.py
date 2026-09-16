@@ -368,57 +368,74 @@ def test_render_called_procedures_section_empty_when_no_calls():
     assert ReportFormatterAgent.render_called_procedures_section(ingestion, {}) == ""
 
 
-def test_gap_review_degraded_rule_gets_distinct_non_alarming_banner():
-    # A rule degraded only via `degraded_reason: "gap_review"` (added by a
-    # successful, targeted coverage-gap review pass - see pipeline.py's
-    # revision loop) must not be reported with the same "truncated or
-    # failed" wording as an actual model-capacity failure. Regression for
-    # a real bug found via live-run analysis: every report that went
-    # through the revision loop at all previously showed "Partial ...
-    # truncated or failed" even when every LLM call succeeded cleanly.
-    ingestion, merged, synthesis, canonical_ir_unused = _build()
-    synthesis.data["business_rules"][0]["degraded"] = True
-    synthesis.data["business_rules"][0]["degraded_reason"] = "gap_review"
-    report = ReportFormatterAgent().format(
-        ingestion=ingestion,
-        merged_extraction=merged,
-        synthesis=synthesis,
-        canonical_ir=None,
-    )
-    assert "added from a targeted review pass" in report
-    assert "truncated or failed" not in report
-
-
-def test_render_business_rule_block_shows_gap_review_wording_not_capacity_failure():
-    # Direct unit test of the per-rule inline marker (the run-status-banner
-    # test above already covers the summary line; this pins the exact
-    # wording `_render_business_rule_block` itself chooses per
-    # `degraded_reason`, independent of the decision-block projection
-    # machinery `_project_decision_rules` layers on top in a full format()
-    # call).
-    formatter = ReportFormatterAgent()
-    rule = _rule()
-    rule["degraded"] = True
-    rule["degraded_reason"] = "gap_review"
-    block = "\n".join(formatter._render_business_rule_block(1, rule))
-    assert "ℹ️ **Needs Review — added from a targeted review pass.**" in block
-    assert "truncated or failed" not in block
-
-    rule["degraded_reason"] = "truncated"
-    block = "\n".join(formatter._render_business_rule_block(1, rule))
-    assert "⚠️ **Needs Review — possibly incomplete.**" in block
-    assert "truncated or failed" in block
-
-
-def test_truncated_degraded_rule_keeps_the_capacity_failure_banner():
+def test_degraded_rule_markers_are_not_rendered_in_the_business_report():
+    # Per explicit client direction, the business report must never show
+    # any "needs review"/degraded signal, regardless of why a rule is
+    # flagged (`degraded_reason` "truncated" or "gap_review") - the reader
+    # should see confident, complete business analysis. The underlying
+    # `degraded`/`degraded_reason` data on the rule dict is untouched;
+    # only this rendering path omits it. Covers both wording variants that
+    # used to differ (capacity-failure vs successful-gap-review), since
+    # neither must ever surface here.
     ingestion, merged, synthesis, _canonical_ir_unused = _build()
-    synthesis.data["business_rules"][0]["degraded"] = True
-    synthesis.data["business_rules"][0]["degraded_reason"] = "truncated"
+    for reason in ("truncated", "gap_review"):
+        synthesis.data["business_rules"][0]["degraded"] = True
+        synthesis.data["business_rules"][0]["degraded_reason"] = reason
+        report = ReportFormatterAgent().format(
+            ingestion=ingestion,
+            merged_extraction=merged,
+            synthesis=synthesis,
+            canonical_ir=None,
+        )
+        assert "truncated or failed" not in report
+        assert "added from a targeted review pass" not in report
+        assert "Needs Review" not in report
+        assert "Run status" not in report
+
+
+def test_render_business_rule_block_never_shows_a_degraded_marker():
+    # Direct unit test of the per-rule renderer: no inline marker for any
+    # `degraded_reason` value, and no `consolidation_note` line either.
+    formatter = ReportFormatterAgent()
+    for reason in ("truncated", "gap_review"):
+        rule = _rule()
+        rule["degraded"] = True
+        rule["degraded_reason"] = reason
+        rule["consolidation_note"] = "Also extracted with additional fields in another pass."
+        block = "\n".join(formatter._render_business_rule_block(1, rule))
+        assert "Needs Review" not in block
+        assert "truncated or failed" not in block
+        assert "targeted review pass" not in block
+        assert "consolidation_note" not in block
+        assert "Also extracted with additional fields" not in block
+
+
+def test_business_report_never_shows_a_findings_or_needs_review_section():
+    """Per explicit client direction, the business report must never
+    contain a "## Findings / Needs Review" section (or any ambiguity/
+    conflict-suppression content that used to feed it), regardless of how
+    much genuine ambiguity/uncertainty exists in the underlying data - the
+    reader should see confident, complete business analysis. The same
+    data is untouched and still available to `_findings_section` directly
+    (see its own dedicated tests) and to `format_verification()`'s
+    diagnostics - only this document omits it.
+    """
+    ingestion, merged, synthesis, _canonical_ir_unused = _build()
+    merged["ambiguities"] = [
+        "Dynamic SQL detected and cannot be fully statically resolved: EXEC (@sql)...",
+        "Working table `#temp_unused` appears to be unused.",
+    ]
+    synthesis.data["ambiguities"] = [
+        "A second, separate condition may affect this same field but could not be resolved with confidence.",
+    ]
     report = ReportFormatterAgent().format(
         ingestion=ingestion,
         merged_extraction=merged,
         synthesis=synthesis,
         canonical_ir=None,
     )
-    assert "truncated or failed" in report
-    assert "added from a targeted review pass" not in report
+    assert "## Findings" not in report
+    assert "Needs Review" not in report
+    assert "Dynamic SQL detected" not in report
+    assert "appears to be unused" not in report
+    assert "could not be resolved with confidence" not in report

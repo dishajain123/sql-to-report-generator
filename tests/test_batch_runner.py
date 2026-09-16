@@ -351,6 +351,18 @@ def test_main_single_file_workflow_still_writes_report_and_verification(tmp_path
             return _make_result("demo_proc", "main report", "main verification")
 
     monkeypatch.setattr(main_module, "LogicRulesExtractorPipeline", _FakePipelineForMain)
+    # `main()` unconditionally calls `load_dotenv(override=True)` as its
+    # first line - a real `os.environ` mutation, not something `monkeypatch`
+    # can auto-revert. Left alone, this loads the *real* project `.env`
+    # (LLM_TPM_LIMIT / SYNTHESIS_EVIDENCE_MAP_MAX_CHARS / SYNTHESIS_SECTION
+    # _MAX_CHARS tuned for a heavily rate-limited free-tier account) into the
+    # actual process environment with `override=True`, where it then leaks
+    # into every other test that runs later in the same pytest session
+    # (e.g. test_degraded_runs.py / test_extraction_telemetry.py start
+    # seeing an 8000 LLM_TPM_LIMIT they never configured). Stub it out so
+    # this test - which only exercises the CLI wiring around a fully faked
+    # pipeline - can't mutate real process state.
+    monkeypatch.setattr(main_module, "load_dotenv", lambda *args, **kwargs: None)
 
     exit_code = main_module.main([str(sql_file)])
     assert exit_code == 0

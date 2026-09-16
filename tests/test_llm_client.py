@@ -350,3 +350,85 @@ def test_bedrock_raw_http_network_error_is_retried_then_exhausts(monkeypatch):
 
     # Default max_attempts=3 inside call_with_retry.
     assert calls["count"] == 3
+
+
+# --------------------------------------------------------------------------
+# TPM (tokens-per-minute) pre-flight budgeting helpers.
+#
+# These exist because a model's MAX COMPLETION TOKENS (what
+# `resolve_model_output_ceiling` reports - the model's raw capability) and
+# an account's actual per-minute rate limit are two unrelated numbers.
+# Groq's free tier caps `openai/gpt-oss-120b` at 8,000 TOTAL tokens/minute
+# even though the model itself can emit up to 65,536 completion tokens per
+# call on a higher tier. Sizing a request against the former without regard
+# for the latter is a guaranteed 413 on a rate-limited account.
+# --------------------------------------------------------------------------
+
+
+def test_resolve_tpm_limit_is_none_by_default():
+    """Unset `LLM_TPM_LIMIT` -> no clamping, zero behavior change for
+    every account that hasn't configured this."""
+    import os
+    os.environ.pop("LLM_TPM_LIMIT", None)
+    assert llm_client.resolve_tpm_limit("groq") is None
+
+
+def test_resolve_tpm_limit_reads_env_var(monkeypatch):
+    monkeypatch.setenv("LLM_TPM_LIMIT", "8000")
+    assert llm_client.resolve_tpm_limit("groq") == 8000
+
+
+def test_resolve_tpm_limit_ignores_garbage_value(monkeypatch):
+    monkeypatch.setenv("LLM_TPM_LIMIT", "not-a-number")
+    assert llm_client.resolve_tpm_limit("groq") is None
+
+
+def test_resolve_tpm_limit_ignores_non_positive_value(monkeypatch):
+    monkeypatch.setenv("LLM_TPM_LIMIT", "0")
+    assert llm_client.resolve_tpm_limit("groq") is None
+    monkeypatch.setenv("LLM_TPM_LIMIT", "-500")
+    assert llm_client.resolve_tpm_limit("groq") is None
+
+
+def test_estimate_prompt_tokens_scales_with_length():
+    short = llm_client.estimate_prompt_tokens("hello")
+    long = llm_client.estimate_prompt_tokens("hello " * 1000)
+    assert short > 0
+    assert long > short * 100
+
+
+def test_estimate_prompt_tokens_sums_multiple_strings():
+    combined = llm_client.estimate_prompt_tokens("a" * 350, "b" * 350)
+    single = llm_client.estimate_prompt_tokens("a" * 350)
+    assert combined > single
+
+
+def test_clamp_tokens_for_tpm_is_noop_when_limit_unset():
+    assert llm_client.clamp_tokens_for_tpm(5000, 10000, None) == 10000
+
+
+def test_clamp_tokens_for_tpm_shrinks_to_fit():
+    # 8000 limit, ~4000 already spent on prompt, 200 margin reserved ->
+    # available = 8000 - 4000 - 200 = 3800, below the desired 10000.
+    result = llm_client.clamp_tokens_for_tpm(4000, 10000, 8000)
+    assert result == 3800
+
+
+def test_clamp_tokens_for_tpm_never_exceeds_desired():
+    # Plenty of room, but must never ask for MORE than the caller wanted.
+    result = llm_client.clamp_tokens_for_tpm(100, 500, 8000)
+    assert result == 500
+
+
+def test_clamp_tokens_for_tpm_returns_none_when_prompt_alone_does_not_fit():
+    # Matches the user-reported case almost exactly: prompt tokens alone
+    # already exceed the TPM ceiling.
+    result = llm_client.clamp_tokens_for_tpm(46012, 5000, 8000)
+    assert result is None
+
+
+def test_clamp_tokens_for_tpm_returns_none_below_minimum_floor():
+    # Technically some room remains (8000 - 7900 - 200 = -100), but even a
+    # generous prompt estimate leaves less than the minimum useful output.
+    result = llm_client.clamp_tokens_for_tpm(7900, 5000, 8000)
+    assert result is None

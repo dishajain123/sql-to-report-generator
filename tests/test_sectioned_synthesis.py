@@ -227,19 +227,18 @@ def test_merge_section_results_concatenates_rules_and_dedupes_text_fields():
     merged = RuleSynthesizerAgent.merge_section_results([first, second])
 
     assert merged.data["purpose_summary"] == "Handles setup."
-    # `step_by_step_flow` is a per-section *full-procedure* narrative, not a
-    # per-section-contributed list (every section is prompted to describe
-    # "the" flow, not just its own slice) - see `merge_section_results`'s
-    # comment. Concatenating every section's attempt was observed to
-    # produce heavily duplicated near-identical steps in a live report, so
-    # the merge keeps only the single section with the most steps (here,
-    # both sections have 2 - the first one wins the tie) rather than
-    # concatenating. This does mean a genuinely unique step that only a
-    # shorter section captured ("Assign SMA class.") is not carried
-    # through; that is an accepted, documented trade-off.
+    # `step_by_step_flow` is now a per-section-contributed list: each
+    # section is explicitly told (`synthesize(..., is_section=True)`) to
+    # describe only the steps visible in its own excerpt, in order, not to
+    # reconstruct the whole procedure's flow from partial evidence - so
+    # concatenating every section's own steps (deduping only an exact
+    # repeat, like "Load accounts." appearing in both here) builds one
+    # genuinely complete flow instead of picking a single section's
+    # partial guess. See `merge_section_results`'s comment.
     assert merged.data["step_by_step_flow"] == [
         "Drop temp tables.",
         "Load accounts.",
+        "Assign SMA class.",
     ]
     assert [r["rule_id"] for r in merged.data["business_rules"]] == ["r1", "r2"]
     assert merged.data["ambiguities"] == [
@@ -261,6 +260,17 @@ def test_merge_section_results_empty_input_returns_empty_synthesis():
 
 
 def test_scope_extraction_to_chunks_filters_chunk_attributed_sections_only():
+    """Regression test for the real "Not explicitly determined from source
+    SQL" bug: `statement_provenance` and `statement_dependencies` used to
+    pass through EVERY section unfiltered on the assumption they were
+    "small and already deduplicated" - measured false on a real 176-line
+    sample (41KB/39KB respectively, ~11,800 tokens combined, attached to
+    all 12 sections regardless of scope), which alone exceeded an 8,000
+    TPM rate limit before any section content was added, so every section
+    was rejected pre-flight and the whole report came back with zero
+    business rules / purpose_summary / step_by_step_flow. Both fields must
+    now be scoped down like their siblings.
+    """
     merged_extraction: Dict[str, Any] = {
         "conditions": [
             {"source_chunk_id": "00_main_body", "field": "a"},
@@ -276,9 +286,38 @@ def test_scope_extraction_to_chunks_filters_chunk_attributed_sections_only():
             {"chunk_id": "00_main_body"},
             {"chunk_id": "01_main_body"},
         ],
+        "statement_provenance": [
+            {"source_chunk_id": "00_main_body", "statement_id": "s1"},
+            {"source_chunk_id": "01_main_body", "statement_id": "s2"},
+        ],
+        "llm_tables_read": [
+            {"source_chunk_id": "00_main_body", "table": "T1"},
+            {"source_chunk_id": "01_main_body", "table": "T2"},
+        ],
+        "llm_tables_written": [
+            {"source_chunk_id": "00_main_body", "table": "T1"},
+        ],
+        "statement_dependencies": {
+            "version": "1",
+            "edge_count": 2,
+            "edges": [
+                {
+                    "from": {"location": {"source_chunk_id": "00_main_body"}},
+                    "to": {"location": {"source_chunk_id": "01_main_body"}},
+                },
+                {
+                    "from": {"location": {"source_chunk_id": "99_unrelated"}},
+                    "to": {"location": {"source_chunk_id": "98_unrelated"}},
+                },
+            ],
+            "unresolved_count": 2,
+            "unresolved": [
+                {"from_statement_id": "01_main_body:x", "to_statement_id": "00_main_body:y"},
+                {"from_statement_id": "99_unrelated:x", "to_statement_id": "98_unrelated:y"},
+            ],
+        },
         # Not in the chunk-scoped list - must pass through untouched.
         "ambiguities": ["global note with no chunk attribution"],
-        "statement_dependencies": {"version": "1", "edges": []},
     }
     scoped = LogicRulesExtractorPipeline._scope_extraction_to_chunks(
         merged_extraction, {"01_main_body"}
@@ -287,11 +326,24 @@ def test_scope_extraction_to_chunks_filters_chunk_attributed_sections_only():
     assert [c["chain_id"] for c in scoped["decision_chains"]] == ["c1"]
     assert scoped["table_operations"] == []
     assert [p["chunk_id"] for p in scoped["chunk_provenance"]] == ["01_main_body"]
-    # Untouched fields are passed through as-is.
+    # statement_provenance / llm_tables_read / llm_tables_written are now
+    # scoped by source_chunk_id exactly like the other sections.
+    assert [p["statement_id"] for p in scoped["statement_provenance"]] == ["s2"]
+    assert [t["table"] for t in scoped["llm_tables_read"]] == ["T2"]
+    assert scoped["llm_tables_written"] == []
+    # statement_dependencies: an edge/unresolved-pair survives only when at
+    # least one endpoint touches this section's chunk_ids; the fully
+    # unrelated pair is dropped and the counts are recomputed to match.
+    assert len(scoped["statement_dependencies"]["edges"]) == 1
+    assert scoped["statement_dependencies"]["edge_count"] == 1
+    assert len(scoped["statement_dependencies"]["unresolved"]) == 1
+    assert scoped["statement_dependencies"]["unresolved_count"] == 1
+    # Untouched fields (no reliable chunk attribution to scope by) are
+    # still passed through as-is.
     assert scoped["ambiguities"] == merged_extraction["ambiguities"]
-    assert scoped["statement_dependencies"] == merged_extraction["statement_dependencies"]
     # The original is never mutated.
     assert len(merged_extraction["conditions"]) == 2
+    assert merged_extraction["statement_dependencies"]["edge_count"] == 2
 
 
 class _RecordingSynthesizer:

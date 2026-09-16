@@ -2701,18 +2701,25 @@ def test_main_report_excludes_a_conflicting_rule_but_keeps_a_matched_one():
     # The matched rule is completely unaffected.
     assert "Update SMA status" in report
 
-    # No "needs review"/pipeline-status language anywhere in the main report.
+    # No "needs review"/pipeline-status language anywhere in the main report -
+    # per explicit client direction, `_findings_section` (which used to
+    # surface the suppression note below) is no longer wired into the
+    # business report at all, so there is no "## Findings" section either.
     assert "Needs review" not in report
     assert "needs review" not in report
     assert "What the source SQL actually shows" not in report
     assert "CONFLICT" not in report
     assert "rule_conflict" not in report
+    assert "## Findings" not in report
 
-    # The exclusion is still surfaced once, in plain language, under
-    # Findings - not silently dropped without a trace.
-    findings = report[report.index("## Findings"):]
-    assert "1 claim" in findings
-    assert "could not be confirmed against the SQL" in findings
+    # The suppression-note text itself is unchanged and still available to
+    # any other consumer that wants it (e.g. a future verification-report
+    # surfacing) - just not rendered into this specific document.
+    assert ReportFormatterAgent._conflict_suppression_finding(1) == [
+        "1 claim generated from this source could not be "
+        "confirmed against the SQL and were left out of the Business Rules section "
+        "above rather than shown as fact."
+    ]
 
 
 def test_llm_only_rule_is_shown_normally_with_no_exclusion_or_flag():

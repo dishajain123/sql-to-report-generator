@@ -20,6 +20,7 @@ import pytest
 
 from src.output.report_formatter import ReportFormatterAgent
 from src.synthesis.rule_synthesizer import RuleSynthesizerAgent, SynthesisResult
+from src.synthesis.rule_synthesizer import PromptTooLargeForRateLimitError
 from src.ingestion.guardrails import ground_business_rules_against_extraction
 from src.validation.coverage_check import find_coverage_gaps
 from src.validation.coverage_check import find_coverage_gaps
@@ -335,6 +336,39 @@ def test_synthesize_parses_valid_json():
     assert result.parse_error == ""
     assert result.data["business_rules"][0]["condition"].startswith("Account is not more")
     assert result.jargon_flags == []
+
+
+def test_synthesize_is_section_appends_scope_note_only_when_set():
+    """Real bug (live-generated report): every section of a sectioned
+    synthesis run was asked for "the step-by-step flow" with no notion of
+    seeing only a partial view, so each section independently guessed at
+    the WHOLE object's flow from its own narrow slice - once an object
+    needed many small sections (common under a tight per-call token
+    budget), no single section ever saw enough to write a comprehensive
+    flow, and the final report showed a shallow, partial flow. Confirms
+    the prompt is unchanged by default (`is_section=False`, the existing
+    single-call/whole-object path) and gets the section-scoping note
+    appended only when a caller explicitly says this call is one section
+    of a larger object.
+    """
+    agent = _make_agent(VALID_SYNTHESIS_JSON)
+    agent.synthesize(
+        object_name="demo", object_type="PROCEDURE",
+        parameter_summary="No parameters.", merged_extraction={"conditions": []},
+    )
+    whole_object_prompt = agent.client.chat.completions.last_call_kwargs["messages"][1]["content"]
+    assert "SECTION SCOPE" not in whole_object_prompt
+
+    agent.synthesize(
+        object_name="demo", object_type="PROCEDURE",
+        parameter_summary="No parameters.", merged_extraction={"conditions": []},
+        is_section=True,
+    )
+    section_prompt = agent.client.chat.completions.last_call_kwargs["messages"][1]["content"]
+    assert "SECTION SCOPE" in section_prompt
+    assert "ONLY the executable stages visible in THIS excerpt" in section_prompt
+    # The rest of the prompt is otherwise identical - only the note is appended.
+    assert section_prompt.startswith(whole_object_prompt)
 
 
 def test_synthesize_serializes_compact_payload_without_transport_fields():
@@ -1474,13 +1508,7 @@ from src.validation.coverage_check import CoverageGap  # noqa: E402
 
 REVISED_SYNTHESIS_JSON = json.dumps(
     {
-        "purpose_summary": "Determines whether a loan should be classified as an NPA.",
-        "step_by_step_flow": [],
-        "business_rules": [
-            {
-                "condition": "Account is not more than 90 days overdue",
-                "action": "Classified as Standard with minimal provisioning",
-            },
+        "new_rules": [
             {
                 "condition": "dpd.DPD_Max BETWEEN 1 AND 30",
                 "action": "SMA_CLASS is set to SMA_0",
@@ -1488,9 +1516,7 @@ REVISED_SYNTHESIS_JSON = json.dumps(
                 "source_evidence": ["dpd.DPD_Max BETWEEN 1 AND 30 -> 'SMA_0'"],
             },
         ],
-        "calculations": [],
-        "exception_handling_summary": "",
-        "ambiguities": [],
+        "obsolete_rule_ids": [],
     }
 )
 
@@ -1507,10 +1533,13 @@ def test_revise_returns_none_when_there_are_no_gaps():
     ) is None
 
 
-def test_revise_sends_the_gap_snippet_and_existing_rules_to_the_model():
+def test_revise_sends_the_gap_snippet_and_references_existing_rules_by_id():
     client = _FakeGroqClient(REVISED_SYNTHESIS_JSON)
     agent = RuleSynthesizerAgent(client=client, model="llama-3.3-70b-versatile", temperature=0.1)
-    existing_rules = [{"condition": "x", "action": "y"}]
+    # `rule_id` is always present by the time pipeline.py calls revise() -
+    # every rule passes through `_normalize_business_rules`
+    # (-> `unique_rule_ids`) before this point in the real flow.
+    existing_rules = [{"rule_id": "r1", "condition": "x", "action": "y"}]
     gap = CoverageGap(
         line_start=3, line_end=6,
         snippet="CASE WHEN dpd.DPD_Max BETWEEN 1 AND 30 THEN 'SMA_0' ... END",
@@ -1526,13 +1555,17 @@ def test_revise_sends_the_gap_snippet_and_existing_rules_to_the_model():
     )
     assert result is not None
     assert result.parse_error == ""
-    # Two rules come back: the untouched prior rule plus the new one the
-    # model added for the previously-uncovered CASE ladder.
+    # The untouched prior rule plus the one new rule the model added for
+    # the previously-uncovered CASE ladder.
     assert len(result.data["business_rules"]) == 2
     sent_prompt = client.chat.completions.last_call_kwargs["messages"][1]["content"]
     assert "Lines 3-6" in sent_prompt
     assert "SMA_0" in sent_prompt
-    assert '"condition": "x"' in sent_prompt or "\"x\"" in sent_prompt
+    # The existing rule is referenced by its id, not retyped in full - this
+    # is the whole point of the redesign: no per-rule JSON echo cost.
+    assert "r1" in sent_prompt
+    assert '"action": "y"' not in sent_prompt
+    assert '"action":"y"' not in sent_prompt
 
 
 def test_revise_returns_none_on_malformed_json_without_wiping_prior_rules():
@@ -1663,7 +1696,7 @@ END"""
             "fields_affected": ["risk_label"],
         }
     ]
-    agent.client.set_response(json.dumps({"business_rules": revised_rules}))
+    agent.client.set_response(json.dumps({"new_rules": revised_rules, "obsolete_rule_ids": []}))
     revision = agent.revise(
         object_name="demo",
         object_type="PROCEDURE",
@@ -1937,3 +1970,311 @@ def test_nested_list_inside_fields_affected_is_flattened():
 
     assert normalized[0]["fields_affected"] == ["SeverityTier", "FeedName", "Outcome", "ReconciledOn"]
     assert not any(isinstance(item, list) for item in normalized[0]["fields_affected"])
+
+
+# --------------------------------------------------------------------------
+# Regression: the coverage-review pass must never REDUCE coverage.
+#
+# `_decode_json_payload` falls back to `json.JSONDecoder().raw_decode`, which
+# successfully decodes a *prefix* of a cut-off response. That meant a
+# revise() call which hit the model's output ceiling could parse "cleanly"
+# while carrying only the first few of the rules it was told to echo back,
+# and pipeline.py then assigned that shortened array straight over the good
+# one. On a small-ceiling model (Amazon Nova Lite: 5000 completion tokens)
+# echoing a large existing rule set back is guaranteed to truncate, so the
+# pass designed to close coverage gaps actively destroyed rules instead.
+# --------------------------------------------------------------------------
+
+
+def test_revise_discards_truncated_response_instead_of_shrinking_rule_set():
+    """A revise() response cut off at the token ceiling must be rejected.
+
+    The payload below is valid, parseable JSON carrying a `new_rules` array
+    with one entry - i.e. what a truncated response looks like after
+    `raw_decode` salvages a JSON-valid prefix of a longer intended array.
+    With `finish_reason="length"` the agent must return None so the caller
+    keeps its existing rules rather than trusting a response that might be
+    missing everything after the cut.
+    """
+    salvageable_prefix = json.dumps(
+        {"new_rules": [{"condition": "only the first new rule survived"}]}
+    )
+    client = _FakeGroqClient(salvageable_prefix, finish_reason="length")
+    agent = RuleSynthesizerAgent(
+        client=client, model="llama-3.3-70b-versatile", temperature=0.1
+    )
+    gap = CoverageGap(line_start=1, line_end=2, snippet="IF x THEN y", keywords=["IF"])
+
+    result = agent.revise(
+        object_name="demo",
+        object_type="PROCEDURE",
+        parameter_summary="",
+        merged_extraction={},
+        existing_rules=[
+            {"rule_id": "r1", "condition": "rule one"},
+            {"rule_id": "r2", "condition": "rule two"},
+            {"rule_id": "r3", "condition": "rule three"},
+        ],
+        gaps=[gap],
+    )
+
+    # Parseable, but truncated -> must be discarded, not returned.
+    assert result is None
+
+
+def test_revise_still_accepts_an_untruncated_response():
+    """Guard against the truncation check over-firing: a normal
+    `finish_reason="stop"` revision must still come back."""
+    client = _FakeGroqClient(REVISED_SYNTHESIS_JSON, finish_reason="stop")
+    agent = RuleSynthesizerAgent(
+        client=client, model="llama-3.3-70b-versatile", temperature=0.1
+    )
+    gap = CoverageGap(line_start=1, line_end=2, snippet="IF x THEN y", keywords=["IF"])
+
+    result = agent.revise(
+        object_name="demo",
+        object_type="PROCEDURE",
+        parameter_summary="",
+        merged_extraction={},
+        existing_rules=[{"rule_id": "r1", "condition": "x", "action": "y"}],
+        gaps=[gap],
+    )
+
+    assert result is not None
+    assert len(result.data["business_rules"]) == 2
+
+
+def test_revise_budgets_output_tokens_against_gap_count_not_rule_count():
+    """revise() no longer asks the model to echo the whole rule set back,
+    so its output budget must scale with how many gaps are under review -
+    NOT with the number of already-accepted rules (which used to drive
+    `_output_token_budget(raw_source)` and made a revision request as
+    expensive as a full resynthesis on a large, mostly-correct object).
+    A request budgeted for 1 gap must be smaller than one budgeted for 20.
+    """
+    client = _FakeGroqClient(REVISED_SYNTHESIS_JSON)
+    agent = RuleSynthesizerAgent(
+        client=client,
+        model="llama-3.3-70b-versatile",
+        temperature=0.1,
+        max_tokens=1024,
+        hard_max_output_tokens=32768,
+    )
+    # A large existing rule set that, under the OLD echo-based design,
+    # would have inflated the requested budget on its own.
+    existing_rules = [{"rule_id": f"r{i}", "condition": f"rule {i}"} for i in range(150)]
+
+    small_gap = [CoverageGap(line_start=1, line_end=2, snippet="IF x THEN y", keywords=["IF"])]
+    many_gaps = [
+        CoverageGap(line_start=i, line_end=i + 1, snippet=f"IF x{i} THEN y{i}", keywords=["IF"])
+        for i in range(20)
+    ]
+
+    agent.revise(
+        object_name="demo", object_type="PROCEDURE", parameter_summary="",
+        merged_extraction={}, existing_rules=existing_rules, gaps=small_gap,
+    )
+    small_budget = client.chat.completions.last_call_kwargs["max_tokens"]
+
+    agent.revise(
+        object_name="demo", object_type="PROCEDURE", parameter_summary="",
+        merged_extraction={}, existing_rules=existing_rules, gaps=many_gaps,
+    )
+    large_budget = client.chat.completions.last_call_kwargs["max_tokens"]
+
+    assert large_budget > small_budget, (
+        "revise()'s output budget should scale with how many gaps are "
+        "under review, not stay flat regardless of review scope"
+    )
+
+
+def test_revise_does_not_inflate_prompt_size_with_rule_count():
+    """The single biggest lever against the TPM 413 this fixes: the sent
+    prompt must stay small even when there are hundreds of already-accepted
+    rules, because they are referenced by id in a compact index rather than
+    retyped in full JSON."""
+    client = _FakeGroqClient(REVISED_SYNTHESIS_JSON)
+    agent = RuleSynthesizerAgent(client=client, model="llama-3.3-70b-versatile", temperature=0.1)
+    existing_rules = [
+        {
+            "rule_id": f"r{i}",
+            "condition": f"some fairly verbose business condition number {i} " * 3,
+            "action": f"some fairly verbose business action number {i} " * 3,
+            "source_evidence": [f"evidence line {i}"] * 4,
+            "fields_affected": [f"FIELD_{i}"],
+        }
+        for i in range(150)
+    ]
+    gap = CoverageGap(line_start=1, line_end=2, snippet="IF x THEN y", keywords=["IF"])
+
+    agent.revise(
+        object_name="demo", object_type="PROCEDURE", parameter_summary="",
+        merged_extraction={}, existing_rules=existing_rules, gaps=[gap],
+    )
+
+    sent_prompt = client.chat.completions.last_call_kwargs["messages"][1]["content"]
+    # None of the verbose full-field content should appear - only compact
+    # "id: short label" index lines.
+    assert "fairly verbose business action" not in sent_prompt
+    assert "evidence line" not in sent_prompt
+
+    # Compare against what the OLD design (full JSON echo of every existing
+    # rule) would have cost for the same 150 rules, to anchor the assertion
+    # in the actual regression rather than an arbitrary constant that could
+    # drift as the fixed template text grows.
+    old_style_echo_cost = len(
+        json.dumps(existing_rules, separators=(",", ":"), default=str)
+    )
+    assert len(sent_prompt) < old_style_echo_cost, (
+        "compact id-based referencing should cost less prompt space than "
+        "retyping every existing rule's full JSON would have"
+    )
+
+
+# --------------------------------------------------------------------------
+# Pre-flight LLM_TPM_LIMIT guard - integration with synthesize()/revise().
+#
+# Unit coverage for the underlying helpers (`estimate_prompt_tokens`,
+# `resolve_tpm_limit`, `clamp_tokens_for_tpm`) lives in test_llm_client.py.
+# These tests confirm the two call sites actually use them: `synthesize()`
+# fails fast with an actionable error when even the whole object can't
+# reasonably be attempted, and `revise()` skips gracefully (returns None,
+# same as "no gaps" or "malformed JSON") rather than sending a doomed
+# request that would 413.
+# --------------------------------------------------------------------------
+
+
+def test_synthesize_raises_actionable_error_when_prompt_cannot_fit_tpm_budget(monkeypatch):
+    monkeypatch.setenv("LLM_TPM_LIMIT", "500")  # far smaller than any real prompt
+    agent = _make_agent(json.dumps({"business_rules": []}))
+
+    with pytest.raises(PromptTooLargeForRateLimitError) as excinfo:
+        agent.synthesize(
+            object_name="demo",
+            object_type="PROCEDURE",
+            parameter_summary="",
+            merged_extraction={},
+            dialect="tsql",
+            raw_source="IF x = 1 THEN y = 2;",
+        )
+
+    message = str(excinfo.value)
+    assert "LLM_TPM_LIMIT" in message
+    assert "500" in message
+
+
+def test_synthesize_does_not_raise_when_tpm_limit_is_unset():
+    """No `LLM_TPM_LIMIT` configured -> the guard is a no-op, exactly like
+    before this feature existed."""
+    agent = _make_agent(json.dumps({"business_rules": []}))
+    result = agent.synthesize(
+        object_name="demo",
+        object_type="PROCEDURE",
+        parameter_summary="",
+        merged_extraction={},
+        dialect="tsql",
+        raw_source="IF x = 1 THEN y = 2;",
+    )
+    assert result is not None
+
+
+def test_revise_returns_none_gracefully_when_prompt_cannot_fit_tpm_budget(monkeypatch):
+    monkeypatch.setenv("LLM_TPM_LIMIT", "500")
+    agent = _make_agent(REVISED_SYNTHESIS_JSON)
+    gap = CoverageGap(line_start=1, line_end=2, snippet="IF x THEN y", keywords=["IF"])
+
+    result = agent.revise(
+        object_name="demo",
+        object_type="PROCEDURE",
+        parameter_summary="",
+        merged_extraction={},
+        existing_rules=[{"rule_id": "r1", "condition": "x", "action": "y"}],
+        gaps=[gap],
+    )
+
+    # Skipped gracefully - same contract as no-gaps/unsupported-dialect/
+    # malformed-JSON: caller keeps its existing rules, gap stays flagged.
+    assert result is None
+
+
+# --------------------------------------------------------------------------
+# Regression: section PLANNING must account for the account's real TPM
+# ceiling, not just the model's raw completion capability.
+#
+# Without this, a small-to-medium object that comfortably fits a model's
+# raw output ceiling (e.g. openai/gpt-oss-120b: 65,536 completion tokens)
+# was judged "no sectioning needed" and sent as one single-pass call - even
+# though that call's prompt (system prompt + template + evidence payload)
+# does NOT fit under a much smaller account-level TPM ceiling (Groq free
+# tier: 8,000 tokens total). The pre-flight TPM guard then correctly
+# refused that oversized call, `synthesize()` raised, and pipeline.py's
+# per-section try/except (see pipeline.py::_run_section) turned that into
+# a completely empty result for the WHOLE object - not a partial one.
+# Live symptom: a 176-line, 55-decision-point procedure came back with 0
+# of its ~10 real rules and a "Needs Review" line for nearly the entire
+# source.
+# --------------------------------------------------------------------------
+
+
+def test_sectioning_ceiling_is_unaffected_when_tpm_limit_is_unset():
+    """No `LLM_TPM_LIMIT` configured -> sectioning decisions are exactly
+    what they were before this feature existed."""
+    agent = RuleSynthesizerAgent(
+        client=_FakeGroqClient("{}"),
+        model="openai/gpt-oss-120b",
+        provider="groq",
+        temperature=0.1,
+        hard_max_output_tokens=65536,
+    )
+    assert agent._sectioning_ceiling() == 65536
+
+
+def test_requires_sectioned_synthesis_accounts_for_tpm_not_just_model_ceiling(monkeypatch):
+    """The exact live-reported failure, reproduced deterministically: a
+    55-decision-point object (DPD_Bucket_Classification-sized) that fits
+    comfortably under a model's raw 65,536-token ceiling must still be
+    recognized as needing sectioning once the account's real TPM ceiling
+    (8,000) is configured - because a single-pass call over it does not
+    fit once the ~5,000+ token fixed prompt overhead is counted.
+    """
+    monkeypatch.setenv("LLM_TPM_LIMIT", "8000")
+    agent = RuleSynthesizerAgent(
+        client=_FakeGroqClient("{}"),
+        model="openai/gpt-oss-120b",
+        provider="groq",
+        temperature=0.1,
+        hard_max_output_tokens=65536,
+    )
+    raw_source = "\n".join(f"IF x{i} = 1 THEN SET y{i} = 2;" for i in range(55))
+
+    # Sanity: this object genuinely fits the model's raw capability alone -
+    # the old, TPM-blind check would have said "no sectioning needed" here.
+    assert agent._estimate_output_tokens(raw_source) < agent.hard_max_output_tokens
+
+    assert agent.requires_sectioned_synthesis(raw_source) is True
+
+
+def test_plan_synthesis_sections_shrinks_section_budget_under_tight_tpm(monkeypatch):
+    """`plan_synthesis_sections` must plan smaller sections (lower
+    decision-point budget per section) once `LLM_TPM_LIMIT` makes the
+    real usable ceiling much smaller than the model's raw capability -
+    this is what actually prevents an oversized section from ever being
+    attempted (and therefore ever being silently dropped whole)."""
+    agent_unlimited = RuleSynthesizerAgent(
+        client=_FakeGroqClient("{}"), model="openai/gpt-oss-120b",
+        provider="groq", temperature=0.1, hard_max_output_tokens=65536,
+    )
+    # Captured now, before LLM_TPM_LIMIT is set - `_sectioning_ceiling`
+    # reads the environment live on every call (not cached at
+    # construction), so this must be read BEFORE the env var changes below,
+    # not re-read afterward.
+    unlimited_ceiling = agent_unlimited._sectioning_ceiling()
+    assert unlimited_ceiling == 65536
+
+    monkeypatch.setenv("LLM_TPM_LIMIT", "8000")
+    agent_limited = RuleSynthesizerAgent(
+        client=_FakeGroqClient("{}"), model="openai/gpt-oss-120b",
+        provider="groq", temperature=0.1, hard_max_output_tokens=65536,
+    )
+    assert agent_limited._sectioning_ceiling() < unlimited_ceiling
+    assert agent_limited._sectioning_ceiling() < 5000  # well under the 8000 TPM itself

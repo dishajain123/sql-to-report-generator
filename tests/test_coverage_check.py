@@ -705,3 +705,174 @@ def test_dml_predicate_tokens_attribute_the_next_statements_own_line_correctly()
         f"Line {rule2_update_line} (Rule 2's own UPDATE, which has no WHERE clause) "
         "must not be attributed to a different statement's predicate."
     )
+
+class _DroppingSynthesizer:
+    """Emulates the real-world failure the merge guard exists for: a
+    revise() call that returns ONLY the rule it considered relevant to the
+    reported gap, silently omitting the previously-synthesized rules it was
+    instructed to echo back unchanged.
+
+    This is routine behaviour on a smaller model (and the guaranteed
+    behaviour once the echoed array exceeds the output ceiling), and before
+    the merge guard it meant the coverage pass *reduced* coverage.
+    """
+
+    def __init__(self, existing_rules, new_rule):
+        self.existing_rules = existing_rules
+        self.new_rule = new_rule
+        self.revise_calls = []
+
+    def synthesize(self, **kwargs):
+        return SynthesisResult(
+            data={
+                "purpose_summary": "initial",
+                "step_by_step_flow": [],
+                "business_rules": [dict(r) for r in self.existing_rules],
+                "calculations": [],
+                "exception_handling_summary": "",
+                "ambiguities": [],
+            }
+        )
+
+    def revise(self, **kwargs):
+        self.revise_calls.append(kwargs)
+        # Returns the new rule ONLY - every prior rule is dropped.
+        return SynthesisResult(
+            data={
+                "purpose_summary": "revised",
+                "step_by_step_flow": [],
+                "business_rules": [dict(self.new_rule)],
+                "calculations": [],
+                "exception_handling_summary": "",
+                "ambiguities": [],
+            }
+        )
+
+
+def test_revision_that_drops_prior_rules_cannot_reduce_coverage(monkeypatch):
+    """The coverage loop may only ever ADD rules.
+
+    Regression for a pass that could delete work: `revised_rules` replaced
+    `business_rules` wholesale, so a model returning a shorter array (very
+    common on small-ceiling models, which truncate the echoed set) removed
+    already-correct rules. The final report must retain every prior rule
+    plus the new one.
+    """
+    source = (
+        "UPDATE accounts SET tier = 'GOLD' WHERE balance > 1000\n"
+        "IF fraud_flag = 1\n"
+        "    UPDATE accounts SET blocked = 1\n"
+    )
+    existing_rules = [
+        {
+            "rule_name": "Assign gold tier",
+            "condition": "balance > 1000",
+            "action": "Set tier to GOLD",
+            "output_field": "tier",
+            "source_evidence": ["balance > 1000"],
+            "fields_affected": ["tier"],
+        },
+        {
+            "rule_name": "Assign silver tier",
+            "condition": "balance > 500",
+            "action": "Set tier to SILVER",
+            "output_field": "tier",
+            "source_evidence": ["balance > 500"],
+            "fields_affected": ["tier"],
+        },
+    ]
+    new_rule = {
+        "rule_name": "Block on fraud flag",
+        "condition": "fraud_flag = 1",
+        "action": "Block the account",
+        "output_field": "blocked",
+        "source_evidence": ["fraud_flag = 1"],
+        "fields_affected": ["blocked"],
+    }
+
+    pipeline = LogicRulesExtractorPipeline.__new__(LogicRulesExtractorPipeline)
+    pipeline.dialect = "tsql"
+    pipeline.model_name = "test-model"
+    pipeline.provider = "test"
+    pipeline.project_root = Path(__file__).resolve().parent.parent
+    pipeline.chunk_workers = 1
+    pipeline.max_coverage_retries = 2
+    pipeline.retrieval_agent = type("Retrieval", (), {"build_or_load": lambda self: None})()
+    pipeline.ingestion_agent = type(
+        "Ingestion",
+        (),
+        {"ingest_text": lambda self, *args, **kwargs: IngestionResult(
+            object_name="TEST_PROC",
+            object_type="PROCEDURE",
+            parameters=[],
+            raw_code=source,
+            original_code=source,
+            chunks=[],
+            dialect="TSQL",
+        )},
+    )()
+    pipeline._read_source_file = lambda _: source
+    pipeline._extract_all_chunks = lambda *args, **kwargs: []
+    pipeline._merge_extractions = lambda *args, **kwargs: {
+        "conditions": [], "decision_chains": [], "loops": [],
+        "tables_read": [], "tables_written": [], "table_operations": [],
+        "calculations": [], "exception_handling": [], "ambiguities": [],
+    }
+    synthesizer = _DroppingSynthesizer(existing_rules, new_rule)
+    pipeline.synthesizer_agent = synthesizer
+
+    class _Formatter:
+        def __init__(self):
+            self.synthesis_data = []
+
+        def format(self, **kwargs):
+            self.synthesis_data.append(kwargs["synthesis"].data)
+            return "report"
+
+        def format_verification(self, **kwargs):
+            return "verification"
+
+    pipeline.formatter_agent = _Formatter()
+    pipeline._reconciliation_review_findings = lambda _: []
+
+    class _Reconciliation:
+        coverage = {}
+        quality = {}
+        records = []
+        contradictions = []
+
+        def to_dict(self):
+            return {}
+
+    class _CanonicalIR:
+        @classmethod
+        def from_pipeline(cls, **kwargs):
+            return cls()
+
+        def to_dict(self):
+            return {}
+
+    monkeypatch.setattr(pipeline_module, "reconcile_deterministic_evidence", lambda **kwargs: _Reconciliation())
+    monkeypatch.setattr(pipeline_module, "CanonicalBusinessIR", _CanonicalIR)
+
+    gap_calls = {"count": 0}
+
+    def _fake_find_coverage_gaps(raw_code, rules):
+        gap_calls["count"] += 1
+        if gap_calls["count"] == 1:
+            return [CoverageGap(line_start=2, line_end=3, snippet="IF fraud_flag = 1", keywords=["IF"])]
+        return []
+
+    monkeypatch.setattr(pipeline_module, "find_coverage_gaps", _fake_find_coverage_gaps)
+    pipeline.run("sample.sql", dialect="tsql")
+
+    assert synthesizer.revise_calls
+    final_rules = pipeline.formatter_agent.synthesis_data[-1]["business_rules"]
+    names = {rule["rule_name"] for rule in final_rules}
+
+    # The new rule was added...
+    assert "Block on fraud flag" in names
+    # ...and NEITHER prior rule was lost to the revision.
+    assert "Assign gold tier" in names, "coverage pass deleted a prior rule"
+    assert "Assign silver tier" in names, "coverage pass deleted a prior rule"
+    assert len(final_rules) == 3

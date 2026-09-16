@@ -15,6 +15,7 @@ import datetime as _dt
 import hashlib
 import hmac
 import json
+import math
 from dataclasses import dataclass
 import os
 from types import SimpleNamespace
@@ -51,12 +52,35 @@ _BEDROCK_MODEL_OUTPUT_CAPS = {
 }
 
 
+# Real per-model maximum COMPLETION tokens on Groq. Same rationale as the
+# Bedrock map above: sectioning/retry budget planning must be built against
+# the ceiling the server will actually honour, or a large object silently
+# under-triggers sectioning and truncates mid-JSON. Without an entry here a
+# Groq model falls back to the generic 32768 default, which over-requests on
+# the smaller Llama models.
+_GROQ_MODEL_OUTPUT_CAPS = {
+    "openai/gpt-oss-120b": 65536,
+    "openai/gpt-oss-20b": 65536,
+    "llama-3.3-70b-versatile": 32768,
+    "llama-3.1-8b-instant": 8192,
+    "qwen": 32768,
+}
+
+
 def _max_output_tokens_for_model(model_id: str) -> int:
     normalized = str(model_id or "").strip().lower()
     for prefix, cap in _BEDROCK_MODEL_OUTPUT_CAPS.items():
         if prefix in normalized:
             return cap
     return BEDROCK_MAX_OUTPUT_TOKENS
+
+
+def _max_output_tokens_for_groq_model(model_id: str) -> Optional[int]:
+    normalized = str(model_id or "").strip().lower()
+    for prefix, cap in _GROQ_MODEL_OUTPUT_CAPS.items():
+        if prefix in normalized:
+            return cap
+    return None
 
 
 def resolve_model_output_ceiling(provider: str, model_name: str) -> Optional[int]:
@@ -73,9 +97,92 @@ def resolve_model_output_ceiling(provider: str, model_name: str) -> Optional[int
     Amazon Nova Lite's real cap is 5000), guaranteeing truncated JSON no
     matter how large a budget the caller asks for.
     """
-    if str(provider or "").strip().lower() != "bedrock":
+    normalized_provider = str(provider or "").strip().lower()
+    if normalized_provider == "bedrock":
+        return _max_output_tokens_for_model(model_name)
+    if normalized_provider == "groq":
+        return _max_output_tokens_for_groq_model(model_name)
+    return None
+
+
+def estimate_prompt_tokens(*texts: str) -> int:
+    """Rough, provider-agnostic token estimate for a set of prompt strings.
+
+    No tokenizer dependency: assumes ~3.5 characters per token, which is a
+    deliberate slight OVERestimate for English/code text (real BPE
+    tokenizers average closer to 4 chars/token) so this errs toward
+    reserving too much room rather than too little. Used only for
+    pre-flight token-per-minute (TPM) budgeting, i.e. deciding whether a
+    request is even worth sending before the provider tells us with a 413 -
+    the response's own `usage` field is always the real source of truth for
+    what a call actually cost.
+    """
+    total_chars = sum(len(t or "") for t in texts)
+    return math.ceil(total_chars / 3.5)
+
+
+def resolve_tpm_limit(provider: Optional[str] = None) -> Optional[int]:
+    """The account's real, plan-specific combined tokens-per-minute ceiling,
+    if the caller has told us what it is.
+
+    This cannot be known in advance from the model name alone - it depends
+    on the account's plan (free vs Developer/Enterprise) and is unrelated to
+    a model's MAX COMPLETION TOKENS figure. For example Groq's free plan
+    caps `openai/gpt-oss-120b` at 8,000 TOTAL tokens (prompt + requested
+    completion) per minute, even though the model itself can emit up to
+    65,536 completion tokens per call on a higher tier - two unrelated
+    numbers that are easy to conflate (see `_GROQ_MODEL_OUTPUT_CAPS` above,
+    which is the LATTER, not this).
+
+    Set `LLM_TPM_LIMIT` in the environment to the value shown on your
+    provider's rate-limit/quota page (for Groq: the TPM column on
+    https://console.groq.com/settings/limits) to have `RuleSynthesizerAgent`
+    pre-emptively size every request under it instead of discovering the
+    limit via a 413. Left unset (the default), this check is disabled
+    entirely and behavior is unchanged from before this existed.
+    """
+    raw = os.environ.get("LLM_TPM_LIMIT", "").strip()
+    if not raw:
         return None
-    return _max_output_tokens_for_model(model_name)
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+# Tokens always held back from a TPM budget so a request is never sized to
+# the exact edge of the limit - both this module's char-based estimate and
+# the provider's own tokenizer differ slightly from the actual count, and
+# some providers reject a request whose RESERVED total (prompt +
+# `max_tokens`) exceeds the limit even when the eventual real usage
+# would not have.
+_TPM_SAFETY_MARGIN = 200
+
+# Below this many completion tokens, a call isn't worth attempting - there
+# is no schema this pipeline emits that fits usefully in less room.
+_TPM_MIN_OUTPUT_FLOOR = 200
+
+
+def clamp_tokens_for_tpm(
+    prompt_tokens: int, desired_max_tokens: int, tpm_limit: Optional[int]
+) -> Optional[int]:
+    """Return the largest `max_tokens` that keeps `prompt_tokens +
+    max_tokens` under `tpm_limit`, or `None` if even the minimum useful
+    completion budget does not fit and the call should not be sent at all.
+
+    Never returns more than `desired_max_tokens` - this only ever shrinks a
+    request relative to what the caller already planned to ask for, never
+    grows one. When `tpm_limit` is `None` (the default, unset), returns
+    `desired_max_tokens` unchanged - this function is a no-op until the
+    person configures `LLM_TPM_LIMIT`.
+    """
+    if tpm_limit is None:
+        return desired_max_tokens
+    available = tpm_limit - prompt_tokens - _TPM_SAFETY_MARGIN
+    if available < _TPM_MIN_OUTPUT_FLOOR:
+        return None
+    return max(_TPM_MIN_OUTPUT_FLOOR, min(desired_max_tokens, available))
 
 
 # Nova models: sending temperature=0 alone does NOT guarantee deterministic,

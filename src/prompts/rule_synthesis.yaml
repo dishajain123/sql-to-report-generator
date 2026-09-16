@@ -691,8 +691,15 @@ user_template: |
   Return every schema field. Populate purpose_summary, step_by_step_flow, calculations,
   exception_handling_summary, and every distinct business-rule family the source
   supports. purpose_summary names the main business outcome and affected entity levels
-  when explicit. step_by_step_flow covers executable stages in source order, not a
-  restatement of rule titles. Each calculation keeps its source field names/formula.
+  when explicit. step_by_step_flow is a COMPLETE, ordered walk through every executable
+  stage visible to you, start to finish - one step per distinct statement/operation
+  (each SELECT/UPDATE/INSERT/MERGE/EXEC/status-write), not a condensed summary of only
+  the "interesting" ones. Do not collapse multiple distinct statements into one step,
+  and do not stop early once the main decision logic is covered - staging, history/audit
+  writes, queue inserts, and status/completion updates are still steps, described in
+  plain business language like everything else. A short flow for a source with many
+  more statements than steps is under-coverage, not concision - err toward one step too
+  many, never one step too few. Each calculation keeps its source field names/formula.
   exception_handling_summary describes an executable failure path only if one exists.
   Business rules stay in source order with branches preserved; keep technical/audit side
   effects separate from the core decision. Gating conditions are rule metadata only - no

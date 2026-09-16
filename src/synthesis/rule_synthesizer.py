@@ -43,7 +43,12 @@ from typing import Any, Dict, List, Sequence, Tuple
 from typing import Optional
 
 from src.ingestion.guardrails import ground_business_rules_against_extraction, validate_synthesis_shape
-from src.core.llm_client import supports_chat_completion_seed
+from src.core.llm_client import (
+    supports_chat_completion_seed,
+    estimate_prompt_tokens,
+    resolve_tpm_limit,
+    clamp_tokens_for_tpm,
+)
 from src.core.pipeline_utils import PIPELINE_VERSION, stable_id
 from src.core.llm_response_cache import PersistentLLMResponseCache
 from src.parsing.dedup import dedup_table_operations
@@ -93,6 +98,20 @@ _EMPTY_SYNTHESIS: Dict[str, Any] = {
     "ambiguities": [],
 }
 
+
+class PromptTooLargeForRateLimitError(RuntimeError):
+    """Raised when a synthesis call's estimated prompt tokens alone (system
+    prompt + rendered payload) leave no room for even the minimum useful
+    completion under the account's configured `LLM_TPM_LIMIT`.
+
+    This fires BEFORE the request is sent - it replaces a guaranteed
+    provider-side 413 with an actionable message naming what to change.
+    Unlike `revise()` (which can skip a gap-review pass and leave the gap
+    flagged for human review), `synthesize()` has no equivalent fallback -
+    skipping it silently would produce zero rules for the whole section -
+    so this raises instead of returning an empty result.
+    """
+
 # A best-effort post-hoc guard: if any banned technical term slips through
 # despite the prompt, we flag it rather than silently shipping jargon.
 _BANNED_TERMS = [
@@ -133,6 +152,26 @@ _SYNTHESIS_EVIDENCE_TEXT_MAX_CHARS = int(
 # consume any of the decision-point budget) but are still large in plain
 # character count.
 _SYNTHESIS_SECTION_MAX_CHARS = int(os.environ.get("SYNTHESIS_SECTION_MAX_CHARS", "24000"))
+
+# Deliberately conservative, deliberately NOT dialect-specific estimate of
+# the FIXED prompt overhead (system prompt + the surrounding user-template
+# skeleton) every synthesis/revision call pays before a single decision
+# point's worth of content is added. Used only by `_sectioning_ceiling` to
+# decide, before any real prompt is built, whether a section's planned size
+# leaves any TPM headroom at all. The real oracle/tsql system prompts
+# measure ~3,900-4,500 tokens; this is biased above that on purpose so
+# section planning never UNDER-estimates and lets a section through that
+# then fails the real per-call TPM guard anyway - see `_sectioning_ceiling`
+# for why that failure mode (an entire section's rules silently dropped)
+# matters more than a slightly-too-conservative section size.
+_FIXED_PROMPT_OVERHEAD_TOKENS_ESTIMATE = 5200
+
+# Local mirror of `src.core.llm_client._TPM_SAFETY_MARGIN` - kept as its own
+# constant (not imported) because this one is a section-PLANNING margin,
+# conceptually separate from the per-call margin the imported
+# `clamp_tokens_for_tpm` applies right before a request is actually sent.
+# Both bias toward attempting less, not more, for the same reason.
+_TPM_SAFETY_MARGIN = 200
 
 
 class RuleSynthesizerAgent:
@@ -302,6 +341,48 @@ class RuleSynthesizerAgent:
     def _output_token_budget(self, raw_source: str, requested: Optional[int] = None) -> int:
         return min(self.hard_max_output_tokens, self._estimate_output_tokens(raw_source, requested))
 
+    def _sectioning_ceiling(self) -> int:
+        """The effective output-token ceiling to plan SECTION SIZES
+        against - deliberately NOT the same thing as `self.hard_max_output_tokens`
+        (the model's raw completion capability).
+
+        A rate-limited account's real per-call budget can be far smaller
+        than the model's raw capability. Groq's free `openai/gpt-oss-120b`
+        tier caps a whole call (prompt + completion) at 8,000 tokens even
+        though the model itself can emit up to 65,536 completion tokens on
+        a higher tier. If sectioning decisions
+        (`requires_sectioned_synthesis`, `plan_synthesis_sections`) are
+        planned against the model's raw capability instead of the
+        account's real ceiling, a section gets built that will never fit
+        once its prompt is assembled - and the caller's per-section
+        try/except (`pipeline.py::_run_section`) then silently drops that
+        ENTIRE section's rules rather than the object ever being split any
+        finer.
+
+        This is not hypothetical: a small (176-line, 55-decision-point)
+        object comfortably fits under a model's raw 65,536-token ceiling
+        in a single pass, so `requires_sectioned_synthesis` reported "no
+        sectioning needed" and one single-pass call was attempted - but
+        that object does NOT fit under an 8,000 TPM account ceiling once
+        the ~4,000-4,500 token system prompt is accounted for. The
+        pre-flight TPM guard correctly refused that oversized call, and
+        the whole object came back with zero synthesized rules instead of
+        the several smaller, successful calls it should have become.
+
+        Only ever used for SECTION SIZING (deciding how much content one
+        section may carry) - never for the real per-call `max_tokens` sent
+        to the API (`_output_token_budget`, itself further clamped by the
+        same TPM guard immediately before each call) and never for
+        truncation-retry escalation (which legitimately wants the model's
+        true capability, since a retry there responds to an
+        already-truncated REAL response, not a preflight estimate).
+        """
+        tpm_limit = resolve_tpm_limit(self.provider)
+        if tpm_limit is None:
+            return self.hard_max_output_tokens
+        available = tpm_limit - _FIXED_PROMPT_OVERHEAD_TOKENS_ESTIMATE - _TPM_SAFETY_MARGIN
+        return max(_PER_DECISION_POINT_TOKENS, min(self.hard_max_output_tokens, available))
+
     def requires_sectioned_synthesis(self, raw_source: str, requested: Optional[int] = None) -> bool:
         """True when a single synthesis call over the whole `raw_source`
         would need more completion tokens than the hard output ceiling
@@ -312,7 +393,7 @@ class RuleSynthesizerAgent:
         `plan_synthesis_sections` and one `synthesize()` call per section
         instead of a single whole-object call.
         """
-        return self._estimate_output_tokens(raw_source, requested) > self.hard_max_output_tokens
+        return self._estimate_output_tokens(raw_source, requested) > self._sectioning_ceiling()
 
     def plan_synthesis_sections(
         self,
@@ -360,8 +441,9 @@ class RuleSynthesizerAgent:
         # decision-point-driven content on every model, while leaving the
         # existing large-ceiling behavior (`min(base, ceiling // 2) == base`
         # whenever `ceiling >= 2 * base`) unchanged.
-        section_overhead = min(base, self.hard_max_output_tokens // 2)
-        section_token_budget = max(_PER_DECISION_POINT_TOKENS, self.hard_max_output_tokens - section_overhead)
+        sectioning_ceiling = self._sectioning_ceiling()
+        section_overhead = min(base, sectioning_ceiling // 2)
+        section_token_budget = max(_PER_DECISION_POINT_TOKENS, sectioning_ceiling - section_overhead)
         section_point_budget = max(1, section_token_budget // max(1, _PER_DECISION_POINT_TOKENS))
 
         sections: List[Dict[str, Any]] = []
@@ -580,25 +662,23 @@ class RuleSynthesizerAgent:
 
         dropped_degenerate = False
 
-        # Same root cause and same fix shape as `purpose_summary` above:
-        # every section is asked for "the step-by-step flow" of the whole
-        # procedure, not just the steps visible in its own slice, so each
-        # section independently reconstructs its own full-procedure flow
-        # from partial evidence. Unlike `purpose_summary` this produces
-        # several *steps* rather than one paragraph, and because the
-        # wording differs per section (e.g. "Update the DpdDays field..."
-        # vs "Calculate the number of days past due...", describing the
-        # same statement) exact-string dedup only catches the rare
-        # byte-identical repeat - a live report showed 16 steps where two
-        # runs of 6-7 steps each substantially re-narrated the same
-        # statements. Keeping only the single section with the most steps
-        # (the one that evidently had the fullest picture) avoids that
-        # near-total duplication; it can drop a genuinely unique step that
-        # only a smaller section captured, but that is a far better
-        # trade-off than presenting the same step to the reader twice.
-        per_section_steps: List[List[str]] = []
+        # Each section is now explicitly told (see `synthesize(...,
+        # is_section=True)`) to describe ONLY the steps visible in its own
+        # excerpt, in order - not to reconstruct the whole procedure's
+        # flow from partial evidence. That single prompt change is what
+        # makes concatenation correct here: sections are processed in
+        # source order (`plan_synthesis_sections` walks the object's
+        # chunks front-to-back), so each section's own steps, appended in
+        # that same order, build one genuinely complete flow instead of
+        # the old behavior of keeping only the single longest section's
+        # own full-procedure guess (which, once an object needed enough
+        # sections that no single one ever saw the whole thing - common
+        # under a tight per-call token budget - produced a shallow,
+        # partial flow no matter how long the "winning" section's guess
+        # was). Exact-text dedup still guards against a section
+        # accidentally repeating the same step twice within itself.
+        merged_steps: List[str] = []
         for item in usable:
-            section_steps: List[str] = []
             for step in item.data.get("step_by_step_flow") or []:
                 step_text = str(step)
                 if not step_text.strip():
@@ -606,10 +686,8 @@ class RuleSynthesizerAgent:
                 if RuleSynthesizerAgent._is_degenerate_text(step_text):
                     dropped_degenerate = True
                     continue
-                section_steps.append(step_text)
-            if section_steps:
-                per_section_steps.append(section_steps)
-        merged_steps = _dedup_preserve_order(max(per_section_steps, key=len, default=[]))
+                merged_steps.append(step_text)
+        merged_steps = _dedup_preserve_order(merged_steps)
 
         merged_rules: List[Dict[str, Any]] = []
         seen_rule_keys: set = set()
@@ -778,10 +856,30 @@ class RuleSynthesizerAgent:
         raw_source: str = "",
         model: str | None = None,
         telemetry_tracker: Optional[LLMTelemetryTracker] = None,
+        is_section: bool = False,
     ) -> SynthesisResult:
         """`model`, if given, overrides the agent's configured model for
         just this call - lets callers pick a different model per run
         without re-constructing the agent.
+
+        `is_section=True` tells the model this call sees only one excerpt
+        of a larger object (see `_run_rule_synthesis`'s sectioned path in
+        pipeline.py), not the whole thing. Without this, the prompt (which
+        always asks for "the step-by-step flow" with no notion of a
+        partial view) led every section to independently attempt a full-
+        object flow from whatever fragment it could see - real bug,
+        observed on a live report: with an object split into many small
+        sections (common once a tight per-call token budget forces fine-
+        grained sectioning - see `RuleSynthesizerAgent._sectioning_
+        ceiling`), NO single section ever saw enough of the object to
+        write a comprehensive flow, and `merge_section_results` keeping
+        only the single longest section's attempt meant the final report
+        showed a shallow 3-step flow for an 11-step procedure. Telling the
+        model explicitly to describe only ITS OWN excerpt's steps, in
+        order, is both more accurate (no guessing about invisible
+        sections) and enables `merge_section_results` to concatenate every
+        section's own steps into one genuinely complete flow instead of
+        picking one section's partial guess.
         """
         if str(dialect or "").strip().lower() not in {"oracle", "tsql"}:
             return SynthesisResult(data=dict(_EMPTY_SYNTHESIS))
@@ -803,8 +901,48 @@ class RuleSynthesizerAgent:
                 default=str,
             ),
         )
+        if is_section:
+            user_prompt += (
+                "\n\nSECTION SCOPE: this call sees only ONE EXCERPT of a "
+                "larger object - other sections, not shown to you, cover "
+                "the rest of its logic. step_by_step_flow must describe "
+                "ONLY the executable stages visible in THIS excerpt, in "
+                "the order they appear here - never guess at, invent, or "
+                "summarize steps that happen before or after what you can "
+                "see; leaving out a step you cannot see is correct, not "
+                "incomplete. purpose_summary should still describe the "
+                "overall object's business purpose as best it can be "
+                "inferred from the object name/type/parameters and this "
+                "excerpt together, since other sections will not repeat it."
+            )
         effective_seed = self.seed if self.seed is not None and supports_chat_completion_seed(self.client) else None
         effective_max_tokens = self._output_token_budget(raw_source)
+
+        # Pre-flight TPM guard: only active when `LLM_TPM_LIMIT` is set
+        # (see `resolve_tpm_limit`'s docstring). A request built against
+        # `hard_max_output_tokens` (the model's raw capability) can still
+        # be far larger than what a rate-limited account is actually
+        # allowed to send in one call - this shrinks `max_tokens` to fit
+        # alongside the estimated prompt size, or raises a clear,
+        # actionable error instead of letting the provider reject it with
+        # a bare 413.
+        tpm_limit = resolve_tpm_limit(self.provider)
+        if tpm_limit is not None:
+            prompt_tokens_estimate = estimate_prompt_tokens(prompt_set["system"], user_prompt)
+            clamped = clamp_tokens_for_tpm(prompt_tokens_estimate, effective_max_tokens, tpm_limit)
+            if clamped is None:
+                raise PromptTooLargeForRateLimitError(
+                    f"Synthesis prompt for '{object_name}' is estimated at "
+                    f"~{prompt_tokens_estimate} tokens, which leaves no room "
+                    f"under LLM_TPM_LIMIT={tpm_limit} even for the smallest "
+                    "useful completion. Either raise LLM_TPM_LIMIT to match "
+                    "what your account's rate-limit page actually shows, or "
+                    "reduce SYNTHESIS_EVIDENCE_MAP_MAX_CHARS / "
+                    "SYNTHESIS_SECTION_MAX_CHARS so each synthesis section "
+                    "carries less content."
+                )
+            effective_max_tokens = clamped
+
         cache_request = self._build_cache_request(
             stage="synthesis",
             dialect=dialect,
@@ -1260,8 +1398,8 @@ class RuleSynthesizerAgent:
         gaps and return its own updated, complete rule set.
 
         This is the coverage-driven counterpart to `synthesize()`. It is
-        deliberately NOT a deterministic content generator: every rule it
-        returns is model-authored business language, same as the first
+        deliberately NOT a deterministic content generator: every NEW rule
+        it returns is model-authored business language, same as the first
         pass. What's deterministic is only *where to look again* - the
         caller (`pipeline.py`) supplies `gaps`, each a source line range
         and snippet that a purely syntactic scan
@@ -1271,6 +1409,22 @@ class RuleSynthesizerAgent:
         is always free to conclude a gap is not business-relevant (e.g. a
         technical-only branch) and say so - this never forces a rule into
         existence, it only forces the model to look and explain itself.
+
+        Unlike an earlier version of this method, the model is NEVER asked
+        to retype `existing_rules` back to us. That "echo the whole array"
+        design made the request's token cost grow without bound as a
+        synthesized object accumulated rules - for an object with 150+
+        rules the prompt alone could exceed an entire minute's token
+        budget on a rate-limited account before the model produced a
+        single new word (see `_TPM_LIMIT` handling below). Instead, each
+        existing rule is referenced by its already-assigned `rule_id`
+        (see `src/ir/rule_identity.py::unique_rule_ids`, applied to every
+        rule before it ever reaches here) and the model is asked only for
+        (a) genuinely NEW rules, and (b) the rule_ids of any rules it now
+        believes are wrong and should be dropped - a list that is normally
+        empty. Every existing rule is kept unless explicitly named, so the
+        "never silently drop a rule" guarantee holds structurally rather
+        than depending on the model successfully retyping everything.
 
         Returns None (never raises past the caller) if there are no gaps
         to review, so callers can safely call this in a loop without
@@ -1295,9 +1449,25 @@ class RuleSynthesizerAgent:
                 f"- Lines {line_start}-{line_end}:\n  {snippet}"
             )
         gaps_block = "\n".join(gap_lines) if gap_lines else "(none)"
-        existing_rules_json = json.dumps(
-            existing_rules or [], separators=(",", ":"), default=str
-        )
+
+        # A compact per-rule INDEX, not the full rule objects. Just enough
+        # for the model to recognize "this gap is already covered by rule
+        # r4" or "rule r9 duplicates what I'm about to add" without paying
+        # for every field (source_evidence arrays, fields_affected, etc.)
+        # on every one of potentially hundreds of already-accepted rules.
+        existing_rules = existing_rules or []
+        index_lines = []
+        for rule in existing_rules:
+            if not isinstance(rule, dict):
+                continue
+            rule_id = str(rule.get("rule_id") or "").strip()
+            if not rule_id:
+                continue
+            label = str(rule.get("rule_name") or rule.get("condition") or "").strip()
+            label = label[:100]
+            index_lines.append(f"- {rule_id}: {label}")
+        existing_rules_index = "\n".join(index_lines) if index_lines else "(none yet)"
+
         revision_instructions = (
             "REVIEW PASS - a separate, purely syntactic scan of the source "
             "(it does not understand SQL semantics, only keyword positions) "
@@ -1317,12 +1487,19 @@ class RuleSynthesizerAgent:
             "temp-table cleanup) or already covered by an existing rule, "
             "leave it out - do not fabricate a rule to satisfy the count.\n\n"
             f"UNREVIEWED SOURCE LOCATIONS:\n{gaps_block}\n\n"
-            f"YOUR PREVIOUS RULES (JSON array - keep every rule that is "
-            f"still correct, unchanged):\n{existing_rules_json}\n\n"
-            "Return the COMPLETE business_rules array in your response: "
-            "every previously-correct rule plus any new rules from this "
-            "review. Do not drop a previously-correct rule just because it "
-            "isn't mentioned above. Same JSON schema as before."
+            "YOUR PREVIOUSLY-ACCEPTED RULES (id: short label - already "
+            "recorded, do NOT retype these):\n"
+            f"{existing_rules_index}\n\n"
+            "Respond with ONLY this JSON object (not the full synthesis "
+            "schema from before):\n"
+            '{"new_rules": [ ... zero or more NEW rule objects, same '
+            'schema as the original business_rules entries ... ], '
+            '"obsolete_rule_ids": [ ... ids from the list above that are '
+            "actually wrong/duplicate and should be removed - leave this "
+            'empty unless you are certain ... ]}\n\n'
+            "Any id from the list above that you do NOT include in "
+            "`obsolete_rule_ids` is kept automatically - you do not need "
+            "to (and must not) repeat its content."
         )
         user_prompt = render_user_prompt(
             prompt_set["user_template"],
@@ -1338,10 +1515,45 @@ class RuleSynthesizerAgent:
         )
         user_prompt = f"{user_prompt}\n\n{revision_instructions}"
         effective_seed = self.seed if self.seed is not None and supports_chat_completion_seed(self.client) else None
+
+        # A revision's OUTPUT is now bounded by how much genuinely new
+        # content the gaps could produce, not by how many rules already
+        # exist - so budget against the gap count, not `_output_token_budget`
+        # (which sizes a full-object synthesis pass and would request far
+        # more room than this call could ever use).
+        revise_max_tokens = min(
+            self.hard_max_output_tokens,
+            max(_PER_DECISION_POINT_TOKENS * 4, len(gaps) * _PER_DECISION_POINT_TOKENS * 3),
+        )
+
+        prompt_tokens_estimate = estimate_prompt_tokens(prompt_set["system"], user_prompt)
+        tpm_limit = resolve_tpm_limit(self.provider)
+        clamped_max_tokens = clamp_tokens_for_tpm(
+            prompt_tokens_estimate, revise_max_tokens, tpm_limit
+        )
+        if clamped_max_tokens is None:
+            # The prompt alone (system + gap context + the rule INDEX,
+            # which is small but not free) does not fit under the
+            # configured LLM_TPM_LIMIT even with the smallest useful
+            # completion budget. Sending anyway is a guaranteed 413.
+            # Skip this revision pass gracefully - exactly like a parse
+            # failure or an unsupported dialect - and let the gap surface
+            # as a reviewable ambiguity instead.
+            logger.warning(
+                "Skipping coverage-revision call: estimated prompt tokens "
+                "(%d) leave no room under LLM_TPM_LIMIT=%s even at the "
+                "minimum completion budget. Consider raising LLM_TPM_LIMIT "
+                "if your account actually allows more, or reducing "
+                "SYNTHESIS_EVIDENCE_MAP_MAX_CHARS.",
+                prompt_tokens_estimate, tpm_limit,
+            )
+            return None
+        revise_max_tokens = clamped_max_tokens
+
         completion_kwargs = {
             "model": model or self.model,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "max_tokens": revise_max_tokens,
             "messages": [
                 {"role": "system", "content": prompt_set["system"]},
                 {"role": "user", "content": user_prompt},
@@ -1374,46 +1586,74 @@ class RuleSynthesizerAgent:
                 except Exception:
                     pass
         raw_response = response.choices[0].message.content or ""
+        finish_reason = str(getattr(response.choices[0], "finish_reason", "") or "").lower()
+        revision_truncated = finish_reason == "length"
 
-        data, error = self._parse_json(raw_response)
-        if error:
+        cleaned = raw_response.strip()
+        cleaned = re.sub(r"^```json\s*|^```\s*|```$", "", cleaned, flags=re.MULTILINE).strip()
+        try:
+            revision_payload = self._decode_json_payload(cleaned)
+        except json.JSONDecodeError:
             # A revision pass that fails to parse must never wipe out an
             # already-good rule set - keep what synthesize() produced and
             # let the gap simply remain flagged for human review.
             return None
 
-        guardrail_warnings: List[str] = []
-        data, shape_warnings = validate_synthesis_shape(data)
-        guardrail_warnings.extend(shape_warnings)
-        if self._clean_ambiguities(data):
-            guardrail_warnings.append(
-                "One or more ambiguities showed signs of repetition-degeneration "
-                "or mid-sentence truncation and were dropped rather than included "
-                "in the report."
+        if revision_truncated:
+            # `_decode_json_payload` falls back to `raw_decode`, which
+            # successfully decodes a *prefix* of a cut-off response - so a
+            # truncated `new_rules` array can still "parse". Even with the
+            # new, much smaller schema this remains the dangerous case, not
+            # the malformed one: a half-decoded `new_rules` array looks
+            # like a legitimate (short) result. Discard it rather than risk
+            # silently accepting a mid-sentence-cut rule.
+            logger.warning(
+                "Synthesis revision truncated (finish_reason=length, "
+                "max_tokens=%d); discarding the partial response and "
+                "keeping the existing rules so no rule is silently dropped "
+                "or half-formed.",
+                revise_max_tokens,
             )
-        data["business_rules"] = self._normalize_business_rules(
-            data.get("business_rules"),
+            return None
+
+        if not isinstance(revision_payload, dict):
+            return None
+
+        new_rules_raw = revision_payload.get("new_rules")
+        if not isinstance(new_rules_raw, list):
+            new_rules_raw = []
+        obsolete_ids_raw = revision_payload.get("obsolete_rule_ids")
+        if not isinstance(obsolete_ids_raw, list):
+            obsolete_ids_raw = []
+        obsolete_ids = {str(item).strip() for item in obsolete_ids_raw if str(item).strip()}
+
+        guardrail_warnings: List[str] = []
+        new_rules = self._normalize_business_rules(
+            new_rules_raw,
             source_text=raw_source,
             technical_context=merged_extraction,
         )
-        data["business_rules"] = self._remove_operational_status_rules(
-            data["business_rules"], merged_extraction
-        )
-        data["business_rules"] = self._remove_non_business_cleanup_rules(
-            data["business_rules"], merged_extraction
-        )
-        data["business_rules"] = self._remove_operation_only_rules(data["business_rules"])
-        data["business_rules"] = self._remove_auxiliary_rules(
-            data["business_rules"],
-            merged_extraction,
-            data.get("calculations"),
-            data.get("exception_handling_summary"),
-        )
+        for rule in new_rules:
+            if isinstance(rule, dict):
+                rule["degraded"] = True
+                rule["degraded_reason"] = "gap_review"
+
+        kept_rules = [
+            rule for rule in existing_rules
+            if not (isinstance(rule, dict) and str(rule.get("rule_id") or "").strip() in obsolete_ids)
+        ]
+        merged_rules = unique_rule_ids(list(kept_rules) + list(new_rules))
+        merged_rules = self._remove_operational_status_rules(merged_rules, merged_extraction)
+        merged_rules = self._remove_non_business_cleanup_rules(merged_rules, merged_extraction)
+        merged_rules = self._remove_operation_only_rules(merged_rules)
+
+        data: Dict[str, Any] = dict(_EMPTY_SYNTHESIS)
+        data["business_rules"] = merged_rules
         jargon_flags = self._scan_for_jargon(data)
         return SynthesisResult(
             data=data,
             raw_response=raw_response,
-            parse_error=error,
+            parse_error="",
             jargon_flags=jargon_flags,
             guardrail_warnings=guardrail_warnings,
         )
@@ -1834,10 +2074,26 @@ class RuleSynthesizerAgent:
         decision, most often because one bundles in content that actually
         belongs to a different, nearby statement (observed for real, from a
         coverage-retry pass that fused an unrelated CASE's results into an
-        already-correct rule's branches). When a group merges, the
-        *narrowest* candidate (fewest total fields in
-        `output_field`/`fields_affected`) is kept as-is, and the other
-        candidates' extra fields are recorded as a footnote
+        already-correct rule's branches). When a group merges, the kept
+        candidate is chosen by, in order: (1) completeness - a candidate
+        with any blank/missing outcome value loses to one whose every row
+        has a real value, regardless of field count (real bug: a
+        model-authored duplicate that omitted one branch's value, e.g.
+        `DpdDays IS NULL -> ` with nothing after the arrow, used to win a
+        tie against the deterministic chain-derived rule that correctly
+        had `-> 'NOT_APPLICABLE'`, purely because both happened to touch
+        only one field - completeness of the actual decision content must
+        outrank a field-count tiebreak that was never meant to trade away
+        correctness); (2) deterministic/grounded origin - a rule built
+        directly from parsed source (`source_chain_id` set, or
+        `rule_type == "deterministic_decision_table"`, or
+        `confidence == "deterministic"` - see `ensure_decision_chain_
+        coverage`) beats an equally-complete model-authored one, since it
+        cannot hallucinate a value; (3) narrowest - fewest total fields in
+        `output_field`/`fields_affected`, the original heuristic, still
+        deciding between two otherwise-equal complete/model candidates
+        (e.g. R6 vs R7 in the audit this function was built for). The
+        other candidates' extra fields are recorded as a footnote
         (`consolidation_note`) rather than unioned into the kept rule's own
         content - unioning would risk presenting fused, possibly-incorrect
         content as one confident rule, which is worse than a visible
@@ -1863,6 +2119,27 @@ class RuleSynthesizerAgent:
             values.extend(str(field).strip() for field in fields if str(field).strip())
             return list(dict.fromkeys(values))
 
+        def _has_incomplete_outcome(rule: Dict[str, Any]) -> bool:
+            rows = rule.get("decision_logic_rows") or []
+            return any(
+                isinstance(row, dict) and not str(row.get("outcome") or "").strip()
+                for row in rows
+            )
+
+        def _is_deterministic(rule: Dict[str, Any]) -> bool:
+            return bool(
+                rule.get("source_chain_id")
+                or rule.get("rule_type") == "deterministic_decision_table"
+                or rule.get("confidence") == "deterministic"
+            )
+
+        def _candidate_rank(rule: Dict[str, Any]) -> Tuple[int, int, int]:
+            return (
+                1 if _has_incomplete_outcome(rule) else 0,
+                0 if _is_deterministic(rule) else 1,
+                len(_all_fields(rule)),
+            )
+
         groups: Dict[Any, List[Dict[str, Any]]] = {}
         order: List[Any] = []
         for rule in rules or []:
@@ -1882,7 +2159,7 @@ class RuleSynthesizerAgent:
             if len(group) == 1:
                 consolidated.append(group[0])
                 continue
-            kept = min(group, key=lambda rule: len(_all_fields(rule)))
+            kept = min(group, key=_candidate_rank)
             kept_fields = set(_all_fields(kept))
             other_fields = sorted(
                 {field for rule in group if rule is not kept for field in _all_fields(rule)}
@@ -1899,6 +2176,96 @@ class RuleSynthesizerAgent:
                 merged["consolidation_note"] = f"{existing_note} {note}".strip() if existing_note else note
             consolidated.append(merged)
         return consolidated
+
+    @staticmethod
+    def backfill_blank_outcomes_from_decision_chains(
+        rules: List[Dict[str, Any]], decision_chains: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Final safety net: replace a blank/missing `decision_logic_rows`
+        outcome with the real value from the matching deterministic chain
+        branch, when one exists for the same field and (qualifier-
+        normalized) condition.
+
+        Real bug this closes (traced against a live-generated report):
+        `consolidate_duplicate_rules` only helps when two CANDIDATES for
+        the exact same condition ladder both survive to be compared - it
+        cannot help a rule that is the *only* candidate for its identity
+        but still has a blank cell for one row, e.g. when
+        `merge_decision_chains` keeps a second, independently-extracted
+        chain for the same CASE statement (not a byte-identical
+        structural duplicate, so never deduped away) whose own branch
+        text for one arm came back empty, and that chain - not the clean
+        one - is what a downstream stage ends up attached to. Rather than
+        chase every possible path that can produce a blank cell, this
+        runs once, last, and cross-checks every blank outcome against the
+        one source proven correct throughout this pipeline: the parsed
+        source `decision_chains` themselves. It only ever fills an empty
+        cell - it never overwrites a non-blank outcome, however it was
+        derived, so this cannot make a report *less* accurate, only more
+        complete.
+        """
+        from src.parsing.decision_identity import bare_field_key, normalized_condition_key
+
+        def _normalize_for_chain_match(condition: str) -> str:
+            # A rendered row's condition can carry a display-only
+            # annotation appended after coverage (`_annotate_row_
+            # condition_with_filter` - " — row filter: ...", or an
+            # "[UNREACHABLE ...]" suffix) that a raw chain branch's own
+            # condition text never has. Strip those before matching so an
+            # annotated row can still find its chain branch.
+            text = str(condition or "")
+            for marker in (" — row filter:", " [UNREACHABLE"):
+                idx = text.find(marker)
+                if idx != -1:
+                    text = text[:idx]
+            return normalized_condition_key(text)
+
+        chain_lookup: Dict[Tuple[str, str], str] = {}
+        for chain in decision_chains or []:
+            if not isinstance(chain, dict):
+                continue
+            for branch in chain.get("branches") or []:
+                if not isinstance(branch, dict):
+                    continue
+                condition_text = (
+                    "ELSE" if branch.get("is_catch_all")
+                    else str(branch.get("branch_condition") or "").strip()
+                )
+                normalized_condition = normalized_condition_key(condition_text)
+                for assignment in branch.get("assignments") or []:
+                    if not isinstance(assignment, dict):
+                        continue
+                    field_key = bare_field_key(assignment.get("field"))
+                    value = str(assignment.get("value") or "").strip()
+                    if not field_key or not value:
+                        continue
+                    # First writer wins: merge_decision_chains already
+                    # orders deterministic chains ahead of LLM-derived
+                    # ones, so the first (highest-priority) value seen for
+                    # a given (field, condition) pair is kept.
+                    chain_lookup.setdefault((field_key, normalized_condition), value)
+
+        if not chain_lookup:
+            return rules
+
+        for rule in rules or []:
+            if not isinstance(rule, dict):
+                continue
+            rows = rule.get("decision_logic_rows")
+            if not isinstance(rows, list):
+                continue
+            field_key = bare_field_key(rule.get("output_field"))
+            if not field_key:
+                continue
+            for row in rows:
+                if not isinstance(row, dict) or str(row.get("outcome") or "").strip():
+                    continue
+                replacement = chain_lookup.get(
+                    (field_key, _normalize_for_chain_match(row.get("condition")))
+                )
+                if replacement:
+                    row["outcome"] = replacement
+        return rules
 
     @staticmethod
     def _remove_non_business_cleanup_rules(

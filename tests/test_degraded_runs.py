@@ -180,45 +180,79 @@ def test_all_calls_succeeding_produces_no_degraded_banner():
     assert "DEGRADED RUN" not in result.report
 
 
-def test_one_failed_extraction_chunk_sets_degraded_banner_with_correct_count():
+def test_one_failed_extraction_chunk_is_tracked_but_not_shown_in_business_report():
     # The first chunk extraction call fails permanently; every other call
-    # (remaining chunks, synthesis) succeeds normally.
+    # (remaining chunks, synthesis) succeeds normally. Per explicit client
+    # direction, the business report never shows a degraded-run signal -
+    # but the underlying telemetry must still correctly track the failure,
+    # since that data is what a verification/diagnostic consumer relies on.
     client = _FakeClient(extraction_script=[RuntimeError("simulated rate-limit exhaustion")])
     pipeline = _make_pipeline(client)
 
     result = pipeline.run(str(SAMPLE))
 
     assert client.chat.completions.extraction_calls >= 2
-    assert "DEGRADED RUN" in result.report
-    assert "1 chunk extraction call(s)" in result.report
-    assert "Re-run to attempt full coverage." in result.report
+    assert "DEGRADED RUN" not in result.report
+    assert "Needs Review" not in result.report
+    telemetry = result.ingestion.run_metadata.telemetry
+    assert telemetry["degraded"] is True
+    assert telemetry["failed_chunk_count"] == 1
 
 
-def test_failed_synthesis_call_sets_degraded_banner_and_report_still_completes():
-    # A small object takes the single-call synthesis path (no chunking
-    # needed for extraction to succeed) - only the synthesis call fails.
-    client = _FakeClient(synthesis_script=[RuntimeError("simulated timeout")])
+def test_failed_synthesis_call_is_tracked_but_not_shown_in_business_report():
+    # SMA_MARKING is large enough to always require sectioned synthesis, so
+    # this exercises _run_section's retry-once-on-transient-failure path
+    # (added after this test was first written): a single scripted failure
+    # is no longer enough to degrade the section, since the retry attempt
+    # gets the default clean response and recovers - so exhaust both
+    # attempts (2 consecutive failures) to still see the section degrade.
+    # The business report itself must show none of this (client direction);
+    # the run still completes and the underlying telemetry still tracks it.
+    client = _FakeClient(synthesis_script=[
+        RuntimeError("simulated timeout"),
+        RuntimeError("simulated timeout (retry also failed)"),
+    ])
     pipeline = _make_pipeline(client, single_pass_token_budget=500_000)
 
     result = pipeline.run(str(SAMPLE))
 
-    assert client.chat.completions.synthesis_calls >= 1
-    assert "DEGRADED RUN" in result.report
-    assert "rule synthesis section(s)" in result.report or "1 rule synthesis section(s)" in result.report
+    assert client.chat.completions.synthesis_calls >= 2
+    assert "DEGRADED RUN" not in result.report
+    assert "Needs Review" not in result.report
+    telemetry = result.ingestion.run_metadata.telemetry
+    assert telemetry["degraded"] is True
+    assert telemetry["failed_section_count"] == 1
 
 
-def test_truncated_synthesis_response_produces_inline_per_rule_marker(tmp_path):
-    """Root cause 2: a truncated (not failed) synthesis response - the
-    real, common failure mode (finish_reason == "length"), distinct from
-    an outright exception - must mark its own rule(s) with a visible
-    inline marker, not just contribute to the existing run-level footer/
-    banner. Scripts the single synthesis call to return valid JSON with a
-    real rule but finish_reason "length" (simulating an output cut short
-    by the model's token budget), and asserts the report shows the inline
-    "Needs Review" marker on that specific rule, not just a run-level
-    banner alone. Uses a small, self-contained source (rather than the
-    large SMA_MARKING sample used elsewhere in this file) so synthesis
-    takes the single-call path and this is the only rule in the report.
+def test_one_transient_synthesis_failure_recovers_via_retry_without_degrading():
+    """The retry-once behavior itself: a single transient synthesis
+    failure (rate limit, timeout) must NOT degrade the report when the
+    very next attempt succeeds - only genuinely exhausted failures should
+    show the degraded banner."""
+    client = _FakeClient(synthesis_script=[RuntimeError("simulated transient rate limit")])
+    pipeline = _make_pipeline(client, single_pass_token_budget=500_000)
+
+    result = pipeline.run(str(SAMPLE))
+
+    assert client.chat.completions.synthesis_calls >= 2, "must have retried once"
+    assert "DEGRADED RUN" not in result.report
+
+
+def test_truncated_synthesis_response_still_renders_the_rule_without_any_marker(tmp_path):
+    """Root cause 2 (original ask) was to mark a truncated rule's own
+    output inline rather than only a run-level footer. Per subsequent,
+    more recent explicit client direction, no degraded/"needs review"
+    signal - inline or run-level - may appear in the business report at
+    all; the reader should see confident, complete business analysis.
+    This confirms the rule itself still renders correctly (the content
+    that DID arrive from a truncated call is not discarded) with no
+    visible marker anywhere in the report, while the underlying
+    `degraded`/`llm_call_failed`-style tracking (verified in
+    `test_mark_rules_degraded_if_unreliable_tags_the_reason` below and in
+    pipeline-level telemetry tests) is untouched. Uses a small, self-
+    contained source (rather than the large SMA_MARKING sample used
+    elsewhere in this file) so synthesis takes the single-call path and
+    this is the only rule in the report.
     """
     small_sql = tmp_path / "small.sql"
     small_sql.write_text(
@@ -231,16 +265,9 @@ def test_truncated_synthesis_response_produces_inline_per_rule_marker(tmp_path):
     result = pipeline.run(str(small_sql), dialect="tsql")
 
     assert "### R1 — Classify demo status" in result.report
-    assert "⚠️ **Needs Review — possibly incomplete.**" in result.report
-    # The inline marker must appear for THIS rule, not just as a generic
-    # run-level note - i.e. it appears between this rule's own heading and
-    # the next section/rule.
-    rule_block = result.report.split("### R1 — Classify demo status", 1)[1]
-    rule_block = rule_block.split("### R2", 1)[0] if "### R2" in rule_block else rule_block
-    assert "Needs Review — possibly incomplete" in rule_block
-    # Still shows the existing run-level banner/summary too - additive,
-    # not a replacement.
-    assert "needs review" in result.report.lower()
+    assert "Needs Review" not in result.report
+    assert "needs review" not in result.report.lower()
+    assert "DEGRADED RUN" not in result.report
 
 
 def test_mark_rules_degraded_if_unreliable_tags_the_reason():

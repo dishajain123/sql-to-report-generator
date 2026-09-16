@@ -53,6 +53,7 @@ import sqlglot
 from sqlglot.errors import ParseError, SqlglotError
 
 from src.validation.confidence import derive_chunk_support_confidence
+from src.validation.coverage_check import find_decision_points
 from src.dialect.detector import (
     AMBIGUOUS,
     ORACLE,
@@ -267,6 +268,22 @@ MAX_CHUNK_CHARS = 6000  # ceiling per chunk sent to the LLM - generous headroom
 # the real pipeline always agree on chunk size unless a caller explicitly
 # overrides it.
 
+MAX_DECISION_POINTS_PER_CHUNK = 10  # cap on how many decision-point
+# occurrences (CASE/WHEN/IF/loop/etc - see
+# src.validation.coverage_check.find_decision_points) a single merged
+# chunk may carry, independent of MAX_CHUNK_CHARS. A merge candidate can
+# sit comfortably under the character ceiling while still asking one LLM
+# call to correctly extract a dozen-plus independent branches/statements
+# in one shot - in practice this is exactly the shape that produces
+# truncated or malformed-JSON extraction responses: several genuinely
+# separate business rules (e.g. an INSERT, an UPDATE with a CASE ladder,
+# an IF/ELSE, a MERGE upsert, and another UPDATE) that each parse to a
+# small, clean chunk on their own get greedily re-merged by
+# `_merge_small_sections` into one dense blob purely because their
+# combined character count still fits. Bounding merge candidates by
+# decision density as well as raw size keeps each LLM call scoped to a
+# reviewable, reliably-extractable amount of independent logic.
+
 _OBJECT_TYPE_PATTERNS = {
     ORACLE: [
         ("PROCEDURE", re.compile(r"\bCREATE\s+(OR\s+REPLACE\s+)?PROCEDURE\b", re.IGNORECASE)),
@@ -333,6 +350,13 @@ _PARAM_LINE_TSQL = re.compile(
 )
 
 _GO_BATCH_SPLIT = re.compile(r"^[ \t]*GO[ \t]*$", re.IGNORECASE | re.MULTILINE)
+# A source line that is pure SQL session/environment housekeeping - no
+# variable, no DML, no procedural or business content whatsoever. Matched
+# against already-masked (comment/string-blanked) lines, so a comment or
+# blank line is simply skipped by the caller rather than tested here.
+_ADMIN_STATEMENT_RE = re.compile(
+    r"^\s*(?:USE\b.*|SET\s+\w+\s+(?:ON|OFF)\s*;?)\s*$", re.IGNORECASE
+)
 # Spans from split_top_level_statement_spans() that are worth validating as
 # embedded SQL via sqlglot - the same DML/SET/CASE keyword set the old,
 # now-removed private splitter restricted itself to. Every other span kind
@@ -367,9 +391,15 @@ _TSQL_STATIC_EXEC = re.compile(
 class CodeIngestionAgent:
     """Deterministic parsing / chunking front-door of the pipeline."""
 
-    def __init__(self, max_chunk_chars: int = MAX_CHUNK_CHARS, dialect: str = "auto"):
+    def __init__(
+        self,
+        max_chunk_chars: int = MAX_CHUNK_CHARS,
+        dialect: str = "auto",
+        max_decision_points_per_chunk: int = MAX_DECISION_POINTS_PER_CHUNK,
+    ):
         self.max_chunk_chars = max_chunk_chars
         self.dialect_hint = dialect
+        self.max_decision_points_per_chunk = max_decision_points_per_chunk
 
     # ------------------------------------------------------------------
     # Public API
@@ -1405,6 +1435,8 @@ class CodeIngestionAgent:
             else:
                 sections.extend(batch_sections)
 
+        sections = self._split_oversized_by_decisions(sections)
+        sections = self._absorb_administrative_sections(sections)
         merged_sections = self._merge_small_sections(sections)
 
         chunks: List[CodeChunk] = []
@@ -1484,6 +1516,128 @@ class CodeIngestionAgent:
         if start < 0:
             return -1, -1
         return start, start + len(snippet_text)
+
+    def _is_administrative_section(self, text: str) -> bool:
+        """True when `text` contains nothing but SQL session/environment
+        housekeeping (``USE <db>``, ``SET <option> ON|OFF``) plus comments
+        and whitespace - no DECLARE, no procedural or DML content that
+        could carry business logic (`find_decision_points` is always
+        empty for such text).
+
+        Such a section is pure noise for the LLM extraction call: there
+        is nothing for it to find. Worse, in practice a business-rule
+        extraction prompt run over a single-line "SET QUOTED_IDENTIFIER
+        ON" chunk tends to get an unpredictable free-text/non-JSON model
+        response rather than the expected empty-array JSON shape, which
+        then surfaces as an "extraction failed, needs manual review"
+        finding even though nothing was ever missed. `chunk_code` folds
+        sections like this into a real neighboring section instead of
+        sending them to the LLM on their own - see
+        `_absorb_administrative_sections`.
+        """
+        if not text.strip():
+            return False
+        masked = self._mask_strings_and_comments(text)
+        saw_content = False
+        for masked_line, original_line in zip(masked.split("\n"), text.split("\n")):
+            if not masked_line.strip():
+                # Blank, or comment-only once masked - contributes no
+                # content either way, so it never disqualifies the
+                # section.
+                continue
+            if not _ADMIN_STATEMENT_RE.match(original_line):
+                return False
+            saw_content = True
+        return saw_content
+
+    def _absorb_administrative_sections(self, sections: List[tuple]) -> List[tuple]:
+        """Fold administrative-only sections (see
+        `_is_administrative_section`) into an adjacent real section
+        instead of letting them stand as their own chunk/LLM call.
+
+        No source text is dropped or altered - it still ends up inside a
+        chunk's text exactly as the module's no-information-lost
+        contract requires (see module docstring); only the *chunk
+        boundary* moves, the same tradeoff `_merge_small_sections` already
+        makes when it joins sections with a synthetic separator.
+        """
+        if not sections:
+            return sections
+
+        result: List[tuple] = []
+        pending_admin: List[str] = []
+        for kind, text in sections:
+            if self._is_administrative_section(text):
+                pending_admin.append(text)
+                continue
+            if pending_admin:
+                text = "\n\n".join(pending_admin + [text])
+                pending_admin = []
+            result.append((kind, text))
+
+        if pending_admin:
+            # Trailing administrative-only content with nothing real
+            # after it (e.g. a source file ending on "SET ... ON" / "GO")
+            # - attach to the last real section rather than dropping it
+            # or emitting it standalone.
+            admin_text = "\n\n".join(pending_admin)
+            if result:
+                last_kind, last_text = result[-1]
+                result[-1] = (last_kind, f"{last_text}\n\n{admin_text}")
+            else:
+                # The entire object is administrative-only content - no
+                # real section ever appeared. Preserve it as its own
+                # section rather than discarding it.
+                result.append(("declaration", admin_text))
+
+        return result
+
+    def _split_oversized_by_decisions(self, sections: List[tuple]) -> List[tuple]:
+        """Pre-split any single (kind, text) section whose own
+        decision-point density already exceeds
+        `max_decision_points_per_chunk`, before merging/absorption run.
+
+        The merge-time budget in `_merge_small_sections` only stops the
+        merger from *recombining* already-small pieces into one dense
+        chunk - it does nothing for a section that is too dense on its
+        own, e.g. several independent top-level UPDATE/MERGE/INSERT
+        statements sitting side by side with no intervening nested block
+        to naturally separate them (the tail of `_split_nested_blocks`,
+        after the last real nested BEGIN...END, is exactly this shape).
+        Splits happen only at real top-level statement boundaries (see
+        `split_top_level_statement_spans`), never inside one, so the
+        character-based fallback in `_enforce_size_limit` remains the
+        last resort for a single oversized statement.
+        """
+        result: List[tuple] = []
+        for kind, text in sections:
+            if len(find_decision_points(text)) <= self.max_decision_points_per_chunk:
+                result.append((kind, text))
+                continue
+            masked = self._mask_strings_and_comments(text)
+            spans = split_top_level_statement_spans(text, masked)
+            statements = [text[start:end] for start, end in spans] or [text]
+
+            piece = ""
+            piece_points = 0
+            for stmt in statements:
+                stmt_points = len(find_decision_points(stmt))
+                candidate = f"{piece}\n\n{stmt}" if piece else stmt
+                candidate_points = piece_points + stmt_points
+                exceeds_budget = (
+                    candidate_points > self.max_decision_points_per_chunk
+                    or len(candidate) > self.max_chunk_chars
+                )
+                if piece and exceeds_budget:
+                    result.append((kind, piece))
+                    piece = stmt
+                    piece_points = stmt_points
+                else:
+                    piece = candidate
+                    piece_points = candidate_points
+            if piece:
+                result.append((kind, piece))
+        return result
 
     def _split_batches(self, code: str, dialect: str) -> List[str]:
         """Split on "GO" batch separators (T-SQL only). Every batch is
@@ -1566,7 +1720,12 @@ class CodeIngestionAgent:
         for kind, text in sections:
             family = self._kind_family(kind)
             candidate_text = f"{current_text}\n\n{text}" if current_text else text
-            if current_family == family and len(candidate_text) <= self.max_chunk_chars:
+            candidate_ok = (
+                current_family == family
+                and len(candidate_text) <= self.max_chunk_chars
+                and len(find_decision_points(candidate_text)) <= self.max_decision_points_per_chunk
+            )
+            if candidate_ok:
                 current_text = candidate_text
                 if kind not in current_kinds_seen:
                     current_kinds_seen.append(kind)
@@ -1688,6 +1847,27 @@ class CodeIngestionAgent:
         while i < n:
             begin_match = re.match(r"\bBEGIN\b", masked_body[i:], re.IGNORECASE)
             if begin_match:
+                suffix, suffix_end = next_word_span(i + begin_match.end())
+                if suffix in {"TRY", "CATCH"}:
+                    # "BEGIN TRY"/"BEGIN CATCH" are T-SQL exception-handling
+                    # syntax, not a genuinely nested sub-block the way an
+                    # IF's own BEGIN...END is - the whole procedure body
+                    # typically lives inside one outer "BEGIN TRY ... END
+                    # TRY" wrapper immediately after the procedure's own
+                    # BEGIN. Counting it like a normal BEGIN put it at
+                    # begin_depth==2 on the very first statement of the
+                    # procedure, so the *entire* TRY body - every
+                    # statement/rule all the way to "END TRY" - got
+                    # captured as a single "nested_block", collapsing the
+                    # whole business body into one oversized, undifferen-
+                    # tiated chunk instead of stopping at genuinely nested
+                    # blocks. Treating "BEGIN TRY"/"BEGIN CATCH" as
+                    # transparent (no depth change) means a *real* nested
+                    # BEGIN...END inside the TRY body (e.g. an IF branch)
+                    # is what actually reaches begin_depth==2 and triggers
+                    # child_start, exactly as intended.
+                    i = suffix_end
+                    continue
                 begin_depth += 1
                 if begin_depth == 2 and child_start is None:
                     child_start = i
@@ -1707,29 +1887,21 @@ class CodeIngestionAgent:
                 # opening keyword is NOT "BEGIN" (e.g. Oracle's bare
                 # "IF ... END IF;"), so their "END <suffix>" must be
                 # skipped here rather than decrementing begin_depth.
-                # TRY/CATCH are T-SQL-only and the reverse is true -
-                # "BEGIN TRY"/"BEGIN CATCH" always open with a real
-                # BEGIN, so "END TRY"/"END CATCH" DOES need to close a
-                # real BEGIN like any other END. Treating them the same
-                # as IF/LOOP/WHILE/CASE desynced begin_depth on every
-                # T-SQL TRY/CATCH block, leaking a stray "TRY"/"CATCH"
-                # fragment as its own chunk once the real END was never
-                # counted.
+                # TRY/CATCH are now transparent on the opening side too
+                # (see the matching "BEGIN" comment above), so "END
+                # TRY"/"END CATCH" must be just as transparent here - not
+                # decrementing begin_depth - or depth would desync against
+                # an opening BEGIN that was never counted.
                 if case_depth > 0 and suffix not in {"IF", "LOOP", "WHILE", "CASE"}:
                     case_depth = max(case_depth - 1, 0)
                     i += end_match.end()
                     continue
 
-                if suffix in {"IF", "LOOP", "WHILE", "CASE"}:
+                if suffix in {"IF", "LOOP", "WHILE", "CASE", "TRY", "CATCH"}:
                     i = suffix_end
                     continue
 
-                # "END TRY"/"END CATCH" close a real BEGIN, so this is a
-                # normal closing END - but the boundary/cursor must still
-                # advance past the "TRY"/"CATCH" word itself (not just
-                # "END"), or that word is left behind as an orphan
-                # fragment for the next section to pick up.
-                close_end = suffix_end if suffix in {"TRY", "CATCH"} else i + end_match.end()
+                close_end = i + end_match.end()
 
                 if begin_depth == 2 and child_start is not None:
                     pre = body[last_end:child_start].strip()

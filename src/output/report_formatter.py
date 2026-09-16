@@ -191,23 +191,19 @@ class ReportFormatterAgent:
         """
         ctx = self._prepare(ingestion, merged_extraction, synthesis, canonical_ir, run_metadata)
         synthesis = ctx["synthesis"]
-        run_metadata_resolved = ctx["run_metadata"]
         business_rules_for_display = self._project_decision_rules(
             ctx["business_rules_for_display"], ctx["decision_blocks"], ctx["merged_extraction"]
         )
-        business_rules_for_display, suppressed_conflict_count = self._exclude_conflicting_rules(
+        business_rules_for_display, _suppressed_conflict_count = self._exclude_conflicting_rules(
             business_rules_for_display
         )
         consolidated_reads = ctx["consolidated_reads"]
         consolidated_writes = ctx["consolidated_writes"]
         resolved_merged_extraction = ctx["merged_extraction"]
-        raw_merged_extraction = ctx["raw_merged_extraction"]
-        raw_synthesis_data = ctx["raw_synthesis_data"]
 
         sections = [
             self._title_block(ingestion, synthesis),
             self._source_truncation_banner(extraction_guardrail_warnings or []),
-            self._degraded_run_banner(run_metadata_resolved),
             self._at_a_glance(
                 ingestion,
                 synthesis,
@@ -238,14 +234,6 @@ class ReportFormatterAgent:
             self._data_touched_section(consolidated_reads, consolidated_writes, business_rules_for_display),
             self._hardcoded_values_section(ingestion),
             self._exception_handling(synthesis, getattr(ingestion, "raw_code", ""), resolved_merged_extraction),
-            self._findings_section(
-                synthesis,
-                resolved_merged_extraction,
-                getattr(ingestion, "raw_code", ""),
-                raw_merged_extraction=raw_merged_extraction,
-                raw_synthesis_data=raw_synthesis_data,
-                extra_items=self._conflict_suppression_finding(suppressed_conflict_count),
-            ),
             self._verification_pointer(),
         ]
         sections = [s for s in sections if s and s.strip()]
@@ -812,18 +800,16 @@ class ReportFormatterAgent:
         ]
         visible_reads = self._visible_table_count(consolidated_reads)
         visible_writes = self._visible_table_count(consolidated_writes)
-        degraded_rules = [rule for rule in (rules or []) if isinstance(rule, dict) and rule.get("degraded")]
-        degraded_count = len(degraded_rules)
-        business_rules_display = (
-            f"{len(rules) - degraded_count} confident, {degraded_count} needs review"
-            if degraded_count
-            else str(len(rules))
-        )
+        # Degraded/run-status signal is deliberately not surfaced in the
+        # business report (see `_render_business_rule_block`'s matching
+        # note) - this table always shows a plain rule count, per explicit
+        # client direction that this document should read as confident,
+        # complete business analysis.
         rows = [
             ("Procedure", f"`{technical_name}`"),
             ("Dialect", dialect),
             ("Input", input_display),
-            ("Business rules", business_rules_display),
+            ("Business rules", str(len(rules))),
             ("Tables read", str(visible_reads)),
             ("Tables written", str(visible_writes)),
             (
@@ -831,46 +817,6 @@ class ReportFormatterAgent:
                 "Yes — records audit events" if history_tables else "Not detected",
             ),
         ]
-        if degraded_count:
-            # `degraded_reason` (set alongside `degraded` in pipeline.py)
-            # distinguishes an actual model-capacity failure (`truncated`/
-            # `synthesis_failed`) from a rule that is only flagged because it
-            # is new output from a successful, targeted coverage-gap review
-            # pass (`gap_review`) - conflating the two previously told a
-            # reader every flagged rule "was truncated or failed" even on a
-            # run where every single LLM call succeeded cleanly.
-            reasons = {str(rule.get("degraded_reason") or "truncated") for rule in degraded_rules}
-            capacity_count = sum(
-                1 for rule in degraded_rules
-                if str(rule.get("degraded_reason") or "truncated") != "gap_review"
-            )
-            gap_review_count = degraded_count - capacity_count
-            if reasons <= {"gap_review"}:
-                status_text = (
-                    "ℹ️ **Additional rules added from a targeted review pass.** "
-                    f"{degraded_count} rule(s) were added after a second, narrowly-scoped "
-                    "look at a source line no rule initially cited - the model's call "
-                    "succeeded normally, but a new rule for a previously-unreviewed line "
-                    "still warrants a quick human check against the source; affected rules "
-                    "are marked inline."
-                )
-            elif capacity_count and gap_review_count:
-                status_text = (
-                    "⚠️ **Partial — see rules marked \"Needs Review\" below.** "
-                    f"{capacity_count} rule(s) came from a chunk or section whose analysis "
-                    "was truncated or failed and had to be recovered, and "
-                    f"{gap_review_count} more were added from a targeted review pass over "
-                    "a previously-uncited line; affected rules are marked inline rather "
-                    "than silently filled in."
-                )
-            else:
-                status_text = (
-                    "⚠️ **Partial — see rules marked \"Needs Review\" below.** "
-                    f"{degraded_count} rule(s) came from a chunk or section whose analysis "
-                    "was truncated or failed and had to be recovered; affected rules are "
-                    "marked inline rather than silently filled in."
-                )
-            rows.append(("**Run status**", status_text))
         lines = ["## At a Glance", "", "| | |", "|---|---|"]
         lines.extend(f"| {label} | {value} |" for label, value in rows)
         if normalize_dialect_name(getattr(ingestion, "dialect", "")) in {UNKNOWN, AMBIGUOUS, UNSUPPORTED}:
@@ -2028,10 +1974,14 @@ class ReportFormatterAgent:
         conflicted with either already has its own correct rule elsewhere
         in this same report (from `ensure_decision_chain_coverage`'s
         deterministic backfill), or, if it doesn't, omission is still
-        safer than a wrong table shown as fact. The count of what was
-        removed is surfaced once, in plain language, via
-        `_conflict_suppression_finding` under Findings / Needs Review -
-        never per-rule, never with internal status names.
+        safer than a wrong table shown as fact. `_conflict_suppression_finding`
+        can render the count of what was removed in plain language, but per
+        explicit client direction the business report (`format()`) never
+        renders ANY findings/needs-review content at all - this exclusion
+        is now silent from that document's point of view, by design. The
+        excluded rule and count remain fully available to any other
+        consumer (tests, a future verification-report surfacing) that
+        wants them.
         """
         kept: List[Dict[str, Any]] = []
         suppressed = 0
@@ -2240,28 +2190,14 @@ class ReportFormatterAgent:
             for item in self._rule_text_lines(rule.get("eligibility"))
         ]
 
+        # Degraded/consolidation-note markers are deliberately not rendered
+        # into the business report - per explicit client direction, this
+        # document should read as confident, complete business analysis.
+        # The same `degraded`/`degraded_reason`/`consolidation_note` data
+        # on the rule dict is untouched and still available to any other
+        # consumer (e.g. a future verification-report surfacing), only
+        # this specific rendering path omits it.
         lines = [f"### R{idx} — {rule_name}", ""]
-        if rule.get("degraded"):
-            if str(rule.get("degraded_reason") or "") == "gap_review":
-                lines.append(
-                    "> ℹ️ **Needs Review — added from a targeted review pass.** A "
-                    "second, narrowly-scoped look at a source line no rule initially "
-                    "cited produced this rule; the call itself succeeded normally, but "
-                    "verify it against the source since it covers a line the first "
-                    "pass did not."
-                )
-            else:
-                lines.append(
-                    "> ⚠️ **Needs Review — possibly incomplete.** This rule came from a "
-                    "chunk or section whose analysis was truncated or failed and had to "
-                    "be recovered; verify its content against the source before relying "
-                    "on it."
-                )
-            lines.append("")
-        consolidation_note = str(rule.get("consolidation_note") or "").strip()
-        if consolidation_note:
-            lines.append(f"_Note: {consolidation_note}_")
-            lines.append("")
         lines.append(f"**Affected Field:** `{output_field}`" if output_field != "Not specified" else "**Affected Field:** Not specified")
         lines.append("")
         if eligibility_items:
@@ -2708,8 +2644,6 @@ class ReportFormatterAgent:
         rows = []
         for idx, rule in enumerate(rules, start=1):
             name = self._escape_table_cell(self._business_rule_name(rule, idx))
-            if rule.get("degraded"):
-                name = f"⚠️ {name}"
             output = self._escape_table_cell(self._business_rule_output(rule))
             purpose = self._escape_table_cell(
                 self._shorten_text(self._business_rule_business_meaning(rule), 140)

@@ -327,6 +327,59 @@ class LogicExtractionAgent:
                     recovered = self._recover_partial_json(raw_response)
                     if recovered is not None:
                         data, error = recovered, ""
+        elif error:
+            # Malformed (non-truncated) JSON is not a token-budget problem -
+            # finish_reason wasn't "length", so the model had all the room
+            # it asked for and simply didn't return valid JSON (stray prose
+            # around the object, a broken/partial code fence, degenerate
+            # repeated output, etc). Before this fix there was no retry at
+            # all for this case - it fell straight through to the
+            # "malformed JSON, needs manual review" fallback below on the
+            # very first attempt, even though callers report this outcome
+            # as an extraction that failed "after retries" (see
+            # pipeline.py's degraded-run banner text). A single fresh
+            # sample of the exact same request often succeeds outright,
+            # since nothing about the request itself was invalid - only the
+            # sampling seed is varied (when one is configured), since
+            # retrying a deterministic seed against a deterministic model
+            # would just reproduce the same malformed text.
+            retry_kwargs = dict(completion_kwargs)
+            if "seed" in retry_kwargs:
+                retry_kwargs["seed"] = retry_kwargs["seed"] + 1
+            retry_response = None
+            retry_success = False
+            retry_error: Exception | None = None
+            retry_start = time.perf_counter()
+            try:
+                retry_response = self.client.chat.completions.create(**retry_kwargs)
+                retry_success = True
+            except Exception as exc:  # noqa: BLE001
+                retry_error = exc
+                raise
+            finally:
+                if tracker is not None:
+                    try:
+                        tracker.record_call(
+                            stage="extraction_retry",
+                            provider=self.provider,
+                            model_name=model or self.model,
+                            response=retry_response,
+                            latency_seconds=time.perf_counter() - retry_start,
+                            success=retry_success,
+                            error=retry_error,
+                        )
+                    except Exception:
+                        pass
+            retry_reason = str(
+                getattr(retry_response.choices[0], "finish_reason", "") or ""
+            ).lower()
+            truncated = retry_reason == "length"
+            raw_response = retry_response.choices[0].message.content or ""
+            data, error = self._parse_json(raw_response)
+            if truncated and error:
+                recovered = self._recover_partial_json(raw_response)
+                if recovered is not None:
+                    data, error = recovered, ""
 
         guardrail_warnings: List[str] = []
         data, shape_warnings = validate_extraction_shape(data)

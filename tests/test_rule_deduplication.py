@@ -241,6 +241,138 @@ def test_consolidate_does_not_merge_r8_with_r6_r7():
     assert ids == {"r6", "r8"}  # r7 merged away into r6; r8 stands alone
 
 
+def test_consolidate_prefers_the_candidate_with_no_blank_outcomes_over_a_narrower_one():
+    """Real bug, traced against a live-generated report
+    (samples/output/.../PRO.DPD_Bucket_Classification...): a model-
+    authored duplicate that omitted one branch's outcome value (`DpdDays
+    IS NULL -> ` with nothing after the arrow) had the SAME field count
+    as the deterministic, chain-derived rule that correctly had
+    `-> 'NOT_APPLICABLE'` for that branch - the old "fewest fields wins"
+    tiebreak had no opinion between them beyond input order, so the
+    blank-outcome candidate sometimes won the tie and the report rendered
+    an empty Result cell for a condition the source SQL clearly handles.
+    Completeness must outrank field-count narrowness.
+    """
+    complete_rule = {
+        "rule_id": "deterministic1", "output_field": "DpdBucket",
+        "rule_type": "deterministic_decision_table", "confidence": "deterministic",
+        "source_chain_id": "case_0001",
+        "decision_logic_rows": [
+            {"condition": "DpdDays IS NULL", "outcome": "'NOT_APPLICABLE'"},
+            {"condition": "DpdDays = 0", "outcome": "'CURRENT'"},
+        ],
+    }
+    incomplete_rule = {
+        "rule_id": "model1", "output_field": "DpdBucket",
+        "decision_logic_rows": [
+            {"condition": "DpdDays IS NULL", "outcome": ""},
+            {"condition": "DpdDays = 0", "outcome": "'CURRENT'"},
+        ],
+    }
+    # Order matters for reproducing the bug: the incomplete candidate
+    # appearing FIRST is exactly the real shape (model-authored rules are
+    # listed before ensure_decision_chain_coverage's deterministic
+    # backfill) and is what defeated the old "first-seen wins ties" rule.
+    result = RuleSynthesizerAgent.consolidate_duplicate_rules([incomplete_rule, complete_rule])
+    assert len(result) == 1
+    assert result[0]["rule_id"] == "deterministic1"
+    assert result[0]["decision_logic_rows"][0]["outcome"] == "'NOT_APPLICABLE'"
+
+
+def test_backfill_blank_outcomes_from_decision_chains_fills_a_blank_cell():
+    """Real bug (second occurrence, same DPD_Bucket_Classification report,
+    after the consolidate_duplicate_rules tie-break fix): a rule can be
+    the ONLY candidate for its identity - nothing for consolidation to
+    compare it against - and still have a blank outcome cell for one row.
+    This is the safety net: backfill from the deterministic decision_chains
+    data directly, matched by (bare output field, normalized condition).
+    """
+    chains = [{
+        "chain_type": "CASE_EXPRESSION",
+        "branches": [
+            {"branch_condition": "A.DpdDays IS NULL", "assignments": [{"field": "DpdBucket", "value": "'NOT_APPLICABLE'"}]},
+            {"branch_condition": "A.DpdDays = 0", "assignments": [{"field": "DpdBucket", "value": "'CURRENT'"}]},
+        ],
+    }]
+    broken_rule = {
+        "rule_id": "r3", "output_field": "DpdBucket", "rule_name": "Determine DpdBucket",
+        "decision_logic_rows": [
+            {"condition": "PRO.LoanAccountCal.DpdDays IS NULL", "outcome": ""},
+            {"condition": "PRO.LoanAccountCal.DpdDays = 0", "outcome": "'CURRENT'"},
+        ],
+    }
+    result = RuleSynthesizerAgent.backfill_blank_outcomes_from_decision_chains([broken_rule], chains)
+    assert result[0]["decision_logic_rows"][0]["outcome"] == "'NOT_APPLICABLE'"
+    assert result[0]["decision_logic_rows"][1]["outcome"] == "'CURRENT'"  # already-present value untouched
+
+
+def test_backfill_blank_outcomes_never_overwrites_a_non_blank_value():
+    # Even if a chain disagrees with an already-present (non-blank)
+    # outcome, the rule's own value is never overwritten - only a
+    # genuinely empty cell is ever filled in.
+    chains = [{
+        "chain_type": "CASE_EXPRESSION",
+        "branches": [{"branch_condition": "X = 1", "assignments": [{"field": "Status", "value": "'FROM_CHAIN'"}]}],
+    }]
+    rule = {
+        "rule_id": "r1", "output_field": "Status",
+        "decision_logic_rows": [{"condition": "X = 1", "outcome": "'ORIGINAL'"}],
+    }
+    result = RuleSynthesizerAgent.backfill_blank_outcomes_from_decision_chains([rule], chains)
+    assert result[0]["decision_logic_rows"][0]["outcome"] == "'ORIGINAL'"
+
+
+def test_backfill_blank_outcomes_matches_through_a_row_filter_annotation():
+    # A rendered row's condition can carry a display-only annotation
+    # (" — row filter: ...") that a raw chain branch's own text never
+    # has - the match must still succeed.
+    chains = [{
+        "chain_type": "TSQL_IF_ELSE",
+        "branches": [{"branch_condition": "PrevDpdBucket IS NOT NULL", "assignments": [{"field": "BucketWorsened", "value": "'Y'"}]}],
+    }]
+    rule = {
+        "rule_id": "r1", "output_field": "BucketWorsened",
+        "decision_logic_rows": [
+            {"condition": "PrevDpdBucket IS NOT NULL — row filter: PrevDpdBucket IS NOT NULL", "outcome": ""},
+        ],
+    }
+    result = RuleSynthesizerAgent.backfill_blank_outcomes_from_decision_chains([rule], chains)
+    assert result[0]["decision_logic_rows"][0]["outcome"] == "'Y'"
+
+
+def test_backfill_blank_outcomes_leaves_unmatched_blanks_alone():
+    # No chain evidence for this field/condition at all - the blank stays
+    # blank rather than guessing; this is a safety net, not a fabricator.
+    chains = [{
+        "chain_type": "CASE_EXPRESSION",
+        "branches": [{"branch_condition": "Y = 1", "assignments": [{"field": "OtherField", "value": "'A'"}]}],
+    }]
+    rule = {
+        "rule_id": "r1", "output_field": "Status",
+        "decision_logic_rows": [{"condition": "X = 1", "outcome": ""}],
+    }
+    result = RuleSynthesizerAgent.backfill_blank_outcomes_from_decision_chains([rule], chains)
+    assert result[0]["decision_logic_rows"][0]["outcome"] == ""
+
+
+def test_consolidate_prefers_deterministic_origin_when_both_candidates_are_complete():
+    # With no incomplete outcomes on either side, a deterministic/chain-
+    # derived candidate still wins over an equally-narrow model-authored
+    # one - it cannot hallucinate a value, so it is the more trustworthy
+    # source when both otherwise tie.
+    deterministic_rule = {
+        "rule_id": "deterministic1", "output_field": "Status", "rule_type": "deterministic_decision_table",
+        "decision_logic_rows": [{"condition": "X = 1", "outcome": "'A'"}],
+    }
+    model_rule = {
+        "rule_id": "model1", "output_field": "Status",
+        "decision_logic_rows": [{"condition": "X = 1", "outcome": "'A'"}],
+    }
+    result = RuleSynthesizerAgent.consolidate_duplicate_rules([model_rule, deterministic_rule])
+    assert len(result) == 1
+    assert result[0]["rule_id"] == "deterministic1"
+
+
 def test_consolidate_merge_keeps_only_the_kept_candidates_degraded_flag():
     clean = dict(_R6_RULE, degraded=False)
     noisy = dict(_R7_RULE, degraded=True)

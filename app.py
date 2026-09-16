@@ -363,19 +363,6 @@ def _render_batch_run_status(batch_state: dict, log_path: Path | None = None) ->
     )
 
 
-def _count_report_findings(report: str) -> int:
-    """Count visible review bullets across current and legacy headings."""
-    sections = re.split(r"^##\s+", str(report or ""), flags=re.MULTILINE)
-    for section in sections:
-        if not re.match(r"(?:Findings\s*/\s*Needs Review|Ambiguities\s*/\s*Needs Review)\b", section, re.IGNORECASE):
-            continue
-        body = section.split("\n", 1)[1] if "\n" in section else ""
-        if body.strip().lower().startswith("none"):
-            return 0
-        return sum(1 for line in body.splitlines() if line.strip().startswith("- "))
-    return 0
-
-
 # --------------------------------------------------------------------------
 # Main — input
 # --------------------------------------------------------------------------
@@ -816,14 +803,11 @@ if "last_report" in st.session_state:
     st.subheader("3. Business logic report")
 
     report_md: str = st.session_state["last_report"]
-    ambiguity_count = _count_report_findings(report_md)
 
-    col1, col2, col3 = st.columns([2, 2, 3])
+    col1, col2 = st.columns([2, 3])
     with col1:
         st.metric("Model used", st.session_state.get("last_model", "—"))
     with col2:
-        st.metric("Flagged for review", ambiguity_count)
-    with col3:
         st.download_button(
             "⬇️ Download Markdown report",
             data=report_md,
@@ -847,12 +831,6 @@ if "last_report" in st.session_state:
         )
     if "last_log_path" in st.session_state:
         st.caption(f"Run log (including verification diagnostics) saved to: `{st.session_state['last_log_path']}`")
-
-    if ambiguity_count:
-        st.warning(
-            f"{ambiguity_count} item(s) flagged for human review — see the "
-            "**Ambiguities / Needs Review** section below."
-        )
 
     if "last_run_messages" in st.session_state:
         with st.expander("Run status summary", expanded=False):

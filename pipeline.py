@@ -45,7 +45,12 @@ from src.ingestion.ingestion import (
 )
 from src.retrieval.retriever import PatternRetrievalAgent
 from src.extraction.logic_extractor import LogicExtractionAgent, ChunkExtraction
-from src.synthesis.rule_synthesizer import RuleSynthesizerAgent, SynthesisResult, rule_identity_key
+from src.synthesis.rule_synthesizer import (
+    RuleSynthesizerAgent,
+    SynthesisResult,
+    rule_identity_key,
+    PromptTooLargeForRateLimitError,
+)
 from src.output.report_formatter import ReportFormatterAgent
 from src.parsing.technical_sql_ops import extract_table_operations_from_chunks, split_table_operations
 from src.parsing.calculations import calculations_from_operations
@@ -825,6 +830,34 @@ class LogicRulesExtractorPipeline:
                     if isinstance(rule, dict) and rule_identity_key(rule) not in previously_known:
                         rule["degraded"] = True
                         rule["degraded_reason"] = "gap_review"
+
+                # The revise() prompt *asks* the model to return every
+                # previously-correct rule plus the new ones, but nothing
+                # enforced it: a weaker/smaller model routinely returns only
+                # the rules it considered "relevant to the gaps", and that
+                # array then replaced the full set wholesale - so a pass
+                # whose entire purpose is to INCREASE coverage could silently
+                # reduce it. Re-attach any prior rule the revision dropped;
+                # the coverage loop may only ever add.
+                returned_keys = {
+                    rule_identity_key(rule)
+                    for rule in revised_rules
+                    if isinstance(rule, dict)
+                }
+                dropped = [
+                    rule
+                    for rule in (synthesis.data.get("business_rules") or [])
+                    if isinstance(rule, dict)
+                    and rule_identity_key(rule) not in returned_keys
+                ]
+                if dropped:
+                    logger.warning(
+                        "Synthesis revision omitted %d previously-synthesized "
+                        "rule(s); re-attaching them so the coverage pass "
+                        "cannot reduce coverage.",
+                        len(dropped),
+                    )
+                    revised_rules = list(revised_rules) + dropped
             synthesis.data["business_rules"] = revised_rules
             synthesis.guardrail_warnings = list(synthesis.guardrail_warnings or []) + list(
                 revision.guardrail_warnings or []
@@ -928,6 +961,19 @@ class LogicRulesExtractorPipeline:
         # dropped anyway.
         synthesis.data["business_rules"] = RuleSynthesizerAgent.consolidate_duplicate_rules(
             synthesis.data.get("business_rules", [])
+        )
+
+        # Final safety net, run once here after every other rule-shaping
+        # stage above: a blank decision_logic_rows outcome that survived
+        # everything else (consolidation only helps when a second, better
+        # candidate exists to compare against - it can't fix a rule that
+        # was the only candidate for its identity) gets one last chance
+        # to be filled in from the deterministic decision_chains data,
+        # the one source proven correct throughout this pipeline. Never
+        # overwrites a non-blank value, so this can only make a report
+        # more complete, never less accurate.
+        synthesis.data["business_rules"] = RuleSynthesizerAgent.backfill_blank_outcomes_from_decision_chains(
+            synthesis.data.get("business_rules", []), merged_extraction.get("decision_chains", [])
         )
 
         # Same exception-handler exclusion as merged_extraction["calculations"]
@@ -1541,12 +1587,26 @@ class LogicRulesExtractorPipeline:
     # Technical-extraction sections whose items carry a reliable per-item
     # `source_chunk_id` (set in `_merge_extractions` / `extract_table_
     # operations_from_chunks`), and so can be safely restricted to just the
-    # chunks belonging to one synthesis section. Fields without that
-    # attribution (ambiguities, statement provenance/dependencies, semantic
-    # findings) are deliberately left out of this list and passed through to
-    # every section unfiltered instead - they are small and already
-    # deduplicated, so duplicating them across sections is harmless, whereas
-    # guessing at an attribution and dropping a genuine finding is not.
+    # chunks belonging to one synthesis section.
+    #
+    # `statement_provenance` and the `llm_tables_read`/`llm_tables_written`
+    # duplicates (see `llm_tables_read = list(tables_read)` a few lines
+    # above the sectioned-synthesis call site) used to be deliberately left
+    # OUT of this list on the assumption that they were "small and already
+    # deduplicated, so duplicating them across sections is harmless." That
+    # assumption was wrong: measured on a real, unremarkable 176-line
+    # procedure split into 12 sections, `statement_provenance` alone was
+    # 41KB (~11,800 estimated tokens) of JSON attached, UNFILTERED, to
+    # EVERY section - on its own already bigger than an 8,000 TPM rate
+    # limit, before a single character of that section's own content was
+    # added. Every section's synthesis call was rejected pre-flight
+    # (`PromptTooLargeForRateLimitError`), and the object's report ended up
+    # with zero business rules, zero purpose_summary, zero
+    # step_by_step_flow - "Not explicitly determined from source SQL"
+    # everywhere, even though every underlying extraction fact was present
+    # and correct. Root cause was this one list not being scoped down like
+    # its siblings; the fix is exactly that, not a bigger TPM budget or a
+    # smaller SYNTHESIS_EVIDENCE_MAP_MAX_CHARS.
     _CHUNK_SCOPED_SYNTHESIS_SECTIONS = (
         "conditions",
         "decision_chains",
@@ -1556,6 +1616,9 @@ class LogicRulesExtractorPipeline:
         "tables_read",
         "tables_written",
         "table_operations",
+        "statement_provenance",
+        "llm_tables_read",
+        "llm_tables_written",
     )
 
     @staticmethod
@@ -1581,6 +1644,69 @@ class LogicRulesExtractorPipeline:
                 item for item in chunk_provenance
                 if isinstance(item, dict) and item.get("chunk_id") in chunk_ids
             ]
+        # `statement_dependencies` (see `build_statement_dependencies`) is
+        # not a flat list - it's a {version, edge_count, edges,
+        # unresolved_count, unresolved} graph over the WHOLE object's
+        # statements, and measured just as large as statement_provenance
+        # (~39KB on the same 176-line sample) for the same reason: nothing
+        # scoped it down per section. An edge/unresolved-pair is kept only
+        # when at least one endpoint belongs to this section - a
+        # cross-section edge whose OTHER endpoint the section can't see is
+        # still meaningful context ("this section's write feeds a read
+        # elsewhere"), but an edge entirely outside the section is not.
+        statement_dependencies = merged_extraction.get("statement_dependencies")
+        if isinstance(statement_dependencies, dict):
+            scoped["statement_dependencies"] = LogicRulesExtractorPipeline._scope_statement_dependencies(
+                statement_dependencies, chunk_ids
+            )
+        return scoped
+
+    @staticmethod
+    def _scope_statement_dependencies(statement_dependencies: Dict[str, Any], chunk_ids: set) -> Dict[str, Any]:
+        def _endpoint_chunk_id(endpoint: Any) -> str:
+            if isinstance(endpoint, dict):
+                location = endpoint.get("location")
+                if isinstance(location, dict) and location.get("source_chunk_id"):
+                    return str(location.get("source_chunk_id"))
+            return ""
+
+        def _statement_id_chunk_id(statement_id: Any) -> str:
+            # Statement ids are formatted "<chunk_id>:<suffix>" throughout
+            # this pipeline (see extract_table_operations_from_chunks) -
+            # chunk ids themselves never contain ":", so splitting on the
+            # first one recovers the chunk id even when no richer
+            # `location` object is present (the `unresolved` entries below
+            # only carry the bare id, not a full endpoint object).
+            text = str(statement_id or "")
+            return text.split(":", 1)[0] if text else ""
+
+        edges = statement_dependencies.get("edges")
+        scoped_edges = []
+        if isinstance(edges, list):
+            for edge in edges:
+                if not isinstance(edge, dict):
+                    continue
+                from_chunk = _endpoint_chunk_id(edge.get("from"))
+                to_chunk = _endpoint_chunk_id(edge.get("to"))
+                if from_chunk in chunk_ids or to_chunk in chunk_ids:
+                    scoped_edges.append(edge)
+
+        unresolved = statement_dependencies.get("unresolved")
+        scoped_unresolved = []
+        if isinstance(unresolved, list):
+            for item in unresolved:
+                if not isinstance(item, dict):
+                    continue
+                from_chunk = _statement_id_chunk_id(item.get("from_statement_id"))
+                to_chunk = _statement_id_chunk_id(item.get("to_statement_id"))
+                if from_chunk in chunk_ids or to_chunk in chunk_ids:
+                    scoped_unresolved.append(item)
+
+        scoped = dict(statement_dependencies)
+        scoped["edges"] = scoped_edges
+        scoped["edge_count"] = len(scoped_edges)
+        scoped["unresolved"] = scoped_unresolved
+        scoped["unresolved_count"] = len(scoped_unresolved)
         return scoped
 
     def _run_rule_synthesis(
@@ -1714,29 +1840,73 @@ class LogicRulesExtractorPipeline:
             # already succeeded (or were about to). Degrading just this
             # section to an empty-but-valid result lets its siblings'
             # rules survive `merge_section_results` untouched.
-            try:
-                result = self.synthesizer_agent.synthesize(
-                    object_name=ingestion.object_name,
-                    object_type=ingestion.object_type,
-                    parameter_summary=parameter_summary,
-                    merged_extraction=section_synthesis_input,
-                    dialect=dialect,
-                    raw_source=section_raw_source,
-                    telemetry_tracker=telemetry_tracker,
-                )
-                return _mark_rules_degraded_if_unreliable(result)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "Rule synthesis section failed for '%s' (chunks %s): %s",
-                    ingestion.object_name,
-                    chunk_id_list,
-                    exc,
-                )
-                return SynthesisResult(
-                    parse_error=str(exc),
-                    guardrail_warnings=[f"Synthesis section failed (chunks {chunk_id_list}): {exc}"],
-                    synthesis_failed=True,
-                )
+            #
+            # A single failure here used to be final on the first attempt,
+            # with no retry at all - despite the degraded-run banner
+            # telling the report reader this section "failed after
+            # retries". For a transient failure (rate limit, timeout,
+            # provider hiccup) a second attempt with the *exact same*
+            # request often just succeeds, exactly like the retry already
+            # added to `LogicExtractionAgent.extract()` for a malformed
+            # extraction response. `PromptTooLargeForRateLimitError` is the
+            # one exception explicitly NOT retried here: it is a
+            # deterministic pre-flight size check (see
+            # `RuleSynthesizerAgent.synthesize`'s `LLM_TPM_LIMIT` guard),
+            # not a transient condition - the prompt is exactly as large on
+            # a second attempt, so retrying it would just burn a call to
+            # reproduce the identical failure. If your `.env` sets
+            # `LLM_TPM_LIMIT` / `SYNTHESIS_EVIDENCE_MAP_MAX_CHARS` /
+            # `SYNTHESIS_SECTION_MAX_CHARS` to values tuned for a
+            # heavily-rate-limited free-tier account (see
+            # config/.env.example), and your real account isn't actually
+            # that constrained, raising or unsetting those is the fix for
+            # THIS failure mode - no retry count can work around a request
+            # that is genuinely too large for a limit that doesn't really
+            # apply to you.
+            attempts = 0
+            last_exc: Exception | None = None
+            while attempts < 2:
+                attempts += 1
+                try:
+                    result = self.synthesizer_agent.synthesize(
+                        object_name=ingestion.object_name,
+                        object_type=ingestion.object_type,
+                        parameter_summary=parameter_summary,
+                        merged_extraction=section_synthesis_input,
+                        dialect=dialect,
+                        raw_source=section_raw_source,
+                        telemetry_tracker=telemetry_tracker,
+                        is_section=True,
+                    )
+                    return _mark_rules_degraded_if_unreliable(result)
+                except PromptTooLargeForRateLimitError as exc:
+                    last_exc = exc
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    if attempts < 2:
+                        logger.warning(
+                            "Rule synthesis section failed for '%s' (chunks %s), "
+                            "retrying once: %s",
+                            ingestion.object_name,
+                            chunk_id_list,
+                            exc,
+                        )
+            logger.warning(
+                "Rule synthesis section failed for '%s' (chunks %s) after %d attempt(s): %s",
+                ingestion.object_name,
+                chunk_id_list,
+                attempts,
+                last_exc,
+            )
+            return SynthesisResult(
+                parse_error=str(last_exc),
+                guardrail_warnings=[
+                    f"Synthesis section failed after {attempts} attempt(s) "
+                    f"(chunks {chunk_id_list}): {last_exc}"
+                ],
+                synthesis_failed=True,
+            )
 
         # Sections are independent synthesis calls over disjoint parts of
         # the same object - nothing in one section's prompt or result

@@ -239,14 +239,16 @@ def test_business_report_findings_preserves_merged_and_synthesis_ambiguities():
         reconciliation=reconciliation,
     )
 
-    report = ReportFormatterAgent().format(
-        ingestion=ingestion,
-        merged_extraction=merged,
+    # `_findings_section` is no longer wired into the business report
+    # (`format()`) - per explicit client direction that document should
+    # read as confident, complete business analysis with no visible
+    # "needs review"/findings content. The underlying function and its
+    # dedup/ordering behavior are unchanged and still tested directly here.
+    findings_section = ReportFormatterAgent()._findings_section(
         synthesis=synthesis,
-        canonical_ir=ir,
+        merged_extraction=merged,
+        raw_source=getattr(ingestion, "raw_code", ""),
     )
-
-    findings_section = report.split("## Findings / Needs Review", 1)[1]
     # NOTE: chunk-parse-error wording was shortened and (when there's more
     # than one failed chunk) consolidated into a single bullet - see
     # `_findings_section` in report_formatter.py. With exactly one failed
@@ -301,10 +303,13 @@ def test_chunk_parse_error_reported_once_not_twice_when_pipeline_already_named_i
     ir = CanonicalBusinessIR.from_pipeline(
         ingestion=ingestion, merged_extraction=merged, synthesis=synthesis, reconciliation=reconciliation,
     )
-    report = ReportFormatterAgent().format(
-        ingestion=ingestion, merged_extraction=merged, synthesis=synthesis, canonical_ir=ir,
+    # `_findings_section` is no longer wired into the business report (see
+    # note in the preceding test) - tested directly here.
+    findings_section = ReportFormatterAgent()._findings_section(
+        synthesis=synthesis,
+        merged_extraction=merged,
+        raw_source=getattr(ingestion, "raw_code", ""),
     )
-    findings_section = report.split("## Findings / Needs Review", 1)[1]
     assert findings_section.count(chunk_id) == 1
     assert findings_section.count("malformed JSON") == 1
 
