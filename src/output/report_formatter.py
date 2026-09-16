@@ -812,11 +812,18 @@ class ReportFormatterAgent:
         ]
         visible_reads = self._visible_table_count(consolidated_reads)
         visible_writes = self._visible_table_count(consolidated_writes)
+        degraded_rules = [rule for rule in (rules or []) if isinstance(rule, dict) and rule.get("degraded")]
+        degraded_count = len(degraded_rules)
+        business_rules_display = (
+            f"{len(rules) - degraded_count} confident, {degraded_count} needs review"
+            if degraded_count
+            else str(len(rules))
+        )
         rows = [
             ("Procedure", f"`{technical_name}`"),
             ("Dialect", dialect),
             ("Input", input_display),
-            ("Business rules", str(len(rules))),
+            ("Business rules", business_rules_display),
             ("Tables read", str(visible_reads)),
             ("Tables written", str(visible_writes)),
             (
@@ -824,6 +831,46 @@ class ReportFormatterAgent:
                 "Yes — records audit events" if history_tables else "Not detected",
             ),
         ]
+        if degraded_count:
+            # `degraded_reason` (set alongside `degraded` in pipeline.py)
+            # distinguishes an actual model-capacity failure (`truncated`/
+            # `synthesis_failed`) from a rule that is only flagged because it
+            # is new output from a successful, targeted coverage-gap review
+            # pass (`gap_review`) - conflating the two previously told a
+            # reader every flagged rule "was truncated or failed" even on a
+            # run where every single LLM call succeeded cleanly.
+            reasons = {str(rule.get("degraded_reason") or "truncated") for rule in degraded_rules}
+            capacity_count = sum(
+                1 for rule in degraded_rules
+                if str(rule.get("degraded_reason") or "truncated") != "gap_review"
+            )
+            gap_review_count = degraded_count - capacity_count
+            if reasons <= {"gap_review"}:
+                status_text = (
+                    "ℹ️ **Additional rules added from a targeted review pass.** "
+                    f"{degraded_count} rule(s) were added after a second, narrowly-scoped "
+                    "look at a source line no rule initially cited - the model's call "
+                    "succeeded normally, but a new rule for a previously-unreviewed line "
+                    "still warrants a quick human check against the source; affected rules "
+                    "are marked inline."
+                )
+            elif capacity_count and gap_review_count:
+                status_text = (
+                    "⚠️ **Partial — see rules marked \"Needs Review\" below.** "
+                    f"{capacity_count} rule(s) came from a chunk or section whose analysis "
+                    "was truncated or failed and had to be recovered, and "
+                    f"{gap_review_count} more were added from a targeted review pass over "
+                    "a previously-uncited line; affected rules are marked inline rather "
+                    "than silently filled in."
+                )
+            else:
+                status_text = (
+                    "⚠️ **Partial — see rules marked \"Needs Review\" below.** "
+                    f"{degraded_count} rule(s) came from a chunk or section whose analysis "
+                    "was truncated or failed and had to be recovered; affected rules are "
+                    "marked inline rather than silently filled in."
+                )
+            rows.append(("**Run status**", status_text))
         lines = ["## At a Glance", "", "| | |", "|---|---|"]
         lines.extend(f"| {label} | {value} |" for label, value in rows)
         if normalize_dialect_name(getattr(ingestion, "dialect", "")) in {UNKNOWN, AMBIGUOUS, UNSUPPORTED}:
@@ -2194,6 +2241,27 @@ class ReportFormatterAgent:
         ]
 
         lines = [f"### R{idx} — {rule_name}", ""]
+        if rule.get("degraded"):
+            if str(rule.get("degraded_reason") or "") == "gap_review":
+                lines.append(
+                    "> ℹ️ **Needs Review — added from a targeted review pass.** A "
+                    "second, narrowly-scoped look at a source line no rule initially "
+                    "cited produced this rule; the call itself succeeded normally, but "
+                    "verify it against the source since it covers a line the first "
+                    "pass did not."
+                )
+            else:
+                lines.append(
+                    "> ⚠️ **Needs Review — possibly incomplete.** This rule came from a "
+                    "chunk or section whose analysis was truncated or failed and had to "
+                    "be recovered; verify its content against the source before relying "
+                    "on it."
+                )
+            lines.append("")
+        consolidation_note = str(rule.get("consolidation_note") or "").strip()
+        if consolidation_note:
+            lines.append(f"_Note: {consolidation_note}_")
+            lines.append("")
         lines.append(f"**Affected Field:** `{output_field}`" if output_field != "Not specified" else "**Affected Field:** Not specified")
         lines.append("")
         if eligibility_items:
@@ -2640,6 +2708,8 @@ class ReportFormatterAgent:
         rows = []
         for idx, rule in enumerate(rules, start=1):
             name = self._escape_table_cell(self._business_rule_name(rule, idx))
+            if rule.get("degraded"):
+                name = f"⚠️ {name}"
             output = self._escape_table_cell(self._business_rule_output(rule))
             purpose = self._escape_table_cell(
                 self._shorten_text(self._business_rule_business_meaning(rule), 140)
@@ -3990,6 +4060,13 @@ class ReportFormatterAgent:
           - amber: everything else (unverified, assumption, inferred,
             partially supported) - review before treating as confirmed
         """
+        if rule.get("degraded"):
+            # Stronger, more certain signal than the reconciliation-status
+            # heuristics below: this rule is known (not merely suspected)
+            # to have come from a chunk/section whose LLM call failed or
+            # was truncated - takes priority over whatever reconciliation
+            # otherwise concluded about it.
+            return "⚠️"
         reconciliation_status = str(rule.get("reconciliation_status") or "").strip().upper()
         if reconciliation_status == "CONFLICT":
             return "🔴"

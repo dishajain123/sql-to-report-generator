@@ -1,0 +1,223 @@
+# Asset Class Upgrade Marking — Verification & Traceability
+
+> Companion artifact to `PRO.Asset_Class_Upgrade_Marking.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
+
+| Item | Value |
+|---|---|
+| Object ID | `obj_510af9b5e9e9` |
+| Raw technical object name (from source) | `Asset_Class_Upgrade_Marking` |
+
+## Run Metadata
+
+| Item | Value |
+|---|---|
+| Pipeline Version | `2026-08-26-phase1` |
+| Prompt Version | `3fde9e2078dcda12` |
+| Knowledge Base Version | `2e6fc62902751973` |
+| Model | `amazon.nova-lite-v1:0` |
+| Provider | `bedrock` |
+| Dialect | `T-SQL` |
+| Dialect Confidence | `High` |
+| Source Hash | `560a6822ac7bb45373a4debba9ef544783e3c6ee7f6a69459dfd7cf29352386e` |
+| Configuration Version | `ddb60c677229031b` |
+| Run Timestamp | `2026-09-16T09:19:06.334865+00:00` |
+| Object ID | `obj_510af9b5e9e9` |
+
+## LLM Telemetry
+
+| Item | Value |
+|---|---|
+| Run ID | `telemetry_2588fe7b9d49` |
+| Total LLM Calls | `5` |
+| Successful Calls | `5` |
+| Failed Calls | `0` |
+| Prompt Tokens | `24619` |
+| Completion Tokens | `5734` |
+| Total Tokens | `30353` |
+| Telemetry Availability | `available` |
+
+| Stage | Calls | Success | Failure | Tokens | Availability |
+|---|---:|---:|---:|---:|---|
+| extraction | 1 | 1 | 0 | 5041 | available |
+| synthesis | 4 | 4 | 0 | 25312 | available |
+
+## Business Rule Summary
+
+| Priority | Rule | Output | Business Purpose |
+|---|---|---|---|
+| 🟢 1 | Determine Upgrade Eligibility [MATCHED] (`rule__1__7`) | `UpgradeEligible` | Eligible accounts with zero overdue days and a sufficient review period since the last overdue are marked for upgrade. |
+| 🟢 2 | Calculate Provision Release Amount [MATCHED] (`rule__2__8`) | `ProvisionReleaseAmount` | The provision release amount is calculated for eligible accounts. |
+| 🟢 3 | Reclassify to Standard with Base Provisioning [MATCHED] (`rule__3__9`) | `AssetClass, ProvisionPct, ProvisionAmount` | Eligible accounts are reclassified back to standard with base provisioning. |
+| 🟢 4 | Stamp Upgrade Date [MATCHED] (`rule__4__10`) | `UpgradeDate` | The upgrade date is stamped for eligible accounts. |
+| 🟢 5 | Update Run Status [MATCHED] (`rule__5__11`) | `RunCount, COMPLETED, ErrorDate, ErrorDescription` | The run status is updated to mark the process as completed and increment the run count. |
+| 🟠 6 | Determine UpgradeEligible [MATCHED] (`deterministic_tsql_if_0026_0045_upgradeeligible`) | `UpgradeEligible` | Not specified |
+| 🟢 7 | Check for non-standard accounts [MATCHED] (`rule__1`) | `UpgradeEligible` | Determine if there are any accounts that are not in the 'STANDARD' asset class. |
+| 🟢 8 | Mark accounts as upgrade eligible [MATCHED] (`rule__2`) | `UpgradeEligible` | Mark accounts as upgrade eligible if they are not in the 'STANDARD' asset class, have no overdue days, and the days since the last overdue… |
+| 🟠 9 | Mark all accounts as not upgrade eligible [LLM_ONLY] (`rule__3`) | `UpgradeEligible` | Mark all accounts as not upgrade eligible if no accounts are found that are not in the 'STANDARD' asset class. |
+| 🟢 10 | Calculate provision release amount [MATCHED] (`rule__4`) | `ProvisionReleaseAmount` | Calculate the provision release amount for eligible accounts. |
+| 🟢 11 | Calculate provision amount [MATCHED] (`rule__5`) | `ProvisionAmount` | Calculate the provision amount for eligible accounts. |
+| 🟢 12 | Update run status [MATCHED] (`rule__6`) | `RunCount, COMPLETED, ErrorDate, ErrorDescription` | Update the run status to reflect the completion of the process. |
+| 🟢 13 | Mark process as incomplete on error [MATCHED] (`rule__1__12`) | `COMPLETED` | If an exception occurs during the 'Asset_Class_Upgrade_Marking' process, the run status is marked as incomplete. |
+| 🟢 14 | Record error date on exception [MATCHED] (`rule__2__13`) | `ErrorDate` | If an exception occurs during the 'Asset_Class_Upgrade_Marking' process, the current date and time are recorded as the error date. |
+| 🟢 15 | Record error description on exception [MATCHED] (`rule__3__14`) | `ErrorDescription` | If an exception occurs during the 'Asset_Class_Upgrade_Marking' process, the error message is recorded as the error description. |
+| 🟢 16 | Increment run count on exception [MATCHED] (`rule__4__15`) | `RunCount` | If an exception occurs during the 'Asset_Class_Upgrade_Marking' process, the run count is incremented by one. |
+
+## Source Traceability
+
+<details>
+<summary><strong>Show rule-to-source mapping</strong></summary>
+
+| # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |
+|---|---|---|---|---|---|---|
+| 1 | Determine Upgrade Eligibility (rule__1__7) | A.OverdueDays = 0 AND A.DaysSinceLastOverdue >= @ReviewPeriodDays | Not cited | 03_batch3_main_body+batch3_nested_block:chunk_text_13 | Not cited | Verified |
+| 2 | Calculate Provision Release Amount (rule__2__8) | A.ProvisionAmount - ((A.OutstandingBalance * A.StandardProvisionPct) / 100) | Not cited | 03_batch3_main_body+batch3_nested_block:chunk_text_13 | Not cited | Verified |
+| 3 | Reclassify to Standard with Base Provisioning (rule__3__9) | A.AssetClass = 'STANDARD', A.ProvisionPct = A.StandardProvisionPct, A.ProvisionAmount = (A.OutstandingBalance * A.StandardProvisionPct) / 100 | Not cited | 03_batch3_main_body+batch3_nested_block:chunk_text_14 | Not cited | Verified |
+| 4 | Stamp Upgrade Date (rule__4__10) | A.UpgradeDate = @ProcessDate | Not cited | 03_batch3_main_body+batch3_nested_block:chunk_text_15 | Not cited | Verified |
+| 5 | Update Run Status (rule__5__11) | COMPLETED = 'Y', ErrorDate = NULL, ErrorDescription = NULL, RunCount = ISNULL(RunCount, 0) + 1 | Not cited | 03_batch3_main_body+batch3_nested_block:chunk_text_16 | Not cited | Verified |
+| 6 | Determine UpgradeEligible (deterministic_tsql_if_0026_0045_upgradeeligible) | Not cited | source \| Lines 26-45 | Not cited | Not cited | Verified |
+| 7 | Check for non-standard accounts (rule__1) | IF EXISTS (SELECT 1 FROM PRO.AccountCal WHERE AssetClass <> 'STANDARD') | Not cited | Not cited | Not cited | Verified |
+| 8 | Mark accounts as upgrade eligible (rule__2) | UPDATE A SET A.UpgradeEligible = 'Y' FROM PRO.AccountCal A WHERE A.AssetClass <> 'STANDARD' AND A.OverdueDays = 0 AND A.DaysSinceLastOverdue >= @ReviewPeriodDays | Not cited | Not cited | Not cited | Verified |
+| 9 | Mark all accounts as not upgrade eligible (rule__3) | UPDATE A SET A.UpgradeEligible = 'N' FROM PRO.AccountCal A | Not cited | Not cited | Not cited | Verified |
+| 10 | Calculate provision release amount (rule__4) | UPDATE A SET A.ProvisionReleaseAmount = A.ProvisionAmount - ((A.OutstandingBalance * A.StandardProvisionPct) / 100) FROM PRO.AccountCal A WHERE A.UpgradeEligible = 'Y' | Not cited | Not cited | Not cited | Verified |
+| 11 | Calculate provision amount (rule__5) | UPDATE A SET A.ProvisionAmount = (A.OutstandingBalance * A.StandardProvisionPct) / 100 FROM PRO.AccountCal A WHERE A.UpgradeEligible = 'Y' | Not cited | Not cited | Not cited | Verified |
+| 12 | Update run status (rule__6) | UPDATE PRO.RunStatus SET COMPLETED = 'Y', ErrorDate = NULL, ErrorDescription = NULL, RunCount = ISNULL(RunCount, 0) + 1 WHERE ProcessName = 'Asset_Class_Upgrade_Marking' | Not cited | Not cited | Not cited | Verified |
+| 13 | Mark process as incomplete on error (rule__1__12) | ProcessName = 'Asset_Class_Upgrade_Marking' | Not cited | BEGIN CATCH... END CATCH | Not cited | Verified |
+| 14 | Record error date on exception (rule__2__13) | ProcessName = 'Asset_Class_Upgrade_Marking' | Not cited | BEGIN CATCH... END CATCH | Not cited | Verified |
+| 15 | Record error description on exception (rule__3__14) | ProcessName = 'Asset_Class_Upgrade_Marking' | Not cited | BEGIN CATCH... END CATCH | Not cited | Verified |
+| 16 | Increment run count on exception (rule__4__15) | ProcessName = 'Asset_Class_Upgrade_Marking' | Not cited | BEGIN CATCH... END CATCH | Not cited | Verified |
+
+### Decision-Chain Branch Provenance
+
+| Branch | Condition | Source Location |
+|---|---|---|
+| tsql_if_0026_0045:branch_001 | EXISTS (SELECT 1 FROM PRO.AccountCal WHERE AssetClass <> 'STANDARD') | source \| Lines 27-34 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_12 |
+| tsql_if_0026_0045:branch_002 | ELSE | source \| Lines 37-41 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_13 |
+| decision_chain_002:branch_001 | EXISTS (SELECT 1 FROM PRO.AccountCal WHERE AssetClass <> 'STANDARD') | source |
+| decision_chain_002:branch_002 | ELSE | source |
+
+_Source evidence is the literal technical text carried through the pipeline; Source Location is derived deterministically from chunk and statement provenance when available; SQL Statements / Chunks and Technical References point back to the extracted chunk ids and statement references used by the guardrails. Technical references that repeat the same table/operation/target-columns are shown once._
+</details>
+
+## Completeness Ledger
+
+- **Executable constructs:** 59
+- **Disposition:** covered_by_rule=49, uncovered=10
+
+| Construct | Status | Source location | Statement / chunk | Evidence |
+|---|---|---|---|---|
+| STATEMENT | uncovered | Lines 1-1 | 00_batch0_declaration:chunk_text_01, 00_batch0_declaration | USE [DEMO_MISDB] |
+| SET | uncovered | Lines 1-1 | 01_batch1_declaration:chunk_text_01, 01_batch1_declaration | SET ANSI_NULLS ON |
+| SET | uncovered | Lines 1-1 | 01_batch1_declaration:embedded_01_02, 01_batch1_declaration | SET ANSI_NULLS ON |
+| SET | uncovered | Lines 1-1 | 02_batch2_declaration:chunk_text_01, 02_batch2_declaration | SET QUOTED_IDENTIFIER ON |
+| SET | uncovered | Lines 1-1 | 02_batch2_declaration:embedded_01_02, 02_batch2_declaration | SET QUOTED_IDENTIFIER ON |
+| STATEMENT | covered_by_rule | Lines 1-2 | 03_batch3_main_body+batch3_nested_block:chunk_text_01, 03_batch3_main_body+batch3_nested_block | BEGIN SET NOCOUNT ON |
+| STATEMENT | covered_by_rule | Lines 4-4 | 03_batch3_main_body+batch3_nested_block:chunk_text_02, 03_batch3_main_body+batch3_nested_block | BEGIN TRY |
+| STATEMENT | covered_by_rule | Lines 6-6 | 03_batch3_main_body+batch3_nested_block:chunk_text_03, 03_batch3_main_body+batch3_nested_block | DECLARE @ReviewPeriodDays INT = 90 |
+| SELECT | covered_by_rule | Lines 7-9 | 03_batch3_main_body+batch3_nested_block:chunk_text_04, 03_batch3_main_body+batch3_nested_block | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) -- Rule 1: mark NPA accounts eligible for upgrade if cleared for the full review period |
+| SELECT | covered_by_rule | Lines 10-10 | 03_batch3_main_body+batch3_nested_block:chunk_text_05, 03_batch3_main_body+batch3_nested_block | IF EXISTS (SELECT 1 FROM PRO.AccountCal WHERE AssetClass <> 'STANDARD') |
+| STATEMENT | covered_by_rule | Lines 1-1 | 03_batch3_main_body+batch3_nested_block:chunk_text_06, 03_batch3_main_body+batch3_nested_block | BEGIN |
+| UPDATE | covered_by_rule | Lines 12-17 | 03_batch3_main_body+batch3_nested_block:chunk_text_07, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.UpgradeEligible = 'Y' FROM PRO.AccountCal A WHERE A.AssetClass <> 'STANDARD' AND A.OverdueDays = 0 AND A.DaysSinceLastOverdue >= @ReviewPeriodDays |
+| STATEMENT | covered_by_rule | Lines 18-19 | 03_batch3_main_body+batch3_nested_block:chunk_text_08, 03_batch3_main_body+batch3_nested_block | END -- Rule 2: otherwise, mark all accounts as not eligible this run |
+| STATEMENT | covered_by_rule | Lines 20-20 | 03_batch3_main_body+batch3_nested_block:chunk_text_09, 03_batch3_main_body+batch3_nested_block | ELSE |
+| STATEMENT | covered_by_rule | Lines 1-1 | 03_batch3_main_body+batch3_nested_block:chunk_text_10, 03_batch3_main_body+batch3_nested_block | BEGIN |
+| UPDATE | covered_by_rule | Lines 22-24 | 03_batch3_main_body+batch3_nested_block:chunk_text_11, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.UpgradeEligible = 'N' FROM PRO.AccountCal A |
+| STATEMENT | covered_by_rule | Lines 25-29 | 03_batch3_main_body+batch3_nested_block:chunk_text_12, 03_batch3_main_body+batch3_nested_block | END -- Rule 3 (formula, same balance * percent / 100 shape as the real -- AddlProvision calculation in PRO.UpdateNetBalance_AccountWise): -- calculate the provision released by the upgrade, before reclassifying |
+| UPDATE | covered_by_rule | Lines 30-35 | 03_batch3_main_body+batch3_nested_block:chunk_text_13, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.ProvisionReleaseAmount = A.ProvisionAmount - ((A.OutstandingBalance * A.StandardProvisionPct) / 100) FROM PRO.AccountCal A WHERE A.UpgradeEligible = 'Y' -- Rule 4: reclassify eligible accounts back to Standard with base pr... |
+| UPDATE | covered_by_rule | Lines 36-43 | 03_batch3_main_body+batch3_nested_block:chunk_text_14, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.AssetClass = 'STANDARD', A.ProvisionPct = A.StandardProvisionPct, A.ProvisionAmount = (A.OutstandingBalance * A.StandardProvisionPct) / 100 FROM PRO.AccountCal A WHERE A.UpgradeEligible = 'Y' -- Rule 5: stamp the date the... |
+| UPDATE | covered_by_rule | Lines 44-47 | 03_batch3_main_body+batch3_nested_block:chunk_text_15, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.UpgradeDate = @ProcessDate FROM PRO.AccountCal A WHERE A.UpgradeEligible = 'Y' |
+| UPDATE | covered_by_rule | Lines 49-51 | 03_batch3_main_body+batch3_nested_block:chunk_text_16, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.RunStatus SET COMPLETED = 'Y', ErrorDate = NULL, ErrorDescription = NULL, RunCount = ISNULL(RunCount, 0) + 1 WHERE ProcessName = 'Asset_Class_Upgrade_Marking' |
+| STATEMENT | covered_by_rule | Lines 53-53 | 03_batch3_main_body+batch3_nested_block:chunk_text_17, 03_batch3_main_body+batch3_nested_block | END TRY |
+| UPDATE | covered_by_rule | Lines 12-17 | 03_batch3_main_body+batch3_nested_block:embedded_01_18, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.UpgradeEligible = 'Y' FROM PRO.AccountCal A WHERE A.AssetClass <> 'STANDARD' AND A.OverdueDays = 0 AND A.DaysSinceLastOverdue >= @ReviewPeriodDays |
+| UPDATE | covered_by_rule | Lines 22-24 | 03_batch3_main_body+batch3_nested_block:embedded_02_19, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.UpgradeEligible = 'N' FROM PRO.AccountCal A |
+| UPDATE | covered_by_rule | Lines 30-35 | 03_batch3_main_body+batch3_nested_block:embedded_03_20, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.ProvisionReleaseAmount = A.ProvisionAmount - ((A.OutstandingBalance * A.StandardProvisionPct) / 100) FROM PRO.AccountCal A WHERE A.UpgradeEligible = 'Y' -- Rule 4: reclassify eligible accounts back to Standard with base pr... |
+| UPDATE | covered_by_rule | Lines 36-43 | 03_batch3_main_body+batch3_nested_block:embedded_04_21, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.AssetClass = 'STANDARD', A.ProvisionPct = A.StandardProvisionPct, A.ProvisionAmount = (A.OutstandingBalance * A.StandardProvisionPct) / 100 FROM PRO.AccountCal A WHERE A.UpgradeEligible = 'Y' -- Rule 5: stamp the date the... |
+| UPDATE | covered_by_rule | Lines 44-47 | 03_batch3_main_body+batch3_nested_block:embedded_05_22, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.UpgradeDate = @ProcessDate FROM PRO.AccountCal A WHERE A.UpgradeEligible = 'Y' |
+| UPDATE | covered_by_rule | Lines 49-51 | 03_batch3_main_body+batch3_nested_block:embedded_06_23, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.RunStatus SET COMPLETED = 'Y', ErrorDate = NULL, ErrorDescription = NULL, RunCount = ISNULL(RunCount, 0) + 1 WHERE ProcessName = 'Asset_Class_Upgrade_Marking' |
+| STATEMENT | uncovered | Lines 1-2 | 04_batch3_exception:chunk_text_01, 04_batch3_exception | BEGIN CATCH -- Exception handling: record the failure for operations to investigate |
+| UPDATE | covered_by_rule | Lines 3-5 | 04_batch3_exception:chunk_text_02, 04_batch3_exception | UPDATE PRO.RunStatus SET COMPLETED = 'N', ErrorDate = GETDATE(), ErrorDescription = ERROR_MESSAGE(), RunCount = ISNULL(RunCount, 0) + 1 WHERE ProcessName = 'Asset_Class_Upgrade_Marking' |
+| STATEMENT | uncovered | Lines 6-6 | 04_batch3_exception:chunk_text_03, 04_batch3_exception | END CATCH |
+| STATEMENT | uncovered | Lines 6-6 | 04_batch3_exception:chunk_text_04, 04_batch3_exception | END |
+| UPDATE | covered_by_rule | Lines 3-5 | 04_batch3_exception:embedded_01_05, 04_batch3_exception | UPDATE PRO.RunStatus SET COMPLETED = 'N', ErrorDate = GETDATE(), ErrorDescription = ERROR_MESSAGE(), RunCount = ISNULL(RunCount, 0) + 1 WHERE ProcessName = 'Asset_Class_Upgrade_Marking' |
+| READ | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:chunk_text_04, 03_batch3_main_body+batch3_nested_block:chunk_text_04, 03_batch3_main_body+batch3_nested_block | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) -- Rule 1: mark NPA accounts eligible for upgrade if cleared for the full review period |
+| READ | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:chunk_text_05, 03_batch3_main_body+batch3_nested_block:chunk_text_05, 03_batch3_main_body+batch3_nested_block | IF EXISTS (SELECT 1 FROM PRO.AccountCal WHERE AssetClass <> 'STANDARD') |
+| UPDATE | covered_by_rule | samples/04_Asset_Class_Upgrade_Marking.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_07, 03_batch3_main_body+batch3_nested_block:chunk_text_07, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.UpgradeEligible = 'Y' FROM PRO.AccountCal A WHERE A.AssetClass <> 'STANDARD' AND A.OverdueDays = 0 AND A.DaysSinceLastOverdue >= @ReviewPeriodDays |
+| UPDATE | covered_by_rule | samples/04_Asset_Class_Upgrade_Marking.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_11, 03_batch3_main_body+batch3_nested_block:chunk_text_11, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.UpgradeEligible = 'N' FROM PRO.AccountCal A |
+| UPDATE | covered_by_rule | samples/04_Asset_Class_Upgrade_Marking.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_13, 03_batch3_main_body+batch3_nested_block:chunk_text_13, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.ProvisionReleaseAmount = A.ProvisionAmount - ((A.OutstandingBalance * A.StandardProvisionPct) / 100) FROM PRO.AccountCal A WHERE A.UpgradeEligible = 'Y' -- Rule 4: reclassify eligible accounts back to Standard with base pr... |
+| UPDATE | covered_by_rule | samples/04_Asset_Class_Upgrade_Marking.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_14, 03_batch3_main_body+batch3_nested_block:chunk_text_14, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.AssetClass = 'STANDARD', A.ProvisionPct = A.StandardProvisionPct, A.ProvisionAmount = (A.OutstandingBalance * A.StandardProvisionPct) / 100 FROM PRO.AccountCal A WHERE A.UpgradeEligible = 'Y' -- Rule 5: stamp the date the... |
+| UPDATE | covered_by_rule | samples/04_Asset_Class_Upgrade_Marking.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_15, 03_batch3_main_body+batch3_nested_block:chunk_text_15, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.UpgradeDate = @ProcessDate FROM PRO.AccountCal A WHERE A.UpgradeEligible = 'Y' |
+| UPDATE | covered_by_rule | samples/04_Asset_Class_Upgrade_Marking.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_16, 03_batch3_main_body+batch3_nested_block:chunk_text_16, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.RunStatus SET COMPLETED = 'Y', ErrorDate = NULL, ErrorDescription = NULL, RunCount = ISNULL(RunCount, 0) + 1 WHERE ProcessName = 'Asset_Class_Upgrade_Marking' |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_01_18, 03_batch3_main_body+batch3_nested_block:embedded_01_18, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.UpgradeEligible = 'Y' FROM PRO.AccountCal A WHERE A.AssetClass <> 'STANDARD' AND A.OverdueDays = 0 AND A.DaysSinceLastOverdue >= @ReviewPeriodDays |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_02_19, 03_batch3_main_body+batch3_nested_block:embedded_02_19, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.UpgradeEligible = 'N' FROM PRO.AccountCal A |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_03_20, 03_batch3_main_body+batch3_nested_block:embedded_03_20, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.ProvisionReleaseAmount = A.ProvisionAmount - ((A.OutstandingBalance * A.StandardProvisionPct) / 100) FROM PRO.AccountCal A WHERE A.UpgradeEligible = 'Y' -- Rule 4: reclassify eligible accounts back to Standard with base pr... |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_04_21, 03_batch3_main_body+batch3_nested_block:embedded_04_21, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.AssetClass = 'STANDARD', A.ProvisionPct = A.StandardProvisionPct, A.ProvisionAmount = (A.OutstandingBalance * A.StandardProvisionPct) / 100 FROM PRO.AccountCal A WHERE A.UpgradeEligible = 'Y' -- Rule 5: stamp the date the... |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_05_22, 03_batch3_main_body+batch3_nested_block:embedded_05_22, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.UpgradeDate = @ProcessDate FROM PRO.AccountCal A WHERE A.UpgradeEligible = 'Y' |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_06_23, 03_batch3_main_body+batch3_nested_block:embedded_06_23, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.RunStatus SET COMPLETED = 'Y', ErrorDate = NULL, ErrorDescription = NULL, RunCount = ISNULL(RunCount, 0) + 1 WHERE ProcessName = 'Asset_Class_Upgrade_Marking' |
+| UPDATE | covered_by_rule | samples/04_Asset_Class_Upgrade_Marking.sql / Lines 70-76 | 04_batch3_exception:chunk_text_02, 04_batch3_exception:chunk_text_02, 04_batch3_exception | UPDATE PRO.RunStatus SET COMPLETED = 'N', ErrorDate = GETDATE(), ErrorDescription = ERROR_MESSAGE(), RunCount = ISNULL(RunCount, 0) + 1 WHERE ProcessName = 'Asset_Class_Upgrade_Marking' |
+| UPDATE | covered_by_rule | unavailable | 04_batch3_exception:embedded_01_05, 04_batch3_exception:embedded_01_05, 04_batch3_exception | UPDATE PRO.RunStatus SET COMPLETED = 'N', ErrorDate = GETDATE(), ErrorDescription = ERROR_MESSAGE(), RunCount = ISNULL(RunCount, 0) + 1 WHERE ProcessName = 'Asset_Class_Upgrade_Marking' |
+| IF_BRANCH | covered_by_rule | Lines 27-34 | 03_batch3_main_body+batch3_nested_block:chunk_text_12 | EXISTS (SELECT 1 FROM PRO.AccountCal WHERE AssetClass <> 'STANDARD') |
+| ELSE | covered_by_rule | Lines 37-41 | 03_batch3_main_body+batch3_nested_block:chunk_text_13 | ELSE |
+| IF_BRANCH | covered_by_rule | samples/04_Asset_Class_Upgrade_Marking.sql | full_source | EXISTS (SELECT 1 FROM PRO.AccountCal WHERE AssetClass <> 'STANDARD') |
+| ELSE | covered_by_rule | samples/04_Asset_Class_Upgrade_Marking.sql | full_source | ELSE |
+| IF | covered_by_rule | Lines 26-26 | unavailable | IF EXISTS (SELECT 1 FROM PRO.AccountCal WHERE AssetClass <> ) |
+| ELSE | covered_by_rule | Lines 36-36 | unavailable | ELSE |
+| CALCULATION | covered_by_rule | Lines 47-47 | unavailable | SET A.ProvisionReleaseAmount = A.ProvisionAmount - ((A.OutstandingBalance * A.StandardProvisionPct) / 100) |
+| CALCULATION | covered_by_rule | Lines 55-55 | unavailable | A.ProvisionAmount = (A.OutstandingBalance * A.StandardProvisionPct) / 100 |
+| CATCH | uncovered | Lines 70-70 | unavailable | BEGIN CATCH |
+| CATCH | uncovered | Lines 75-75 | unavailable | END CATCH |
+
+## Confirmed Statement Dependencies
+
+
+Unresolved dependency candidates: 42. They were not supplied as confirmed dependencies.
+
+## Rule Provenance Summary
+
+- **Total business rules:** 16
+- **By rule type:** deterministic_decision_table = 1, explicit = 15
+- **By validation status:** verified = 16
+
+_This count reflects every individually traceable rule (one per source statement/field, for full auditability). The business report may show a smaller number, because closely related rules that apply the same pattern to several fields (e.g. "reset each of these six DPD fields to zero if negative") are presented there as one combined rule for readability. Every rule counted here is still individually traceable in the Source Traceability table below - none are dropped, only grouped for display._
+
+## Reconciliation Summary
+
+- **Matched facts:** 23
+- **Deterministic-only facts:** 2
+- **LLM-only claims:** 1
+- **Conflicts:** 2
+- **Unresolved items:** 0
+- **Review required:** Yes
+
+### Review Items
+
+- `CONFLICT` tables_read (`recon_9fa17067c14f`): full_source
+- `CONFLICT` tables_written (`recon_8abf8b3a553f`): full_source
+- `LLM_ONLY` rule (`recon_943e4fc23549`): rule__3 - No deterministic evidence was found for this claim.
+- `DETERMINISTIC_ONLY` coverage (`recon_f6313117b776`): 04_batch3_exception, 04_batch3_exception:chunk_text_02 - Deterministic evidence is present in the source but no synthesized rule referenced it.
+- `DETERMINISTIC_ONLY` coverage (`recon_f6313117b776`): 04_batch3_exception, 04_batch3_exception:embedded_01_05 - Deterministic evidence is present in the source but no synthesized rule referenced it.
+
+## Quality Summary
+
+- **Overall status:** REVIEW_REQUIRED
+- **Quality score:** 87.91544117647058/100
+- **Statement coverage:** 18 / 33 (54.5%)
+- **Rule grounding coverage:** 14 / 16 (87.5%)
+- **Decision-chain coverage:** 2 / 2 branches (100.0%)
+- **Conflicts:** 2
+- **Contradictions:** 3
+- **Review required items:** 6
+- **Review required:** Yes
+
+Statement parse success is below the preferred threshold.
+
+### Contradictions
+
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+
+_Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._
+
+## Pipeline Diagnostics
+
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: UPDATE A SET A.ProvisionAmount = (A.OutstandingBalance * A.StandardProvisionPct) / 100 FROM PRO.AccountCal A WHERE A.UpgradeEligible = 'Y'
+- Synthesized in 4 section(s) aligned to extraction chunk boundaries because the object exceeded the single-call output-token ceiling; sections were merged into this report.

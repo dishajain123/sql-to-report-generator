@@ -1,40 +1,40 @@
-2026-09-16 03:35:08,568 | INFO | __main__ | Run started for 07_DPD_Bucket_Classification.sql
-2026-09-16 03:35:08,568 | INFO | logic_rules_extractor.pipeline | Stage 1/6: Running input guardrails
-2026-09-16 03:35:08,570 | INFO | logic_rules_extractor.pipeline | Stage 1/6 completed in 0.00s (input guardrails)
-2026-09-16 03:35:08,570 | INFO | logic_rules_extractor.pipeline | Stage 2/6: Detecting dialect
-2026-09-16 03:35:08,577 | INFO | logic_rules_extractor.pipeline | Detected TSQL dialect (confidence: high)
-2026-09-16 03:35:08,578 | INFO | logic_rules_extractor.pipeline | Stage 2/6 completed in 0.01s (dialect detection)
-2026-09-16 03:35:08,578 | INFO | logic_rules_extractor.pipeline | Stage 3/6: Preprocessing, parsing, and chunking /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql
-2026-09-16 03:35:08,702 | INFO | logic_rules_extractor.pipeline | Detected TSQL PROCEDURE 'DPD_Bucket_Classification' with 5 chunk(s)
-2026-09-16 03:35:08,702 | INFO | logic_rules_extractor.pipeline | Stage 3/6 completed in 0.12s (preprocessing/parsing/chunking)
-2026-09-16 03:35:08,702 | INFO | logic_rules_extractor.pipeline | Stage 4/6: Retrieving dependencies / pattern context and extracting logic per chunk (model: amazon.nova-lite-v1:0)
-2026-09-16 03:35:08,708 | INFO | logic_rules_extractor.pipeline | Persistent knowledge base ready in 0.00s
-2026-09-16 03:35:08,712 | INFO | logic_rules_extractor.pipeline | Stage 4 extraction selection: estimated_tokens=6036 budget=297000 path=single-pass extraction_calls=1 merge_ran=False
-2026-09-16 03:35:24,141 | INFO | logic_rules_extractor.pipeline | Stage 4/6 completed in 15.44s total (kb_ready=0.00s, retrieval/KB sum=0.00s, LLM extraction sum=15.43s, workers=8, chunks=1)
-2026-09-16 03:35:24,142 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
-2026-09-16 03:35:24,350 | INFO | logic_rules_extractor.pipeline | Synthesis: 'DPD_Bucket_Classification' exceeds the single-call output-token budget; running 2 section(s) aligned to extraction chunk boundaries instead of one call.
-2026-09-16 03:36:03,786 | INFO | src.validation.coverage_check | Coverage block lines=27-28 overlap_ratio=1.000 matched_rule=4 uncovered=False
-2026-09-16 03:36:03,787 | INFO | src.validation.coverage_check | Coverage block lines=34-36 overlap_ratio=1.000 matched_rule=0 uncovered=False
-2026-09-16 03:36:03,788 | INFO | src.validation.coverage_check | Coverage block lines=41-48 overlap_ratio=1.000 matched_rule=1 uncovered=False
-2026-09-16 03:36:03,788 | INFO | src.validation.coverage_check | Coverage block lines=57-62 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
-2026-09-16 03:36:03,788 | INFO | src.validation.coverage_check | Coverage block lines=71-75 overlap_ratio=1.000 matched_rule=3 uncovered=True
-2026-09-16 03:36:03,788 | INFO | src.validation.coverage_check | Coverage block lines=79-82 overlap_ratio=1.000 matched_rule=3 uncovered=False
-2026-09-16 03:36:03,788 | INFO | src.validation.coverage_check | Coverage block lines=90-91 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
-2026-09-16 03:36:03,788 | INFO | src.validation.coverage_check | Coverage block lines=95-95 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
-2026-09-16 03:36:03,789 | INFO | src.validation.coverage_check | Coverage block lines=108-108 overlap_ratio=0.143 matched_rule=1 uncovered=False
-2026-09-16 03:36:03,789 | INFO | src.validation.coverage_check | Coverage block lines=115-119 overlap_ratio=0.000 matched_rule=none uncovered=True
-2026-09-16 03:36:03,789 | INFO | src.validation.coverage_check | Coverage block lines=128-128 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
-2026-09-16 03:36:03,789 | INFO | src.validation.coverage_check | Coverage block lines=131-137 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
-2026-09-16 03:36:03,790 | INFO | src.validation.coverage_check | Coverage block lines=143-148 overlap_ratio=1.000 matched_rule=6 uncovered=False
-2026-09-16 03:36:03,790 | INFO | src.validation.coverage_check | Coverage block lines=157-157 overlap_ratio=0.120 matched_rule=4 uncovered=True
-2026-09-16 03:36:03,790 | INFO | src.validation.coverage_check | Coverage block lines=162-163 overlap_ratio=0.366 matched_rule=4 uncovered=True
-2026-09-16 03:36:03,790 | INFO | src.validation.coverage_check | Coverage block lines=169-170 overlap_ratio=0.366 matched_rule=4 uncovered=True
-2026-09-16 03:36:03,791 | INFO | logic_rules_extractor.pipeline | Coverage check found 5 unreviewed decision point(s); asking the model to review (attempt 1)
-2026-09-16 03:36:47,929 | INFO | logic_rules_extractor.pipeline | Stage 5/6 completed in 83.78s (business reasoning)
-2026-09-16 03:36:47,933 | INFO | logic_rules_extractor.pipeline | Stage 6/6: Reconciling deterministic evidence against synthesized output
-2026-09-16 03:36:48,284 | INFO | logic_rules_extractor.pipeline | Stage 6/6 completed in 0.31s (deterministic reconciliation)
-2026-09-16 03:36:48,284 | INFO | logic_rules_extractor.pipeline | Stage 7/7: Applying output guardrails and formatting final report
-2026-09-16 03:36:48,695 | INFO | logic_rules_extractor.pipeline | Verification/traceability diagnostics for PRO.DPD_Bucket_Classification.StoredProcedure_report.md:
+2026-09-16 09:04:16,525 | INFO | __main__ | Run started for 07_DPD_Bucket_Classification.sql
+2026-09-16 09:04:16,526 | INFO | logic_rules_extractor.pipeline | Stage 1/6: Running input guardrails
+2026-09-16 09:04:16,528 | INFO | logic_rules_extractor.pipeline | Stage 1/6 completed in 0.00s (input guardrails)
+2026-09-16 09:04:16,528 | INFO | logic_rules_extractor.pipeline | Stage 2/6: Detecting dialect
+2026-09-16 09:04:16,534 | INFO | logic_rules_extractor.pipeline | Detected TSQL dialect (confidence: high)
+2026-09-16 09:04:16,535 | INFO | logic_rules_extractor.pipeline | Stage 2/6 completed in 0.01s (dialect detection)
+2026-09-16 09:04:16,535 | INFO | logic_rules_extractor.pipeline | Stage 3/6: Preprocessing, parsing, and chunking /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql
+2026-09-16 09:04:16,636 | INFO | logic_rules_extractor.pipeline | Detected TSQL PROCEDURE 'DPD_Bucket_Classification' with 5 chunk(s)
+2026-09-16 09:04:16,637 | INFO | logic_rules_extractor.pipeline | Stage 3/6 completed in 0.10s (preprocessing/parsing/chunking)
+2026-09-16 09:04:16,637 | INFO | logic_rules_extractor.pipeline | Stage 4/6: Retrieving dependencies / pattern context and extracting logic per chunk (model: amazon.nova-lite-v1:0)
+2026-09-16 09:04:16,659 | INFO | logic_rules_extractor.pipeline | Persistent knowledge base ready in 0.02s
+2026-09-16 09:04:16,662 | INFO | logic_rules_extractor.pipeline | Stage 4 extraction selection: estimated_tokens=6036 budget=297000 path=single-pass extraction_calls=1 merge_ran=False
+2026-09-16 09:04:28,969 | INFO | logic_rules_extractor.pipeline | Stage 4/6 completed in 12.33s total (kb_ready=0.02s, retrieval/KB sum=0.00s, LLM extraction sum=12.31s, workers=8, chunks=1)
+2026-09-16 09:04:28,970 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
+2026-09-16 09:04:29,156 | INFO | logic_rules_extractor.pipeline | Synthesis: 'DPD_Bucket_Classification' exceeds the single-call output-token budget; running 2 section(s) aligned to extraction chunk boundaries instead of one call.
+2026-09-16 09:05:08,822 | INFO | src.validation.coverage_check | Coverage block lines=27-28 overlap_ratio=1.000 matched_rule=8 uncovered=False
+2026-09-16 09:05:08,823 | INFO | src.validation.coverage_check | Coverage block lines=34-36 overlap_ratio=1.000 matched_rule=0 uncovered=False
+2026-09-16 09:05:08,826 | INFO | src.validation.coverage_check | Coverage block lines=41-48 overlap_ratio=1.000 matched_rule=1 uncovered=False
+2026-09-16 09:05:08,827 | INFO | src.validation.coverage_check | Coverage block lines=57-62 overlap_ratio=1.000 matched_rule=3 uncovered=False
+2026-09-16 09:05:08,828 | INFO | src.validation.coverage_check | Coverage block lines=71-75 overlap_ratio=1.000 matched_rule=2 uncovered=True
+2026-09-16 09:05:08,829 | INFO | src.validation.coverage_check | Coverage block lines=79-82 overlap_ratio=1.000 matched_rule=11 uncovered=False
+2026-09-16 09:05:08,829 | INFO | src.validation.coverage_check | Coverage block lines=90-91 overlap_ratio=1.000 matched_rule=2 uncovered=False
+2026-09-16 09:05:08,830 | INFO | src.validation.coverage_check | Coverage block lines=95-95 overlap_ratio=0.252 matched_rule=4 uncovered=True
+2026-09-16 09:05:08,830 | INFO | src.validation.coverage_check | Coverage block lines=108-108 overlap_ratio=1.000 matched_rule=4 uncovered=False
+2026-09-16 09:05:08,831 | INFO | src.validation.coverage_check | Coverage block lines=115-119 overlap_ratio=1.000 matched_rule=4 uncovered=False
+2026-09-16 09:05:08,832 | INFO | src.validation.coverage_check | Coverage block lines=128-128 overlap_ratio=1.000 matched_rule=5 uncovered=False
+2026-09-16 09:05:08,834 | INFO | src.validation.coverage_check | Coverage block lines=131-137 overlap_ratio=1.000 matched_rule=15 uncovered=False
+2026-09-16 09:05:08,835 | INFO | src.validation.coverage_check | Coverage block lines=143-148 overlap_ratio=1.000 matched_rule=6 uncovered=False
+2026-09-16 09:05:08,835 | INFO | src.validation.coverage_check | Coverage block lines=157-157 overlap_ratio=1.000 matched_rule=7 uncovered=False
+2026-09-16 09:05:08,836 | INFO | src.validation.coverage_check | Coverage block lines=162-163 overlap_ratio=0.289 matched_rule=0 uncovered=True
+2026-09-16 09:05:08,837 | INFO | src.validation.coverage_check | Coverage block lines=169-170 overlap_ratio=0.289 matched_rule=0 uncovered=True
+2026-09-16 09:05:08,837 | INFO | logic_rules_extractor.pipeline | Coverage check found 4 unreviewed decision point(s); asking the model to review (attempt 1)
+2026-09-16 09:05:49,127 | INFO | logic_rules_extractor.pipeline | Stage 5/6 completed in 80.15s (business reasoning)
+2026-09-16 09:05:49,127 | INFO | logic_rules_extractor.pipeline | Stage 6/6: Reconciling deterministic evidence against synthesized output
+2026-09-16 09:05:49,212 | INFO | logic_rules_extractor.pipeline | Stage 6/6 completed in 0.08s (deterministic reconciliation)
+2026-09-16 09:05:49,212 | INFO | logic_rules_extractor.pipeline | Stage 7/7: Applying output guardrails and formatting final report
+2026-09-16 09:05:49,311 | INFO | logic_rules_extractor.pipeline | Verification/traceability diagnostics for PRO.DPD_Bucket_Classification.StoredProcedure_report.md:
 # DPD Bucket Classification — Verification & Traceability
 
 > Companion artifact to `PRO.DPD_Bucket_Classification.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
@@ -57,44 +57,51 @@
 | Dialect Confidence | `High` |
 | Source Hash | `e455daa4382c749cb51b9aeddb6a078eb577f8ab2a6a75754bce810661b49a2b` |
 | Configuration Version | `ddb60c677229031b` |
-| Run Timestamp | `2026-09-15T22:05:08.702002+00:00` |
+| Run Timestamp | `2026-09-16T03:34:16.636687+00:00` |
 | Object ID | `obj_ff7556b8a40e` |
 
 ## LLM Telemetry
 
 | Item | Value |
 |---|---|
-| Run ID | `telemetry_a9eb11458449` |
+| Run ID | `telemetry_22e65bdf283d` |
 | Total LLM Calls | `4` |
 | Successful Calls | `4` |
 | Failed Calls | `0` |
-| Prompt Tokens | `123602` |
-| Completion Tokens | `15307` |
-| Total Tokens | `138909` |
+| Prompt Tokens | `137121` |
+| Completion Tokens | `15487` |
+| Total Tokens | `152608` |
 | Telemetry Availability | `available` |
 
 | Stage | Calls | Success | Failure | Tokens | Availability |
 |---|---:|---:|---:|---:|---|
-| extraction | 1 | 1 | 0 | 9657 | available |
-| synthesis | 2 | 2 | 0 | 64638 | available |
-| synthesis_revision | 1 | 1 | 0 | 64614 | available |
+| extraction | 1 | 1 | 0 | 9104 | available |
+| synthesis | 2 | 2 | 0 | 71279 | available |
+| synthesis_revision | 1 | 1 | 0 | 72225 | available |
 
 ## Business Rule Summary
 
 | Priority | Rule | Output | Business Purpose |
 |---|---|---|---|
-| 🔴 1 | Update DpdDays [CONFLICT] (`rule__1`) | `DpdDays` | Update the DpdDays field in the LoanAccountCal table based on the number of days past due. |
-| 🟢 2 | Update DpdBucket [MATCHED] (`rule__2`) | `DpdBucket` | Update the DpdBucket field in the LoanAccountCal table based on the number of days past due. |
-| 🔴 3 | Update PenalInterestAmount [CONFLICT] (`rule__3`) | `PenalInterestAmount` | Update the PenalInterestAmount field in the LoanAccountCal table based on the number of days past due. |
-| 🔴 4 | Update BucketWorsened and GracePeriodApplied [CONFLICT] (`rule__4`) | `BucketWorsened, GracePeriodApplied` | Update the BucketWorsened and GracePeriodApplied fields in the LoanAccountCal table based on the number of days past due. |
-| 🟠 5 | Determine DpdBucket [MATCHED] (`deterministic_case_0043_0050_1482_dpdbucket`) | `DpdBucket` | First matching row wins; ELSE includes false or NULL predicates. |
-| 🟠 6 | Determine PenalInterestAmount [MATCHED] (`deterministic_case_0059_0064_2167_penalinterestamount`) | `PenalInterestAmount` | First matching row wins; ELSE includes false or NULL predicates. |
-| 🟠 7 | Determine BucketWorsened [MATCHED] (`deterministic_tsql_if_0071_0094_bucketworsened`) | `BucketWorsened` | Not specified |
-| 🟠 8 | Determine AdjustedPenalty [MATCHED] (`deterministic_case_0117_0121_4529_adjustedpenalty`) | `AdjustedPenalty` | First matching row wins; ELSE includes false or NULL predicates. |
-| 🟠 9 | Determine Reason [MATCHED] (`deterministic_decision_5813_6511_2_reason`) | `Reason` | First matching row wins. SQL type conversion still applies; ELSE includes false or NULL predicates. |
-| 🟢 10 | Calculate DPD days [MATCHED] (`rule__1__5`) | `DpdDays` | Compute the number of days past due for accounts with a due date. |
-| 🟢 11 | Set DPD days to zero [MATCHED] (`rule__2__6`) | `DpdDays, DpdBucket` | Set the number of days past due to zero for accounts without a due date. |
-| 🟢 12 | Determine DPD bucket [MATCHED] (`rule__3__7`) | `DpdBucket` | Assign a DPD bucket to each account based on the number of days past due. |
+| 🟢 1 | Calculate DpdDays for due accounts [MATCHED] (`rule__1__9`) | `DpdDays` | For loan accounts with a due date, calculate the number of days past due based on the process date. |
+| 🟢 2 | Set DpdDays for non-due accounts [MATCHED] (`rule__2__10`) | `DpdDays, DpdBucket` | For loan accounts without a due date, set the number of days past due to zero and the bucket to 'NOT_APPLICABLE'. |
+| 🟢 3 | Classify accounts into overdue buckets [MATCHED] (`rule__3__11`) | `DpdBucket` | Classify loan accounts into overdue buckets based on the number of days past due. |
+| 🟢 4 | Determine worsened bucket status [MATCHED] (`rule__4__12`) | `BucketWorsened` | Determine if the account's overdue status has worsened since the last process run. |
+| 🟢 5 | Calculate penalty interest amount [MATCHED] (`rule__5__13`) | `PenalInterestAmount` | Calculate the penalty interest amount for loan accounts based on the overdue bucket classification. |
+| 🟢 6 | Adjust penalty interest amount by facility type [MATCHED] (`rule__6__14`) | `AdjustedPenalty` | Adjust the penalty interest amount based on the facility type for accounts with worsened status. |
+| 🟢 7 | Stage adjusted penalty interest amount [MATCHED] (`rule__7__15`) | `AccountId, DpdBucket, FacilityType, AdjustedPenalty` | Stage the adjusted penalty interest amount for further processing. |
+| 🟢 8 | Merge staged data into DpdBucket history [MATCHED] (`rule__8__16`) | `Target.DpdBucket, Target.AdjustedPenalty, Target.LastUpdatedDate` | Merge the staged data into the DpdBucket history table, updating existing records or inserting new ones. |
+| 🟢 9 | Insert into collections queue [MATCHED] (`rule__9`) | `AccountId, EscalationDate, Reason` | Insert records into the collections queue for accounts that have worsened. |
+| 🟠 10 | Determine BucketWorsened [MATCHED] (`deterministic_tsql_if_0071_0094_bucketworsened`) | `BucketWorsened` | Not specified |
+| 🟠 11 | Determine Reason [MATCHED] (`deterministic_decision_5813_6511_2_reason`) | `Reason` | First matching row wins. SQL type conversion still applies; ELSE includes false or NULL predicates. |
+| 🟠 12 | Update DpdDays for certain conditions [LLM_ONLY] (`rule__1`) | `DpdDays` | Update the DpdDays field in the PRO.LoanAccountCal table based on specific conditions. |
+| 🟠 13 | Update DpdBucket based on DpdDays and FacilityType [LLM_ONLY] (`rule__2`) | `DpdBucket` | Update the DpdBucket field in the PRO.LoanAccountCal table based on the DpdDays and FacilityType. |
+| 🔴 14 | Update BucketWorsened and GracePeriodApplied [CONFLICT] (`rule__3`) | `BucketWorsened, GracePeriodApplied` | Update the BucketWorsened and GracePeriodApplied fields in the PRO.LoanAccountCal table based on the DpdBucket and FacilityType. |
+| 🟠 15 | Update PenalInterestAmount [LLM_ONLY] (`rule__4`) | `PenalInterestAmount` | Update the PenalInterestAmount field in the PRO.LoanAccountCal table. |
+| 🟠 16 | Insert and update records in #DpdStaging [LLM_ONLY] (`rule__5`) | `AccountId, DpdBucket, FacilityType, AdjustedPenalty` | Insert records into the #DpdStaging table and update the AdjustedPenalty field based on certain conditions. |
+| 🟠 17 | Merge records into PRO.DpdBucketHistory [LLM_ONLY] (`rule__6`) | `AccountId, DpdBucket, AdjustedPenalty, LastUpdatedDate` | Merge records into the PRO.DpdBucketHistory table. |
+| 🟠 18 | Insert records into PRO.CollectionsQueue [LLM_ONLY] (`rule__7`) | `AccountId, EscalationDate, Reason` | Insert records into the PRO.CollectionsQueue table. |
+| 🟠 19 | Insert records into PRO.DpdBucketAuditLog [LLM_ONLY] (`rule__8`) | `AccountId, TransitionDate, NewBucket` | Insert records into the PRO.DpdBucketAuditLog table. |
 
 ## Source Traceability
 
@@ -103,42 +110,49 @@
 
 | # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |
 |---|---|---|---|---|---|---|
-| 1 | Update DpdDays (rule__1) | DpdDays > 90 | Not cited | 04_batch3_nested_block:embedded_01_35 | dependency_0001; dependency_0005; dependency_0009; dependency_0013; dependency_0017; dependency_0021; _(+7 more instance(s) not shown)_ | Needs Review |
-| 2 | Update DpdBucket (rule__2) | DpdDays > 90 | Not cited | 04_batch3_nested_block:embedded_02_36 | dependency_0002; dependency_0006; dependency_0010; dependency_0014; dependency_0018; dependency_0022; _(+7 more instance(s) not shown)_ | Verified |
-| 3 | Update PenalInterestAmount (rule__3) | DpdDays > 90 | Not cited | 04_batch3_nested_block:chunk_text_07 | dependency_0003; dependency_0007; dependency_0011; dependency_0015; dependency_0019; dependency_0023; _(+7 more instance(s) not shown)_ | Needs Review |
-| 4 | Update BucketWorsened and GracePeriodApplied (rule__4) | DpdDays > 90 | Not cited | 04_batch3_nested_block:chunk_text_10 | dependency_0004; dependency_0008; dependency_0012; dependency_0016; dependency_0020; dependency_0024; _(+6 more instance(s) not shown)_ | Needs Review |
-| 5 | Determine DpdBucket (deterministic_case_0043_0050_1482_dpdbucket) | Not cited | source \| Lines 43-50 | Not cited | Not cited | Verified |
-| 6 | Determine PenalInterestAmount (deterministic_case_0059_0064_2167_penalinterestamount) | Not cited | source \| Lines 59-64 | Not cited | Not cited | Verified |
-| 7 | Determine BucketWorsened (deterministic_tsql_if_0071_0094_bucketworsened) | Not cited | source \| Lines 71-94 | Not cited | Not cited | Verified |
-| 8 | Determine AdjustedPenalty (deterministic_case_0117_0121_4529_adjustedpenalty) | Not cited | source \| Lines 117-121 | Not cited | Not cited | Verified |
-| 9 | Determine Reason (deterministic_decision_5813_6511_2_reason) | Not cited | source \| Lines 143-157 | Not cited | Not cited | Verified |
-| 10 | Calculate DPD days (rule__1__5) | UPDATE A SET A.DpdDays = DATEDIFF(DAY, A.LastPaymentDueDate, @ProcessDate) FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate IS NOT NULL AND A.LastPaymentDueDate <= @ProcessDate | Not cited | Not cited | Not cited | Verified |
-| 11 | Set DPD days to zero (rule__2__6) | UPDATE A SET A.DpdDays = 0, A.DpdBucket = 'NOT_APPLICABLE' FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate IS NULL | Not cited | Not cited | Not cited | Verified |
-| 12 | Determine DPD bucket (rule__3__7) | UPDATE A SET A.DpdBucket = CASE WHEN A.DpdDays IS NULL THEN 'NOT_APPLICABLE' WHEN A.DpdDays = 0 THEN 'CURRENT' WHEN A.DpdDays BETWEEN 1 AND 30 THEN 'BUCKET_1_30' WHEN A.DpdDays BETWEEN 31 AND 60 THEN 'BUCKET_31_60' WHEN A.DpdDays BETWEEN 61 AND 90 THEN 'BUCKE… | Not cited | Not cited | Not cited | Verified |
+| 1 | Calculate DpdDays for due accounts (rule__1__9) | UPDATE A SET A.DpdDays = DATEDIFF(DAY, A.LastPaymentDueDate, @ProcessDate) FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate IS NOT NULL AND A.LastPaymentDueDate <= @ProcessDate | Not cited | 04_batch3_nested_block:chunk_text_04 | dependency_0009; dependency_0010; dependency_0011; dependency_0012 | Verified |
+| 2 | Set DpdDays for non-due accounts (rule__2__10) | UPDATE A SET A.DpdDays = 0, A.DpdBucket = 'NOT_APPLICABLE' FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate IS NULL | Not cited | 04_batch3_nested_block:chunk_text_05 | dependency_0013; dependency_0014; dependency_0015 | Verified |
+| 3 | Classify accounts into overdue buckets (rule__3__11) | UPDATE A SET A.DpdBucket = ( CASE WHEN A.DpdDays IS NULL THEN 'NOT_APPLICABLE' WHEN A.DpdDays = 0 THEN 'CURRENT' WHEN A.DpdDays BETWEEN 1 AND 30 THEN 'BUCKET_1_30' WHEN A.DpdDays BETWEEN 31 AND 60 THEN 'BUCKET_31_60' WHEN A.DpdDays BETWEEN 61 AND 90 THEN 'BUC… | Not cited | 04_batch3_nested_block:chunk_text_06 | dependency_0016; dependency_0017; dependency_0018 | Verified |
+| 4 | Determine worsened bucket status (rule__4__12) | UPDATE A SET A.BucketWorsened = 'Y' FROM PRO.LoanAccountCal A WHERE A.PrevDpdBucket IS NOT NULL AND A.DpdBucket <> A.PrevDpdBucket AND A.DpdDays > ISNULL(A.PrevDpdDays, 0) | Not cited | 04_batch3_nested_block:chunk_text_10 | dependency_0021; dependency_0022; dependency_0023; dependency_0024; dependency_0025; dependency_0026; _(+13 more instance(s) not shown)_ | Verified |
+| 5 | Calculate penalty interest amount (rule__5__13) | UPDATE A SET A.PenalInterestAmount = ( CASE WHEN A.DpdBucket = 'BUCKET_1_30' THEN (A.OutstandingBalance * 0.02) / 365 * A.DpdDays WHEN A.DpdBucket = 'BUCKET_31_60' THEN (A.OutstandingBalance * 0.03) / 365 * A.DpdDays WHEN A.DpdBucket IN ('BUCKET_61_90', 'BUCK… | Not cited | 04_batch3_nested_block:chunk_text_07 | dependency_0020; dependency_0021; dependency_0022; dependency_0023; dependency_0024; dependency_0025; _(+14 more instance(s) not shown)_ | Verified |
+| 6 | Adjust penalty interest amount by facility type (rule__6__14) | UPDATE S SET S.AdjustedPenalty = ( CASE WHEN S.FacilityType IN ('CC', 'OD') THEN S.AdjustedPenalty * 1.10 WHEN S.FacilityType IN ('TL', 'DL') THEN S.AdjustedPenalty * 1.05 ELSE S.AdjustedPenalty END ) FROM #DpdStaging S WHERE S.AdjustedPenalty IS NOT NULL | Not cited | 04_batch3_nested_block:chunk_text_24 | dependency_0039; dependency_0040; dependency_0041; dependency_0042; dependency_0043 | Verified |
+| 7 | Stage adjusted penalty interest amount (rule__7__15) | INSERT INTO #DpdStaging (AccountId, DpdBucket, FacilityType, AdjustedPenalty) SELECT A.AccountId, A.DpdBucket, A.FacilityType, A.PenalInterestAmount FROM PRO.LoanAccountCal A WHERE A.BucketWorsened = 'Y' | Not cited | 04_batch3_nested_block:chunk_text_23 | dependency_0040; dependency_0041; dependency_0042; dependency_0043 | Verified |
+| 8 | Merge staged data into DpdBucket history (rule__8__16) | MERGE PRO.DpdBucketHistory AS Target USING #DpdStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.DpdBucket = Source.DpdBucket, Target.AdjustedPenalty = Source.AdjustedPenalty, Target.LastUpdatedDate = @ProcessDate WH… | Not cited | 04_batch3_nested_block:chunk_text_25 | dependency_0043; dependency_0044; dependency_0045 | Verified |
+| 9 | Insert into collections queue (rule__9) | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, CASE WHEN DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') AND FacilityType IN ('CC', 'OD') THEN 'SEVERE_DPD_CASH_CREDIT' WHEN DpdBucket IN ('BUCKET_61_90', 'B… | Not cited | 04_batch3_nested_block:chunk_text_26 | dependency_0045; dependency_0046; dependency_0047; dependency_0048; dependency_0049 | Verified |
+| 10 | Determine BucketWorsened (deterministic_tsql_if_0071_0094_bucketworsened) | Not cited | source \| Lines 71-94 | Not cited | Not cited | Verified |
+| 11 | Determine Reason (deterministic_decision_5813_6511_2_reason) | Not cited | source \| Lines 143-157 | Not cited | Not cited | Verified |
+| 12 | Update DpdDays for certain conditions (rule__1) | DpdDays > 90 | Not cited | Not cited | Not cited | Needs Review |
+| 13 | Update DpdBucket based on DpdDays and FacilityType (rule__2) | DpdDays > 90 AND FacilityType IN ('CC', 'OD') | Not cited | Not cited | Not cited | Needs Review |
+| 14 | Update BucketWorsened and GracePeriodApplied (rule__3) | DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') AND FacilityType IN ('CC', 'OD') | Not cited | Not cited | Not cited | Needs Review |
+| 15 | Update PenalInterestAmount (rule__4) | PenalInterestAmount is not null | Not cited | Not cited | Not cited | Needs Review |
+| 16 | Insert and update records in #DpdStaging (rule__5) | AccountId, DpdBucket, FacilityType, AdjustedPenalty are not null | Not cited | Not cited | Not cited | Needs Review |
+| 17 | Merge records into PRO.DpdBucketHistory (rule__6) | Target.AccountId, Source.AccountId, Target.DpdBucket, Source.DpdBucket, Target.AdjustedPenalty, Source.AdjustedPenalty, Target.LastUpdatedDate, AccountId, DpdBucket, AdjustedPenalty, FirstFlaggedDate, LastUpdatedDate are not null | Not cited | Not cited | Not cited | Needs Review |
+| 18 | Insert records into PRO.CollectionsQueue (rule__7) | AccountId, EscalationDate, Reason are not null | Not cited | Not cited | Not cited | Needs Review |
+| 19 | Insert records into PRO.DpdBucketAuditLog (rule__8) | AccountId, TransitionDate, NewBucket are not null | Not cited | Not cited | Not cited | Needs Review |
 
 ### Decision-Chain Branch Provenance
 
 | Branch | Condition | Source Location |
 |---|---|---|
-| case_0043_0050_1482:branch_001 | A.DpdDays IS NULL | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 44-45 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_07 |
-| case_0043_0050_1482:branch_002 | A.DpdDays = 0 | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 45-46 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_07 |
-| case_0043_0050_1482:branch_003 | A.DpdDays BETWEEN 1 AND 30 | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 46-47 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_07 |
-| case_0043_0050_1482:branch_004 | A.DpdDays BETWEEN 31 AND 60 | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 47-48 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_07 |
-| case_0043_0050_1482:branch_005 | A.DpdDays BETWEEN 61 AND 90 | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 48-49 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_07 |
-| case_0043_0050_1482:branch_006 | ELSE | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 49-50 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_07 |
-| case_0059_0064_2167:branch_001 | A.DpdBucket = 'BUCKET_1_30' | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 60-61 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_08 |
-| case_0059_0064_2167:branch_002 | A.DpdBucket = 'BUCKET_31_60' | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 61-62 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_10 |
-| case_0059_0064_2167:branch_003 | A.DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 62-63 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_10 |
-| case_0059_0064_2167:branch_004 | ELSE | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 63-64 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_12 |
-| tsql_if_0071_0094:branch_001 | EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE LastPaymentDueDate >= @GraceWindowStart) | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 72-78 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_18 |
-| tsql_if_0071_0094:branch_002 | EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE PrevDpdBucket IS NOT NULL) | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 80-87 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_22 |
-| tsql_if_0071_0094:branch_003 | ELSE | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 89-93 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_23 |
-| case_0117_0121_4529:branch_001 | S.FacilityType IN ('CC', 'OD') | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 118-119 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_25 |
-| case_0117_0121_4529:branch_002 | S.FacilityType IN ('TL', 'DL') | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 119-120 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_25 |
-| case_0117_0121_4529:branch_003 | ELSE | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 120-121 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_25 |
-| decision_5813_6511_2:branch_001 | DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') AND FacilityType IN ('CC', 'OD') | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 143-157 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_26 |
-| decision_5813_6511_2:branch_002 | DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 143-157 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_26 |
-| decision_5813_6511_2:branch_003 | ELSE | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql \| Lines 143-157 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_26 |
+| case_0043_0050_1482:branch_001 | A.DpdDays IS NULL | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 44-45 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_07 |
+| case_0043_0050_1482:branch_002 | A.DpdDays = 0 | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 45-46 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_07 |
+| case_0043_0050_1482:branch_003 | A.DpdDays BETWEEN 1 AND 30 | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 46-47 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_07 |
+| case_0043_0050_1482:branch_004 | A.DpdDays BETWEEN 31 AND 60 | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 47-48 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_07 |
+| case_0043_0050_1482:branch_005 | A.DpdDays BETWEEN 61 AND 90 | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 48-49 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_07 |
+| case_0043_0050_1482:branch_006 | ELSE | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 49-50 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_07 |
+| case_0059_0064_2167:branch_001 | A.DpdBucket = 'BUCKET_1_30' | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 60-61 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_08 |
+| case_0059_0064_2167:branch_002 | A.DpdBucket = 'BUCKET_31_60' | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 61-62 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_10 |
+| case_0059_0064_2167:branch_003 | A.DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 62-63 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_10 |
+| case_0059_0064_2167:branch_004 | ELSE | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 63-64 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_12 |
+| tsql_if_0071_0094:branch_001 | EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE LastPaymentDueDate >= @GraceWindowStart) | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 72-78 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_18 |
+| tsql_if_0071_0094:branch_002 | EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE PrevDpdBucket IS NOT NULL) | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 80-87 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_22 |
+| tsql_if_0071_0094:branch_003 | ELSE | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 89-93 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_23 |
+| case_0117_0121_4529:branch_001 | S.FacilityType IN ('CC', 'OD') | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 118-119 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_25 |
+| case_0117_0121_4529:branch_002 | S.FacilityType IN ('TL', 'DL') | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 119-120 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_25 |
+| case_0117_0121_4529:branch_003 | ELSE | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 120-121 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_25 |
+| decision_5813_6511_2:branch_001 | DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') AND FacilityType IN ('CC', 'OD') | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 143-157 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_26 |
+| decision_5813_6511_2:branch_002 | DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 143-157 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_26 |
+| decision_5813_6511_2:branch_003 | ELSE | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql \| Lines 143-157 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_26 |
 | decision_chain_006:branch_001 | A.DpdDays IS NULL | source |
 | decision_chain_006:branch_002 | A.DpdDays = 0 | source |
 | decision_chain_006:branch_003 | A.DpdDays BETWEEN 1 AND 30 | source |
@@ -161,8 +175,8 @@ _Source evidence is the literal technical text carried through the pipeline; Sou
 
 ## Completeness Ledger
 
-- **Executable constructs:** 160
-- **Disposition:** covered_by_rule=142, technical_only=4, parser_failed=2, uncovered=12
+- **Executable constructs:** 152
+- **Disposition:** covered_by_rule=134, technical_only=4, uncovered=14
 
 | Construct | Status | Source location | Statement / chunk | Evidence |
 |---|---|---|---|---|
@@ -172,7 +186,6 @@ _Source evidence is the literal technical text carried through the pipeline; Sou
 | SET | uncovered | Lines 1-1 | 02_batch2_declaration:chunk_text_01, 02_batch2_declaration | SET QUOTED_IDENTIFIER ON |
 | SET | uncovered | Lines 1-1 | 02_batch2_declaration:embedded_01_02, 02_batch2_declaration | SET QUOTED_IDENTIFIER ON |
 | STATEMENT | uncovered | Lines 1-2 | 03_batch3_main_body:chunk_text_01, 03_batch3_main_body | BEGIN SET NOCOUNT ON |
-| SET | uncovered | Lines 2-2 | 03_batch3_main_body:embedded_01_02, 03_batch3_main_body | SET NOCOUNT ON |
 | STATEMENT | covered_by_rule | Lines 1-1 | 04_batch3_nested_block:chunk_text_01, 04_batch3_nested_block | BEGIN TRY |
 | SELECT | covered_by_rule | Lines 3-3 | 04_batch3_nested_block:chunk_text_02, 04_batch3_nested_block | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
 | STATEMENT | covered_by_rule | Lines 4-6 | 04_batch3_nested_block:chunk_text_03, 04_batch3_nested_block | DECLARE @GraceWindowStart DATE = DATEADD(DAY, -3, @ProcessDate) -- Rule 1: derive days past due from the last payment date |
@@ -211,92 +224,85 @@ _Source evidence is the literal technical text carried through the pipeline; Sou
 | UPDATE | covered_by_rule | Lines 14-20 | 04_batch3_nested_block:embedded_02_36, 04_batch3_nested_block | UPDATE A SET A.DpdDays = 0, A.DpdBucket = 'NOT_APPLICABLE' FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate IS NULL -- Rule 3: multi-branch bucket classification by DPD range |
 | UPDATE | covered_by_rule | Lines 21-36 | 04_batch3_nested_block:embedded_03_37, 04_batch3_nested_block | UPDATE A SET A.DpdBucket = ( CASE WHEN A.DpdDays IS NULL THEN 'NOT_APPLICABLE' WHEN A.DpdDays = 0 THEN 'CURRENT' WHEN A.DpdDays BETWEEN 1 AND 30 THEN 'BUCKET_1_30' WHEN A.DpdDays BETWEEN 31 AND 60 THEN 'BUCKET_31_60' WHEN A.DpdDays BETWE... |
 | UPDATE | covered_by_rule | Lines 37-50 | 04_batch3_nested_block:embedded_04_38, 04_batch3_nested_block | UPDATE A SET A.PenalInterestAmount = ( CASE WHEN A.DpdBucket = 'BUCKET_1_30' THEN (A.OutstandingBalance * 0.02) / 365 * A.DpdDays WHEN A.DpdBucket = 'BUCKET_31_60' THEN (A.OutstandingBalance * 0.03) / 365 * A.DpdDays WHEN A.DpdBucket IN... |
-| SELECT | covered_by_rule | Lines 51-51 | 04_batch3_nested_block:embedded_04_39, 04_batch3_nested_block | IF EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE LastPaymentDueDate >= @GraceWindowStart) |
-| STATEMENT | covered_by_rule | Lines 1-1 | 04_batch3_nested_block:embedded_04_40, 04_batch3_nested_block | BEGIN |
-| UPDATE | covered_by_rule | Lines 53-57 | 04_batch3_nested_block:embedded_05_41, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'N', A.GracePeriodApplied = 'Y' FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate >= @GraceWindowStart |
-| UPDATE | covered_by_rule | Lines 61-66 | 04_batch3_nested_block:embedded_06_42, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'Y' FROM PRO.LoanAccountCal A WHERE A.PrevDpdBucket IS NOT NULL AND A.DpdBucket <> A.PrevDpdBucket AND A.DpdDays > ISNULL(A.PrevDpdDays, 0) |
-| UPDATE | covered_by_rule | Lines 70-72 | 04_batch3_nested_block:embedded_07_43, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'N' FROM PRO.LoanAccountCal A |
-| INSERT | covered_by_rule | Lines 88-88 | 04_batch3_nested_block:embedded_08_44, 04_batch3_nested_block | INSERT INTO #DpdStaging (AccountId, DpdBucket, FacilityType, AdjustedPenalty) |
-| SELECT | covered_by_rule | Lines 89-94 | 04_batch3_nested_block:embedded_09_45, 04_batch3_nested_block | SELECT A.AccountId, A.DpdBucket, A.FacilityType, A.PenalInterestAmount FROM PRO.LoanAccountCal A WHERE A.BucketWorsened = 'Y' -- Rule 7: derived-assignment UPDATE reading back the staging rows -- written above - facility type nudges the... |
-| UPDATE | covered_by_rule | Lines 95-107 | 04_batch3_nested_block:embedded_10_46, 04_batch3_nested_block | UPDATE S SET S.AdjustedPenalty = ( CASE WHEN S.FacilityType IN ('CC', 'OD') THEN S.AdjustedPenalty * 1.10 WHEN S.FacilityType IN ('TL', 'DL') THEN S.AdjustedPenalty * 1.05 ELSE S.AdjustedPenalty END ) FROM #DpdStaging S WHERE S.AdjustedP... |
-| MERGE | parser_failed | Lines 108-111 | 04_batch3_nested_block:embedded_11_47, 04_batch3_nested_block | MERGE PRO.DpdBucketHistory AS Target USING #DpdStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN |
-| UPDATE | parser_failed | Lines 112-116 | 04_batch3_nested_block:embedded_12_48, 04_batch3_nested_block | UPDATE SET Target.DpdBucket = Source.DpdBucket, Target.AdjustedPenalty = Source.AdjustedPenalty, Target.LastUpdatedDate = @ProcessDate WHEN NOT MATCHED BY TARGET THEN |
-| INSERT | covered_by_rule | Lines 117-118 | 04_batch3_nested_block:embedded_13_49, 04_batch3_nested_block | INSERT (AccountId, DpdBucket, AdjustedPenalty, FirstFlaggedDate, LastUpdatedDate) VALUES (Source.AccountId, Source.DpdBucket, Source.AdjustedPenalty, @ProcessDate, @ProcessDate); |
-| INSERT | covered_by_rule | Lines 123-123 | 04_batch3_nested_block:embedded_14_50, 04_batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) |
-| SELECT | covered_by_rule | Lines 124-136 | 04_batch3_nested_block:embedded_15_51, 04_batch3_nested_block | SELECT AccountId, @ProcessDate, CASE WHEN DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') AND FacilityType IN ('CC', 'OD') THEN 'SEVERE_DPD_CASH_CREDIT' WHEN DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') THEN 'SEVERE_DPD_OTHER_FACILITY... |
-| INSERT | covered_by_rule | Lines 137-137 | 04_batch3_nested_block:embedded_16_52, 04_batch3_nested_block | INSERT INTO PRO.DpdBucketAuditLog (AccountId, TransitionDate, NewBucket) |
-| SELECT | covered_by_rule | Lines 138-140 | 04_batch3_nested_block:embedded_17_53, 04_batch3_nested_block | SELECT H.AccountId, @ProcessDate, H.DpdBucket FROM PRO.DpdBucketHistory H WHERE H.LastUpdatedDate = @ProcessDate |
-| UPDATE | covered_by_rule | Lines 142-144 | 04_batch3_nested_block:embedded_18_54, 04_batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'DPD_Bucket_Classification' |
-| UPDATE | covered_by_rule | Lines 149-151 | 04_batch3_nested_block:embedded_19_55, 04_batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'DPD_Bucket_Classification' |
-| SET | covered_by_rule | Lines 153-153 | 04_batch3_nested_block:embedded_20_56, 04_batch3_nested_block | SET NOCOUNT OFF |
+| UPDATE | covered_by_rule | Lines 53-57 | 04_batch3_nested_block:embedded_05_39, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'N', A.GracePeriodApplied = 'Y' FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate >= @GraceWindowStart |
+| UPDATE | covered_by_rule | Lines 61-66 | 04_batch3_nested_block:embedded_06_40, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'Y' FROM PRO.LoanAccountCal A WHERE A.PrevDpdBucket IS NOT NULL AND A.DpdBucket <> A.PrevDpdBucket AND A.DpdDays > ISNULL(A.PrevDpdDays, 0) |
+| UPDATE | covered_by_rule | Lines 70-72 | 04_batch3_nested_block:embedded_07_41, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'N' FROM PRO.LoanAccountCal A |
+| INSERT | covered_by_rule | Lines 88-94 | 04_batch3_nested_block:embedded_08_42, 04_batch3_nested_block | INSERT INTO #DpdStaging (AccountId, DpdBucket, FacilityType, AdjustedPenalty) SELECT A.AccountId, A.DpdBucket, A.FacilityType, A.PenalInterestAmount FROM PRO.LoanAccountCal A WHERE A.BucketWorsened = 'Y' -- Rule 7: derived-assignment UPD... |
+| UPDATE | covered_by_rule | Lines 95-107 | 04_batch3_nested_block:embedded_09_43, 04_batch3_nested_block | UPDATE S SET S.AdjustedPenalty = ( CASE WHEN S.FacilityType IN ('CC', 'OD') THEN S.AdjustedPenalty * 1.10 WHEN S.FacilityType IN ('TL', 'DL') THEN S.AdjustedPenalty * 1.05 ELSE S.AdjustedPenalty END ) FROM #DpdStaging S WHERE S.AdjustedP... |
+| MERGE | covered_by_rule | Lines 108-122 | 04_batch3_nested_block:embedded_10_44, 04_batch3_nested_block | MERGE PRO.DpdBucketHistory AS Target USING #DpdStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.DpdBucket = Source.DpdBucket, Target.AdjustedPenalty = Source.AdjustedPenalty, Target.LastUpdated... |
+| INSERT | covered_by_rule | Lines 123-136 | 04_batch3_nested_block:embedded_11_45, 04_batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, CASE WHEN DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') AND FacilityType IN ('CC', 'OD') THEN 'SEVERE_DPD_CASH_CREDIT' WHEN DpdBucket... |
+| INSERT | covered_by_rule | Lines 137-140 | 04_batch3_nested_block:embedded_12_46, 04_batch3_nested_block | INSERT INTO PRO.DpdBucketAuditLog (AccountId, TransitionDate, NewBucket) SELECT H.AccountId, @ProcessDate, H.DpdBucket FROM PRO.DpdBucketHistory H WHERE H.LastUpdatedDate = @ProcessDate |
+| UPDATE | covered_by_rule | Lines 142-144 | 04_batch3_nested_block:embedded_13_47, 04_batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'DPD_Bucket_Classification' |
+| UPDATE | covered_by_rule | Lines 149-151 | 04_batch3_nested_block:embedded_14_48, 04_batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'DPD_Bucket_Classification' |
+| SET | covered_by_rule | Lines 153-153 | 04_batch3_nested_block:embedded_15_49, 04_batch3_nested_block | SET NOCOUNT OFF |
 | READ | covered_by_rule | unavailable | 04_batch3_nested_block:chunk_text_02, 04_batch3_nested_block:chunk_text_02, 04_batch3_nested_block | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
-| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_04, 04_batch3_nested_block:chunk_text_04, 04_batch3_nested_block | UPDATE A SET A.DpdDays = DATEDIFF(DAY, A.LastPaymentDueDate, @ProcessDate) FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate IS NOT NULL AND A.LastPaymentDueDate <= @ProcessDate -- Rule 2: accounts with no due date on record cannot be... |
-| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_05, 04_batch3_nested_block:chunk_text_05, 04_batch3_nested_block | UPDATE A SET A.DpdDays = 0, A.DpdBucket = 'NOT_APPLICABLE' FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate IS NULL -- Rule 3: multi-branch bucket classification by DPD range |
-| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_06, 04_batch3_nested_block:chunk_text_06, 04_batch3_nested_block | UPDATE A SET A.DpdBucket = ( CASE WHEN A.DpdDays IS NULL THEN 'NOT_APPLICABLE' WHEN A.DpdDays = 0 THEN 'CURRENT' WHEN A.DpdDays BETWEEN 1 AND 30 THEN 'BUCKET_1_30' WHEN A.DpdDays BETWEEN 31 AND 60 THEN 'BUCKET_31_60' WHEN A.DpdDays BETWE... |
-| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block | UPDATE A SET A.PenalInterestAmount = ( CASE WHEN A.DpdBucket = 'BUCKET_1_30' THEN (A.OutstandingBalance * 0.02) / 365 * A.DpdDays WHEN A.DpdBucket = 'BUCKET_31_60' THEN (A.OutstandingBalance * 0.03) / 365 * A.DpdDays WHEN A.DpdBucket IN... |
+| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_04, 04_batch3_nested_block:chunk_text_04, 04_batch3_nested_block | UPDATE A SET A.DpdDays = DATEDIFF(DAY, A.LastPaymentDueDate, @ProcessDate) FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate IS NOT NULL AND A.LastPaymentDueDate <= @ProcessDate -- Rule 2: accounts with no due date on record cannot be... |
+| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_05, 04_batch3_nested_block:chunk_text_05, 04_batch3_nested_block | UPDATE A SET A.DpdDays = 0, A.DpdBucket = 'NOT_APPLICABLE' FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate IS NULL -- Rule 3: multi-branch bucket classification by DPD range |
+| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_06, 04_batch3_nested_block:chunk_text_06, 04_batch3_nested_block | UPDATE A SET A.DpdBucket = ( CASE WHEN A.DpdDays IS NULL THEN 'NOT_APPLICABLE' WHEN A.DpdDays = 0 THEN 'CURRENT' WHEN A.DpdDays BETWEEN 1 AND 30 THEN 'BUCKET_1_30' WHEN A.DpdDays BETWEEN 31 AND 60 THEN 'BUCKET_31_60' WHEN A.DpdDays BETWE... |
+| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block | UPDATE A SET A.PenalInterestAmount = ( CASE WHEN A.DpdBucket = 'BUCKET_1_30' THEN (A.OutstandingBalance * 0.02) / 365 * A.DpdDays WHEN A.DpdBucket = 'BUCKET_31_60' THEN (A.OutstandingBalance * 0.03) / 365 * A.DpdDays WHEN A.DpdBucket IN... |
 | READ | covered_by_rule | unavailable | 04_batch3_nested_block:chunk_text_08, 04_batch3_nested_block:chunk_text_08, 04_batch3_nested_block | IF EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE LastPaymentDueDate >= @GraceWindowStart) |
-| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_10, 04_batch3_nested_block:chunk_text_10, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'N', A.GracePeriodApplied = 'Y' FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate >= @GraceWindowStart |
+| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_10, 04_batch3_nested_block:chunk_text_10, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'N', A.GracePeriodApplied = 'Y' FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate >= @GraceWindowStart |
 | READ | covered_by_rule | unavailable | 04_batch3_nested_block:chunk_text_12, 04_batch3_nested_block:chunk_text_12, 04_batch3_nested_block | ELSE IF EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE PrevDpdBucket IS NOT NULL) |
-| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_14, 04_batch3_nested_block:chunk_text_14, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'Y' FROM PRO.LoanAccountCal A WHERE A.PrevDpdBucket IS NOT NULL AND A.DpdBucket <> A.PrevDpdBucket AND A.DpdDays > ISNULL(A.PrevDpdDays, 0) |
-| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_18, 04_batch3_nested_block:chunk_text_18, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'N' FROM PRO.LoanAccountCal A |
-| INSERT_TEMP | technical_only | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_23, 04_batch3_nested_block:chunk_text_23, 04_batch3_nested_block | INSERT INTO #DpdStaging (AccountId, DpdBucket, FacilityType, AdjustedPenalty) SELECT A.AccountId, A.DpdBucket, A.FacilityType, A.PenalInterestAmount FROM PRO.LoanAccountCal A WHERE A.BucketWorsened = 'Y' -- Rule 7: derived-assignment UPD... |
-| UPDATE_TEMP | technical_only | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_24, 04_batch3_nested_block:chunk_text_24, 04_batch3_nested_block | UPDATE S SET S.AdjustedPenalty = ( CASE WHEN S.FacilityType IN ('CC', 'OD') THEN S.AdjustedPenalty * 1.10 WHEN S.FacilityType IN ('TL', 'DL') THEN S.AdjustedPenalty * 1.05 ELSE S.AdjustedPenalty END ) FROM #DpdStaging S WHERE S.AdjustedP... |
-| MERGE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_25, 04_batch3_nested_block:chunk_text_25, 04_batch3_nested_block | MERGE PRO.DpdBucketHistory AS Target USING #DpdStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.DpdBucket = Source.DpdBucket, Target.AdjustedPenalty = Source.AdjustedPenalty, Target.LastUpdated... |
-| INSERT | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_26, 04_batch3_nested_block:chunk_text_26, 04_batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, CASE WHEN DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') AND FacilityType IN ('CC', 'OD') THEN 'SEVERE_DPD_CASH_CREDIT' WHEN DpdBucket... |
-| INSERT | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_27, 04_batch3_nested_block:chunk_text_27, 04_batch3_nested_block | INSERT INTO PRO.DpdBucketAuditLog (AccountId, TransitionDate, NewBucket) SELECT H.AccountId, @ProcessDate, H.DpdBucket FROM PRO.DpdBucketHistory H WHERE H.LastUpdatedDate = @ProcessDate |
-| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_28, 04_batch3_nested_block:chunk_text_28, 04_batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'DPD_Bucket_Classification' |
-| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_31, 04_batch3_nested_block:chunk_text_31, 04_batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'DPD_Bucket_Classification' |
+| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_14, 04_batch3_nested_block:chunk_text_14, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'Y' FROM PRO.LoanAccountCal A WHERE A.PrevDpdBucket IS NOT NULL AND A.DpdBucket <> A.PrevDpdBucket AND A.DpdDays > ISNULL(A.PrevDpdDays, 0) |
+| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_18, 04_batch3_nested_block:chunk_text_18, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'N' FROM PRO.LoanAccountCal A |
+| INSERT_TEMP | technical_only | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_23, 04_batch3_nested_block:chunk_text_23, 04_batch3_nested_block | INSERT INTO #DpdStaging (AccountId, DpdBucket, FacilityType, AdjustedPenalty) SELECT A.AccountId, A.DpdBucket, A.FacilityType, A.PenalInterestAmount FROM PRO.LoanAccountCal A WHERE A.BucketWorsened = 'Y' -- Rule 7: derived-assignment UPD... |
+| UPDATE_TEMP | technical_only | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_24, 04_batch3_nested_block:chunk_text_24, 04_batch3_nested_block | UPDATE S SET S.AdjustedPenalty = ( CASE WHEN S.FacilityType IN ('CC', 'OD') THEN S.AdjustedPenalty * 1.10 WHEN S.FacilityType IN ('TL', 'DL') THEN S.AdjustedPenalty * 1.05 ELSE S.AdjustedPenalty END ) FROM #DpdStaging S WHERE S.AdjustedP... |
+| MERGE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_25, 04_batch3_nested_block:chunk_text_25, 04_batch3_nested_block | MERGE PRO.DpdBucketHistory AS Target USING #DpdStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.DpdBucket = Source.DpdBucket, Target.AdjustedPenalty = Source.AdjustedPenalty, Target.LastUpdated... |
+| INSERT | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_26, 04_batch3_nested_block:chunk_text_26, 04_batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, CASE WHEN DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') AND FacilityType IN ('CC', 'OD') THEN 'SEVERE_DPD_CASH_CREDIT' WHEN DpdBucket... |
+| INSERT | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_27, 04_batch3_nested_block:chunk_text_27, 04_batch3_nested_block | INSERT INTO PRO.DpdBucketAuditLog (AccountId, TransitionDate, NewBucket) SELECT H.AccountId, @ProcessDate, H.DpdBucket FROM PRO.DpdBucketHistory H WHERE H.LastUpdatedDate = @ProcessDate |
+| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_28, 04_batch3_nested_block:chunk_text_28, 04_batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'DPD_Bucket_Classification' |
+| UPDATE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 21-174 | 04_batch3_nested_block:chunk_text_31, 04_batch3_nested_block:chunk_text_31, 04_batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'DPD_Bucket_Classification' |
 | UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_01_35, 04_batch3_nested_block:embedded_01_35, 04_batch3_nested_block | UPDATE A SET A.DpdDays = DATEDIFF(DAY, A.LastPaymentDueDate, @ProcessDate) FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate IS NOT NULL AND A.LastPaymentDueDate <= @ProcessDate -- Rule 2: accounts with no due date on record cannot be... |
 | UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_02_36, 04_batch3_nested_block:embedded_02_36, 04_batch3_nested_block | UPDATE A SET A.DpdDays = 0, A.DpdBucket = 'NOT_APPLICABLE' FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate IS NULL -- Rule 3: multi-branch bucket classification by DPD range |
 | UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_03_37, 04_batch3_nested_block:embedded_03_37, 04_batch3_nested_block | UPDATE A SET A.DpdBucket = ( CASE WHEN A.DpdDays IS NULL THEN 'NOT_APPLICABLE' WHEN A.DpdDays = 0 THEN 'CURRENT' WHEN A.DpdDays BETWEEN 1 AND 30 THEN 'BUCKET_1_30' WHEN A.DpdDays BETWEEN 31 AND 60 THEN 'BUCKET_31_60' WHEN A.DpdDays BETWE... |
 | UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_04_38, 04_batch3_nested_block:embedded_04_38, 04_batch3_nested_block | UPDATE A SET A.PenalInterestAmount = ( CASE WHEN A.DpdBucket = 'BUCKET_1_30' THEN (A.OutstandingBalance * 0.02) / 365 * A.DpdDays WHEN A.DpdBucket = 'BUCKET_31_60' THEN (A.OutstandingBalance * 0.03) / 365 * A.DpdDays WHEN A.DpdBucket IN... |
-| UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_05_41, 04_batch3_nested_block:embedded_05_41, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'N', A.GracePeriodApplied = 'Y' FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate >= @GraceWindowStart |
-| UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_06_42, 04_batch3_nested_block:embedded_06_42, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'Y' FROM PRO.LoanAccountCal A WHERE A.PrevDpdBucket IS NOT NULL AND A.DpdBucket <> A.PrevDpdBucket AND A.DpdDays > ISNULL(A.PrevDpdDays, 0) |
-| UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_07_43, 04_batch3_nested_block:embedded_07_43, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'N' FROM PRO.LoanAccountCal A |
-| INSERT_TEMP | technical_only | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:embedded_08_44, 04_batch3_nested_block:embedded_08_44, 04_batch3_nested_block | INSERT INTO #DpdStaging (AccountId, DpdBucket, FacilityType, AdjustedPenalty) |
-| READ | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:embedded_09_45, 04_batch3_nested_block:embedded_09_45, 04_batch3_nested_block | SELECT A.AccountId, A.DpdBucket, A.FacilityType, A.PenalInterestAmount FROM PRO.LoanAccountCal A WHERE A.BucketWorsened = 'Y' -- Rule 7: derived-assignment UPDATE reading back the staging rows -- written above - facility type nudges the... |
-| UPDATE_TEMP | technical_only | unavailable | 04_batch3_nested_block:embedded_10_46, 04_batch3_nested_block:embedded_10_46, 04_batch3_nested_block | UPDATE S SET S.AdjustedPenalty = ( CASE WHEN S.FacilityType IN ('CC', 'OD') THEN S.AdjustedPenalty * 1.10 WHEN S.FacilityType IN ('TL', 'DL') THEN S.AdjustedPenalty * 1.05 ELSE S.AdjustedPenalty END ) FROM #DpdStaging S WHERE S.AdjustedP... |
-| INSERT | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:embedded_14_50, 04_batch3_nested_block:embedded_14_50, 04_batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) |
-| READ | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:embedded_15_51, 04_batch3_nested_block:embedded_15_51, 04_batch3_nested_block | SELECT AccountId, @ProcessDate, CASE WHEN DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') AND FacilityType IN ('CC', 'OD') THEN 'SEVERE_DPD_CASH_CREDIT' WHEN DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') THEN 'SEVERE_DPD_OTHER_FACILITY... |
-| INSERT | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:embedded_16_52, 04_batch3_nested_block:embedded_16_52, 04_batch3_nested_block | INSERT INTO PRO.DpdBucketAuditLog (AccountId, TransitionDate, NewBucket) |
-| READ | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 21-174 | 04_batch3_nested_block:embedded_17_53, 04_batch3_nested_block:embedded_17_53, 04_batch3_nested_block | SELECT H.AccountId, @ProcessDate, H.DpdBucket FROM PRO.DpdBucketHistory H WHERE H.LastUpdatedDate = @ProcessDate |
-| UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_18_54, 04_batch3_nested_block:embedded_18_54, 04_batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'DPD_Bucket_Classification' |
-| UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_19_55, 04_batch3_nested_block:embedded_19_55, 04_batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'DPD_Bucket_Classification' |
-| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 44-45 | 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block | A.DpdDays IS NULL |
-| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 45-46 | 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block | A.DpdDays = 0 |
-| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 46-47 | 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block | A.DpdDays BETWEEN 1 AND 30 |
-| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 47-48 | 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block | A.DpdDays BETWEEN 31 AND 60 |
-| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 48-49 | 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block | A.DpdDays BETWEEN 61 AND 90 |
-| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 49-50 | 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block | ELSE |
-| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 60-61 | 04_batch3_nested_block:chunk_text_08, 04_batch3_nested_block | A.DpdBucket = 'BUCKET_1_30' |
-| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 61-62 | 04_batch3_nested_block:chunk_text_10, 04_batch3_nested_block | A.DpdBucket = 'BUCKET_31_60' |
-| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 62-63 | 04_batch3_nested_block:chunk_text_10, 04_batch3_nested_block | A.DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') |
-| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 63-64 | 04_batch3_nested_block:chunk_text_12, 04_batch3_nested_block | ELSE |
-| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 72-78 | 04_batch3_nested_block:chunk_text_18, 04_batch3_nested_block | EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE LastPaymentDueDate >= @GraceWindowStart) |
-| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 80-87 | 04_batch3_nested_block:chunk_text_22, 04_batch3_nested_block | EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE PrevDpdBucket IS NOT NULL) |
-| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 89-93 | 04_batch3_nested_block:chunk_text_23, 04_batch3_nested_block | ELSE |
-| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 118-119 | 04_batch3_nested_block:chunk_text_25, 04_batch3_nested_block | S.FacilityType IN ('CC', 'OD') |
-| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 119-120 | 04_batch3_nested_block:chunk_text_25, 04_batch3_nested_block | S.FacilityType IN ('TL', 'DL') |
-| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 120-121 | 04_batch3_nested_block:chunk_text_25, 04_batch3_nested_block | ELSE |
-| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 143-157 | 04_batch3_nested_block:chunk_text_26, 04_batch3_nested_block | DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') AND FacilityType IN ('CC', 'OD') |
-| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 143-157 | 04_batch3_nested_block:chunk_text_26, 04_batch3_nested_block | DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') |
-| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql / Lines 143-157 | 04_batch3_nested_block:chunk_text_26, 04_batch3_nested_block | ELSE |
-| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql | full_source | A.DpdDays IS NULL |
-| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql | full_source | A.DpdDays = 0 |
-| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql | full_source | A.DpdDays BETWEEN 1 AND 30 |
-| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql | full_source | A.DpdDays BETWEEN 31 AND 60 |
-| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql | full_source | A.DpdDays BETWEEN 61 AND 90 |
-| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql | full_source | ELSE |
-| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql | full_source | A.DpdBucket = 'BUCKET_1_30' |
-| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql | full_source | A.DpdBucket = 'BUCKET_31_60' |
-| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql | full_source | A.DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') |
-| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql | full_source | ELSE |
-| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql | full_source | S.FacilityType IN ('CC', 'OD') |
-| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql | full_source | S.FacilityType IN ('TL', 'DL') |
-| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql | full_source | ELSE |
-| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql | full_source | DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') AND FacilityType IN ('CC', 'OD') |
-| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql | full_source | DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') |
-| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpcw881wqy.sql | full_source | ELSE |
+| UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_05_39, 04_batch3_nested_block:embedded_05_39, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'N', A.GracePeriodApplied = 'Y' FROM PRO.LoanAccountCal A WHERE A.LastPaymentDueDate >= @GraceWindowStart |
+| UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_06_40, 04_batch3_nested_block:embedded_06_40, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'Y' FROM PRO.LoanAccountCal A WHERE A.PrevDpdBucket IS NOT NULL AND A.DpdBucket <> A.PrevDpdBucket AND A.DpdDays > ISNULL(A.PrevDpdDays, 0) |
+| UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_07_41, 04_batch3_nested_block:embedded_07_41, 04_batch3_nested_block | UPDATE A SET A.BucketWorsened = 'N' FROM PRO.LoanAccountCal A |
+| READ | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_08_42, 04_batch3_nested_block:embedded_08_42, 04_batch3_nested_block | INSERT INTO #DpdStaging (AccountId, DpdBucket, FacilityType, AdjustedPenalty) SELECT A.AccountId, A.DpdBucket, A.FacilityType, A.PenalInterestAmount FROM PRO.LoanAccountCal A WHERE A.BucketWorsened = 'Y' -- Rule 7: derived-assignment UPD... |
+| INSERT_TEMP | technical_only | unavailable | 04_batch3_nested_block:embedded_08_42, 04_batch3_nested_block:embedded_08_42, 04_batch3_nested_block | INSERT INTO #DpdStaging (AccountId, DpdBucket, FacilityType, AdjustedPenalty) SELECT A.AccountId, A.DpdBucket, A.FacilityType, A.PenalInterestAmount FROM PRO.LoanAccountCal A WHERE A.BucketWorsened = 'Y' -- Rule 7: derived-assignment UPD... |
+| UPDATE_TEMP | technical_only | unavailable | 04_batch3_nested_block:embedded_09_43, 04_batch3_nested_block:embedded_09_43, 04_batch3_nested_block | UPDATE S SET S.AdjustedPenalty = ( CASE WHEN S.FacilityType IN ('CC', 'OD') THEN S.AdjustedPenalty * 1.10 WHEN S.FacilityType IN ('TL', 'DL') THEN S.AdjustedPenalty * 1.05 ELSE S.AdjustedPenalty END ) FROM #DpdStaging S WHERE S.AdjustedP... |
+| READ | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_11_45, 04_batch3_nested_block:embedded_11_45, 04_batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, CASE WHEN DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') AND FacilityType IN ('CC', 'OD') THEN 'SEVERE_DPD_CASH_CREDIT' WHEN DpdBucket... |
+| INSERT | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_11_45, 04_batch3_nested_block:embedded_11_45, 04_batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, CASE WHEN DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') AND FacilityType IN ('CC', 'OD') THEN 'SEVERE_DPD_CASH_CREDIT' WHEN DpdBucket... |
+| READ | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_12_46, 04_batch3_nested_block:embedded_12_46, 04_batch3_nested_block | INSERT INTO PRO.DpdBucketAuditLog (AccountId, TransitionDate, NewBucket) SELECT H.AccountId, @ProcessDate, H.DpdBucket FROM PRO.DpdBucketHistory H WHERE H.LastUpdatedDate = @ProcessDate |
+| INSERT | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_12_46, 04_batch3_nested_block:embedded_12_46, 04_batch3_nested_block | INSERT INTO PRO.DpdBucketAuditLog (AccountId, TransitionDate, NewBucket) SELECT H.AccountId, @ProcessDate, H.DpdBucket FROM PRO.DpdBucketHistory H WHERE H.LastUpdatedDate = @ProcessDate |
+| UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_13_47, 04_batch3_nested_block:embedded_13_47, 04_batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'DPD_Bucket_Classification' |
+| UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_14_48, 04_batch3_nested_block:embedded_14_48, 04_batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'DPD_Bucket_Classification' |
+| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 44-45 | 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block | A.DpdDays IS NULL |
+| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 45-46 | 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block | A.DpdDays = 0 |
+| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 46-47 | 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block | A.DpdDays BETWEEN 1 AND 30 |
+| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 47-48 | 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block | A.DpdDays BETWEEN 31 AND 60 |
+| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 48-49 | 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block | A.DpdDays BETWEEN 61 AND 90 |
+| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 49-50 | 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block | ELSE |
+| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 60-61 | 04_batch3_nested_block:chunk_text_08, 04_batch3_nested_block | A.DpdBucket = 'BUCKET_1_30' |
+| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 61-62 | 04_batch3_nested_block:chunk_text_10, 04_batch3_nested_block | A.DpdBucket = 'BUCKET_31_60' |
+| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 62-63 | 04_batch3_nested_block:chunk_text_10, 04_batch3_nested_block | A.DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') |
+| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 63-64 | 04_batch3_nested_block:chunk_text_12, 04_batch3_nested_block | ELSE |
+| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 72-78 | 04_batch3_nested_block:chunk_text_18, 04_batch3_nested_block | EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE LastPaymentDueDate >= @GraceWindowStart) |
+| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 80-87 | 04_batch3_nested_block:chunk_text_22, 04_batch3_nested_block | EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE PrevDpdBucket IS NOT NULL) |
+| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 89-93 | 04_batch3_nested_block:chunk_text_23, 04_batch3_nested_block | ELSE |
+| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 118-119 | 04_batch3_nested_block:chunk_text_25, 04_batch3_nested_block | S.FacilityType IN ('CC', 'OD') |
+| CASE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 119-120 | 04_batch3_nested_block:chunk_text_25, 04_batch3_nested_block | S.FacilityType IN ('TL', 'DL') |
+| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 120-121 | 04_batch3_nested_block:chunk_text_25, 04_batch3_nested_block | ELSE |
+| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 143-157 | 04_batch3_nested_block:chunk_text_26, 04_batch3_nested_block | DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') AND FacilityType IN ('CC', 'OD') |
+| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 143-157 | 04_batch3_nested_block:chunk_text_26, 04_batch3_nested_block | DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') |
+| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql / Lines 143-157 | 04_batch3_nested_block:chunk_text_26, 04_batch3_nested_block | ELSE |
+| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql | full_source | A.DpdDays IS NULL |
+| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql | full_source | A.DpdDays = 0 |
+| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql | full_source | A.DpdDays BETWEEN 1 AND 30 |
+| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql | full_source | A.DpdDays BETWEEN 31 AND 60 |
+| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql | full_source | A.DpdDays BETWEEN 61 AND 90 |
+| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql | full_source | ELSE |
+| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql | full_source | A.DpdBucket = 'BUCKET_1_30' |
+| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql | full_source | A.DpdBucket = 'BUCKET_31_60' |
+| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql | full_source | A.DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') |
+| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql | full_source | ELSE |
+| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql | full_source | S.FacilityType IN ('CC', 'OD') |
+| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql | full_source | S.FacilityType IN ('TL', 'DL') |
+| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql | full_source | ELSE |
+| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql | full_source | DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') AND FacilityType IN ('CC', 'OD') |
+| IF_BRANCH | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql | full_source | DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') |
+| ELSE | covered_by_rule | /var/folders/d5/q6cyw5854xz1ksr1wj0fmf5r0000gn/T/tmpbyj9on31.sql | full_source | ELSE |
 | CASE | covered_by_rule | Lines 43-43 | unavailable | CASE |
 | CASE_BRANCH | covered_by_rule | Lines 44-44 | unavailable | WHEN A.DpdDays IS NULL THEN |
 | CASE_BRANCH | covered_by_rule | Lines 45-45 | unavailable | WHEN A.DpdDays = 0 THEN |
@@ -305,9 +311,9 @@ _Source evidence is the literal technical text carried through the pipeline; Sou
 | CASE_BRANCH | covered_by_rule | Lines 48-48 | unavailable | WHEN A.DpdDays BETWEEN 61 AND 90 THEN |
 | ELSE | covered_by_rule | Lines 49-49 | unavailable | ELSE |
 | CASE | covered_by_rule | Lines 59-59 | unavailable | CASE |
-| CASE_BRANCH | covered_by_rule | Lines 60-60 | unavailable | WHEN A.DpdBucket = THEN (A.OutstandingBalance * 0.02) / 365 * A.DpdDays |
-| CASE_BRANCH | covered_by_rule | Lines 61-61 | unavailable | WHEN A.DpdBucket = THEN (A.OutstandingBalance * 0.03) / 365 * A.DpdDays |
-| CASE_BRANCH | covered_by_rule | Lines 62-62 | unavailable | WHEN A.DpdBucket IN ( , ) THEN (A.OutstandingBalance * 0.04) / 365 * A.DpdDays |
+| CASE_BRANCH | uncovered | Lines 60-60 | unavailable | WHEN A.DpdBucket = THEN (A.OutstandingBalance * 0.02) / 365 * A.DpdDays |
+| CASE_BRANCH | uncovered | Lines 61-61 | unavailable | WHEN A.DpdBucket = THEN (A.OutstandingBalance * 0.03) / 365 * A.DpdDays |
+| CASE_BRANCH | uncovered | Lines 62-62 | unavailable | WHEN A.DpdBucket IN ( , ) THEN (A.OutstandingBalance * 0.04) / 365 * A.DpdDays |
 | ELSE | covered_by_rule | Lines 63-63 | unavailable | ELSE 0 |
 | IF | covered_by_rule | Lines 71-71 | unavailable | IF EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE LastPaymentDueDate >= @GraceWindowStart) |
 | ELSE | covered_by_rule | Lines 79-79 | unavailable | ELSE IF EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE PrevDpdBucket IS NOT NULL) |
@@ -315,11 +321,11 @@ _Source evidence is the literal technical text carried through the pipeline; Sou
 | ELSE | covered_by_rule | Lines 88-88 | unavailable | ELSE |
 | IF | uncovered | Lines 95-95 | unavailable | IF OBJECT_ID( ) IS NOT NULL |
 | CASE | covered_by_rule | Lines 117-117 | unavailable | CASE |
-| CASE_BRANCH | covered_by_rule | Lines 118-118 | unavailable | WHEN S.FacilityType IN ( , ) THEN S.AdjustedPenalty * 1.10 |
-| CASE_BRANCH | covered_by_rule | Lines 119-119 | unavailable | WHEN S.FacilityType IN ( , ) THEN S.AdjustedPenalty * 1.05 |
+| CASE_BRANCH | uncovered | Lines 118-118 | unavailable | WHEN S.FacilityType IN ( , ) THEN S.AdjustedPenalty * 1.10 |
+| CASE_BRANCH | uncovered | Lines 119-119 | unavailable | WHEN S.FacilityType IN ( , ) THEN S.AdjustedPenalty * 1.05 |
 | ELSE | covered_by_rule | Lines 120-120 | unavailable | ELSE S.AdjustedPenalty |
-| CASE_BRANCH | uncovered | Lines 131-131 | unavailable | WHEN MATCHED THEN |
-| CASE_BRANCH | uncovered | Lines 136-136 | unavailable | WHEN NOT MATCHED BY TARGET THEN |
+| CASE_BRANCH | covered_by_rule | Lines 131-131 | unavailable | WHEN MATCHED THEN |
+| CASE_BRANCH | covered_by_rule | Lines 136-136 | unavailable | WHEN NOT MATCHED BY TARGET THEN |
 | CASE | covered_by_rule | Lines 145-145 | unavailable | CASE |
 | CASE_BRANCH | covered_by_rule | Lines 146-146 | unavailable | WHEN DpdBucket IN ( , ) AND FacilityType IN ( , ) |
 | CASE_BRANCH | covered_by_rule | Lines 148-148 | unavailable | WHEN DpdBucket IN ( , ) |
@@ -333,65 +339,75 @@ The following dependencies are confirmed from exact table/field matches and sour
 
 | Relationship | From | To | Confidence |
 |---|---|---|---|
-| table_write_to_later_use | 04_batch3_nested_block:embedded_01_35 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_45 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:embedded_01_35 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_15_51 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:embedded_01_35 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_08 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:embedded_01_35 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_12 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:embedded_02_36 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_45 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:embedded_02_36 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_15_51 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_01_35 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_08_42 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_01_35 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_11_45 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:embedded_02_36 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_08 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:embedded_02_36 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_12 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_04 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_45 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_04 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_15_51 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_02_36 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_08_42 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_02_36 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_11_45 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:chunk_text_04 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_08 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:chunk_text_04 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_12 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_05 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_45 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_05 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_15_51 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_04 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_08_42 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_04 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_11_45 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:chunk_text_05 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_08 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:chunk_text_05 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_12 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_06 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_45 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_06 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_15_51 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_05 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_08_42 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_05 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_11_45 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:chunk_text_06 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_08 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:chunk_text_06 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_12 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_07 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_45 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_07 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_15_51 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_06 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_08_42 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_06 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_11_45 / PRO.LoanAccountCal | high |
 | later_update_overrides_field | 04_batch3_nested_block:chunk_text_07 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_04_38 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:chunk_text_07 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_08 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:chunk_text_07 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_12 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_10 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_45 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_10 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_15_51 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_07 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_08_42 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_07 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_11_45 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:chunk_text_10 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_08 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:chunk_text_10 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_12 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_14 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_45 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_14 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_15_51 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_10 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_08_42 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_10 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_11_45 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:chunk_text_14 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_08 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:chunk_text_14 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_12 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_18 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_45 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_18 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_15_51 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_14 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_08_42 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_14 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_11_45 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:chunk_text_18 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_08 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:chunk_text_18 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_12 / PRO.LoanAccountCal | high |
-| later_update_overrides_field | 04_batch3_nested_block:chunk_text_18 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_07_43 / PRO.LoanAccountCal | high |
+| later_update_overrides_field | 04_batch3_nested_block:chunk_text_18 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_07_41 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_18 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_08_42 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_18 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_11_45 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:chunk_text_23 / #DpdStaging | 04_batch3_nested_block:chunk_text_24 / #DpdStaging | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_23 / #DpdStaging | 04_batch3_nested_block:embedded_08_44 / #DpdStaging | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_23 / #DpdStaging | 04_batch3_nested_block:embedded_10_46 / #DpdStaging | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_24 / #DpdStaging | 04_batch3_nested_block:embedded_08_44 / #DpdStaging | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_25 / PRO.DpdBucketHistory | 04_batch3_nested_block:embedded_17_53 / PRO.DpdBucketHistory | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_26 / PRO.CollectionsQueue | 04_batch3_nested_block:embedded_14_50 / PRO.CollectionsQueue | high |
-| table_write_to_later_use | 04_batch3_nested_block:chunk_text_27 / PRO.DpdBucketAuditLog | 04_batch3_nested_block:embedded_16_52 / PRO.DpdBucketAuditLog | high |
-| table_write_to_later_use | 04_batch3_nested_block:embedded_08_44 / #DpdStaging | 04_batch3_nested_block:embedded_10_46 / #DpdStaging | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_23 / #DpdStaging | 04_batch3_nested_block:embedded_08_42 / #DpdStaging | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_23 / #DpdStaging | 04_batch3_nested_block:embedded_09_43 / #DpdStaging | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_24 / #DpdStaging | 04_batch3_nested_block:embedded_08_42 / #DpdStaging | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_25 / PRO.DpdBucketHistory | 04_batch3_nested_block:embedded_12_46 / PRO.DpdBucketHistory | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_26 / PRO.CollectionsQueue | 04_batch3_nested_block:embedded_11_45 / PRO.CollectionsQueue | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_27 / PRO.DpdBucketAuditLog | 04_batch3_nested_block:embedded_12_46 / PRO.DpdBucketAuditLog | high |
 | table_write_to_later_use | 04_batch3_nested_block:embedded_03_37 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_08 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:embedded_03_37 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_12 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_03_37 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_08_42 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_03_37 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_11_45 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:embedded_04_38 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_08 / PRO.LoanAccountCal | high |
 | table_write_to_later_use | 04_batch3_nested_block:embedded_04_38 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_12 / PRO.LoanAccountCal | high |
-| table_write_to_later_use | 04_batch3_nested_block:embedded_05_41 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_12 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_04_38 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_08_42 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_04_38 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_11_45 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_05_39 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_12 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_05_39 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_08_42 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_05_39 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_11_45 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_06_40 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_08_42 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_06_40 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_11_45 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_07_41 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_08_42 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_07_41 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_11_45 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_08_42 / #DpdStaging | 04_batch3_nested_block:embedded_09_43 / #DpdStaging | high |
 
 Unresolved dependency candidates: 32. They were not supplied as confirmed dependencies.
 
 ## Rule Provenance Summary
 
-- **Total business rules:** 12
-- **By rule type:** deterministic_decision_table = 5, explicit = 7
-- **By validation status:** unverified = 3, verified = 9
+- **Total business rules:** 19
+- **By rule type:** deterministic_decision_table = 2, explicit = 17
+- **By validation status:** unverified = 8, verified = 11
 
 _This count reflects every individually traceable rule (one per source statement/field, for full auditability). The business report may show a smaller number, because closely related rules that apply the same pattern to several fields (e.g. "reset each of these six DPD fields to zero if negative") are presented there as one combined rule for readability. Every rule counted here is still individually traceable in the Source Traceability table below - none are dropped, only grouped for display._
 
@@ -399,58 +415,52 @@ _Rules marked **unverified** could not be matched back to the technical extracti
 
 ## Reconciliation Summary
 
-- **Matched facts:** 21
+- **Matched facts:** 26
 - **Deterministic-only facts:** 0
-- **LLM-only claims:** 1
-- **Conflicts:** 12
+- **LLM-only claims:** 8
+- **Conflicts:** 3
 - **Unresolved items:** 0
 - **Review required:** Yes
 
 ### Review Items
 
-- `CONFLICT` tables_read (`recon_ef02b1e98fbb`): full_source
 - `CONFLICT` tables_written (`recon_303872d07307`): full_source
 - `CONFLICT` tables_written (`recon_303872d07307`): full_source
-- `CONFLICT` tables_written (`recon_303872d07307`): full_source
-- `CONFLICT` tables_written (`recon_303872d07307`): full_source
+- `LLM_ONLY` tables_written (`recon_1d5a5a696580`): full_source
+- `LLM_ONLY` rule (`recon_f44ff64ab9b0`): rule__1 - No deterministic evidence was found for this claim.
+- `LLM_ONLY` rule (`recon_63176898399f`): rule__2 - No deterministic evidence was found for this claim.
 
 ## Quality Summary
 
 - **Overall status:** REVIEW_REQUIRED
-- **Quality score:** 76.53932584269663/100
-- **Statement coverage:** 38 / 63 (60.3%)
-- **Rule grounding coverage:** 7 / 12 (58.3%)
+- **Quality score:** 77.17386162034299/100
+- **Statement coverage:** 34 / 55 (61.8%)
+- **Rule grounding coverage:** 10 / 19 (52.6%)
 - **Decision-chain coverage:** 19 / 19 branches (100.0%)
-- **Conflicts:** 12
-- **Contradictions:** 19
-- **Review required items:** 32
+- **Conflicts:** 3
+- **Contradictions:** 2
+- **Review required items:** 13
 - **Review required:** Yes
 
 Statement parse success is below the preferred threshold.; Rule grounding coverage is below the preferred threshold.
 
 ### Contradictions
 
-- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
 - `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
-- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
-- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
-- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+- `MEDIUM` Field Conflict on `rule__3`: Synthesized rule affects different fields than the deterministic evidence.
 
 _Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._
 
 ## Pipeline Diagnostics
 
-- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE A
-        SET A.PenalInterestAmount = (
-                CASE
-                    WHEN A.DpdBucket = 'BUCKET_1_30'...
-- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): MERGE PRO.DpdBucketHistory AS Target
-        USING #DpdStaging AS Source
-        ON Target.AccountId = Source.AccountId...
-- Could not fully structurally parse embedded SQL statement (non-fatal, passed through as raw text): UPDATE SET
-                Target.DpdBucket = Source.DpdBucket,
-                Target.AdjustedPenalty = Source.Adjusted...
 - Could not trace the stated source evidence back to a successfully parsed technical extraction record: DpdDays > 90
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: DpdDays > 90 AND FacilityType IN ('CC', 'OD')
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: DpdBucket IN ('BUCKET_61_90', 'BUCKET_90_PLUS') AND FacilityType IN ('CC', 'OD')
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: PenalInterestAmount is not null
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: AccountId, DpdBucket, FacilityType, AdjustedPenalty are not null
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: Target.AccountId, Source.AccountId, Target.DpdBucket, Source.DpdBucket, Target.AdjustedPenalty, Source.AdjustedPenalty, Target.LastUpdatedDate, AccountId, DpdBucket, AdjustedPenalty, FirstFlaggedDate, LastUpdatedDate are not null
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: AccountId, EscalationDate, Reason are not null
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: AccountId, TransitionDate, NewBucket are not null
 - Synthesis response reached the output limit; recovered rules may be incomplete.
 - Synthesized in 2 section(s) aligned to extraction chunk boundaries because the object exceeded the single-call output-token ceiling; sections were merged into this report.
-2026-09-16 03:36:48,744 | INFO | logic_rules_extractor.pipeline | Stage 7/7 completed in 0.46s (final report generation)
+2026-09-16 09:05:49,312 | INFO | logic_rules_extractor.pipeline | Stage 7/7 completed in 0.10s (final report generation)

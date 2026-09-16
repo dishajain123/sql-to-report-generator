@@ -803,6 +803,39 @@ def _strip_sql_comments(source: str) -> str:
     return executable_sql(source)
 
 
+_TSQL_CATCH_BLOCK_RE = re.compile(r"(?is)BEGIN\s+CATCH\b(?P<body>.*?)END\s+CATCH\b")
+# Oracle's EXCEPTION section runs from the EXCEPTION keyword to the
+# enclosing block's own closing END - there is no separate closing keyword
+# the way T-SQL's END CATCH has one, so the body is everything up to the
+# next top-level `END [name];` or end of text.
+_ORACLE_EXCEPTION_BLOCK_RE = re.compile(
+    r"(?is)\bEXCEPTION\b(?P<body>.*?)(?=\bEND\s*;|\bEND\s+[A-Za-z_][\w$#]*\s*;|\Z)"
+)
+
+
+def find_exception_handler_spans(source: str, dialect: str = "tsql") -> List[Tuple[int, int]]:
+    """Return (start, end) character spans of exception-handler block
+    *bodies* in `source` - a T-SQL `BEGIN CATCH ... END CATCH` block's
+    content, or an Oracle PL/SQL block's `EXCEPTION ... ` handler section.
+
+    Used to identify content (e.g. a run-status retry-counter increment)
+    that belongs to exception/error handling rather than the procedure's
+    real business calculations, based on *where in the source* it comes
+    from - not any field name - so it generalizes across procedures
+    regardless of what the status columns or tables happen to be called.
+
+    Regex-based over comment/literal-masked text, matching this module's
+    other span-finders (`_find_outer_case_spans` etc.) rather than a full
+    parser: does not resolve a CATCH/EXCEPTION handler nested inside
+    another one (real nesting-depth tracking would be needed for that,
+    and it is vanishingly rare in practice for exception handlers
+    specifically, unlike CASE expressions which nest routinely).
+    """
+    masked = _case_scan_text(_strip_sql_comments(source))
+    pattern = _ORACLE_EXCEPTION_BLOCK_RE if str(dialect or "tsql").strip().lower() == "oracle" else _TSQL_CATCH_BLOCK_RE
+    return [match.span("body") for match in pattern.finditer(masked)]
+
+
 def _find_outer_case_spans(text: str) -> List[Tuple[int, int]]:
     """Return (start, end) character spans of every outermost `CASE ...
     END` expression in `text` (which must already have comments blanked

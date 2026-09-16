@@ -386,6 +386,164 @@ def test_failed_bounded_revision_reports_gap_without_fabricating_rule(monkeypatc
     )
 
 
+class _NonEmptyInitialSynthesizer:
+    """Like `_CoverageSynthesizer`, but `synthesize()` returns a real,
+    already-complete rule (not empty) - so `revise()` can be exercised
+    echoing that rule back unchanged alongside one genuinely new rule for
+    the gap, the scenario `_CoverageSynthesizer` (always-empty initial
+    synthesis) cannot cover.
+    """
+
+    def __init__(self, existing_rule, new_rule):
+        self.existing_rule = existing_rule
+        self.new_rule = new_rule
+        self.revise_calls = []
+
+    def synthesize(self, **kwargs):
+        return SynthesisResult(
+            data={
+                "purpose_summary": "initial",
+                "step_by_step_flow": [],
+                "business_rules": [dict(self.existing_rule)],
+                "calculations": [],
+                "exception_handling_summary": "",
+                "ambiguities": [],
+            }
+        )
+
+    def revise(self, **kwargs):
+        self.revise_calls.append(kwargs)
+        # Echoes the existing rule back byte-for-byte (as the real model is
+        # instructed to for still-correct rules) and adds one new rule for
+        # the newly-reviewed gap.
+        return SynthesisResult(
+            data={
+                "business_rules": [dict(self.existing_rule), dict(self.new_rule)],
+                "ambiguities": [],
+            }
+        )
+
+
+def test_revision_only_degrades_the_genuinely_new_rule_not_echoed_ones(monkeypatch):
+    # Regression for a real bug found via live-run analysis: whenever the
+    # coverage-gap revision loop ran at all, EVERY rule it returned -
+    # including already-accepted rules the model was only asked to echo
+    # back unchanged - was stamped `degraded: True` and rendered as
+    # "possibly incomplete ... truncated or failed", even on a run where
+    # every single LLM call (synthesis and revision alike) succeeded
+    # cleanly. Only a rule that is actually NEW relative to what
+    # synthesize() already had should ever be flagged from this path.
+    source = (
+        "UPDATE accounts SET tier = 'GOLD' WHERE balance > 1000\n"
+        "IF fraud_flag = 1\n"
+        "    UPDATE accounts SET blocked = 1\n"
+    )
+    existing_rule = {
+        "rule_name": "Assign gold tier",
+        "condition": "balance > 1000",
+        "action": "Set tier to GOLD",
+        "output_field": "tier",
+        "source_evidence": ["balance > 1000"],
+        "fields_affected": ["tier"],
+    }
+    new_rule = {
+        "rule_name": "Block on fraud flag",
+        "condition": "fraud_flag = 1",
+        "action": "Block the account",
+        "output_field": "blocked",
+        "source_evidence": ["fraud_flag = 1"],
+        "fields_affected": ["blocked"],
+    }
+    pipeline = LogicRulesExtractorPipeline.__new__(LogicRulesExtractorPipeline)
+    pipeline.dialect = "tsql"
+    pipeline.model_name = "test-model"
+    pipeline.provider = "test"
+    pipeline.project_root = Path(__file__).resolve().parent.parent
+    pipeline.chunk_workers = 1
+    pipeline.max_coverage_retries = 2
+    pipeline.retrieval_agent = type("Retrieval", (), {"build_or_load": lambda self: None})()
+    pipeline.ingestion_agent = type(
+        "Ingestion",
+        (),
+        {"ingest_text": lambda self, *args, **kwargs: IngestionResult(
+            object_name="TEST_PROC",
+            object_type="PROCEDURE",
+            parameters=[],
+            raw_code=source,
+            original_code=source,
+            chunks=[],
+            dialect="TSQL",
+        )},
+    )()
+    pipeline._read_source_file = lambda _: source
+    pipeline._extract_all_chunks = lambda *args, **kwargs: []
+    pipeline._merge_extractions = lambda *args, **kwargs: {
+        "conditions": [], "decision_chains": [], "loops": [],
+        "tables_read": [], "tables_written": [], "table_operations": [],
+        "calculations": [], "exception_handling": [], "ambiguities": [],
+    }
+    synthesizer = _NonEmptyInitialSynthesizer(existing_rule, new_rule)
+    pipeline.synthesizer_agent = synthesizer
+
+    class _Formatter:
+        def __init__(self):
+            self.synthesis_data = []
+
+        def format(self, **kwargs):
+            self.synthesis_data.append(kwargs["synthesis"].data)
+            return "report"
+
+        def format_verification(self, **kwargs):
+            return "verification"
+
+    pipeline.formatter_agent = _Formatter()
+    pipeline._reconciliation_review_findings = lambda _: []
+
+    class _Reconciliation:
+        coverage = {}
+        quality = {}
+        records = []
+        contradictions = []
+
+        def to_dict(self):
+            return {}
+
+    class _CanonicalIR:
+        @classmethod
+        def from_pipeline(cls, **kwargs):
+            return cls()
+
+        def to_dict(self):
+            return {}
+
+    monkeypatch.setattr(pipeline_module, "reconcile_deterministic_evidence", lambda **kwargs: _Reconciliation())
+    monkeypatch.setattr(pipeline_module, "CanonicalBusinessIR", _CanonicalIR)
+    # `find_coverage_gaps` is coverage_check.py's own real lexical scanner -
+    # it has its own dedicated test suite (the rest of this file) and isn't
+    # what this test is about. Stubbing it isolates exactly the code this
+    # test targets (pipeline.py's post-revision degraded-marking) from that
+    # scanner's own heuristics (e.g. its coarse "parent branch" region
+    # matching, which would otherwise make constructing a source whose
+    # first statement is cited but second is not needlessly fragile).
+    gap_calls = {"count": 0}
+
+    def _fake_find_coverage_gaps(raw_code, rules):
+        gap_calls["count"] += 1
+        if gap_calls["count"] == 1:
+            return [CoverageGap(line_start=2, line_end=3, snippet="IF fraud_flag = 1", keywords=["IF"])]
+        return []
+
+    monkeypatch.setattr(pipeline_module, "find_coverage_gaps", _fake_find_coverage_gaps)
+    pipeline.run("sample.sql", dialect="tsql")
+
+    assert synthesizer.revise_calls
+    final_rules = pipeline.formatter_agent.synthesis_data[-1]["business_rules"]
+    by_name = {rule["rule_name"]: rule for rule in final_rules}
+    assert by_name["Assign gold tier"].get("degraded") is not True
+    assert by_name["Block on fraud flag"].get("degraded") is True
+    assert by_name["Block on fraud flag"].get("degraded_reason") == "gap_review"
+
+
 def test_format_gap_for_ambiguity_never_fabricates_business_meaning():
     gap = CoverageGap(line_start=10, line_end=12, snippet="CASE WHEN x THEN y END", keywords=["CASE", "WHEN"])
     text = format_gap_for_ambiguity(gap)

@@ -448,6 +448,29 @@ def find_decision_points(source: str) -> List[Dict[str, Any]]:
     return points
 
 
+# Mirrors `RuleSynthesizerAgent._remove_operational_status_rules`'s own
+# status-column vocabulary so the coverage checker and the synthesizer
+# agree on what counts as process bookkeeping rather than business logic.
+_OPERATIONAL_STATUS_FIELDS = ("COMPLETED", "ERRORDATE", "ERRORDESCRIPTION", "COUNT")
+
+
+def _is_operational_status_block(text: str) -> bool:
+    """True when `text` is a process-status bookkeeping write - e.g.
+    `UPDATE ...RUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL,
+    ... WHERE RUNNINGPROCESSNAME = '...'` - rather than business logic.
+
+    A rule for this exact statement shape is deliberately never
+    synthesized (see `_remove_operational_status_rules`); the coverage
+    checker must not flag it as an unreviewed gap either.
+    """
+    upper = text.upper()
+    if "RUNNINGPROCESSSTATUS" not in upper and "RUNNINGPROCESSNAME" not in upper:
+        return False
+    if not re.search(r"\bUPDATE\b", upper):
+        return False
+    return any(re.search(rf"\b{field}\b\s*=", upper) for field in _OPERATIONAL_STATUS_FIELDS)
+
+
 def _find_coverage_anchors(source: str) -> Dict[int, List[str]]:
     """Find syntax-only source lines worth checking for citation.
 
@@ -853,6 +876,25 @@ def find_coverage_gaps(
 
     gaps: List[CoverageGap] = []
     for group_index, group in enumerate(groups):
+        group_text = "\n".join(
+            lines[line - 1] for line in group if 0 < line <= len(lines)
+        )
+        if _is_operational_status_block(group_text):
+            # `RuleSynthesizerAgent._remove_operational_status_rules`
+            # deliberately never synthesizes a business rule for a
+            # process-status bookkeeping write (`UPDATE
+            # ...RUNNINGPROCESSSTATUS SET COMPLETED = ..., ERRORDATE = ...`)
+            # because it carries no business meaning - this checker must
+            # agree, or every procedure with that common TRY/CATCH
+            # status-tracking pattern gets two guaranteed false-positive
+            # "needs review" bullets (the success and failure updates) no
+            # rule was ever supposed to cover in the first place.
+            logger.info(
+                "Coverage block lines=%s-%s skipped (operational status bookkeeping, "
+                "not business logic)",
+                group[0], group[-1],
+            )
+            continue
         uncovered_lines: List[int] = []
         group_best_ratio = 0.0
         group_best_rule = None

@@ -366,3 +366,59 @@ def test_render_called_procedures_section_empty_when_no_calls():
 
     assert ReportFormatterAgent.render_called_procedures_section(ingestion) == ""
     assert ReportFormatterAgent.render_called_procedures_section(ingestion, {}) == ""
+
+
+def test_gap_review_degraded_rule_gets_distinct_non_alarming_banner():
+    # A rule degraded only via `degraded_reason: "gap_review"` (added by a
+    # successful, targeted coverage-gap review pass - see pipeline.py's
+    # revision loop) must not be reported with the same "truncated or
+    # failed" wording as an actual model-capacity failure. Regression for
+    # a real bug found via live-run analysis: every report that went
+    # through the revision loop at all previously showed "Partial ...
+    # truncated or failed" even when every LLM call succeeded cleanly.
+    ingestion, merged, synthesis, canonical_ir_unused = _build()
+    synthesis.data["business_rules"][0]["degraded"] = True
+    synthesis.data["business_rules"][0]["degraded_reason"] = "gap_review"
+    report = ReportFormatterAgent().format(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+        canonical_ir=None,
+    )
+    assert "added from a targeted review pass" in report
+    assert "truncated or failed" not in report
+
+
+def test_render_business_rule_block_shows_gap_review_wording_not_capacity_failure():
+    # Direct unit test of the per-rule inline marker (the run-status-banner
+    # test above already covers the summary line; this pins the exact
+    # wording `_render_business_rule_block` itself chooses per
+    # `degraded_reason`, independent of the decision-block projection
+    # machinery `_project_decision_rules` layers on top in a full format()
+    # call).
+    formatter = ReportFormatterAgent()
+    rule = _rule()
+    rule["degraded"] = True
+    rule["degraded_reason"] = "gap_review"
+    block = "\n".join(formatter._render_business_rule_block(1, rule))
+    assert "ℹ️ **Needs Review — added from a targeted review pass.**" in block
+    assert "truncated or failed" not in block
+
+    rule["degraded_reason"] = "truncated"
+    block = "\n".join(formatter._render_business_rule_block(1, rule))
+    assert "⚠️ **Needs Review — possibly incomplete.**" in block
+    assert "truncated or failed" in block
+
+
+def test_truncated_degraded_rule_keeps_the_capacity_failure_banner():
+    ingestion, merged, synthesis, _canonical_ir_unused = _build()
+    synthesis.data["business_rules"][0]["degraded"] = True
+    synthesis.data["business_rules"][0]["degraded_reason"] = "truncated"
+    report = ReportFormatterAgent().format(
+        ingestion=ingestion,
+        merged_extraction=merged,
+        synthesis=synthesis,
+        canonical_ir=None,
+    )
+    assert "truncated or failed" in report
+    assert "added from a targeted review pass" not in report

@@ -1,0 +1,247 @@
+# Overdue Account Late Fee Assessment — Verification & Traceability
+
+> Companion artifact to `PRO.Overdue_Account_Late_Fee_Assessment.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
+
+| Item | Value |
+|---|---|
+| Object ID | `obj_25da39e4d440` |
+| Raw technical object name (from source) | `Overdue_Account_Late_Fee_Assessment` |
+
+## Run Metadata
+
+| Item | Value |
+|---|---|
+| Pipeline Version | `2026-08-26-phase1` |
+| Prompt Version | `3fde9e2078dcda12` |
+| Knowledge Base Version | `2e6fc62902751973` |
+| Model | `amazon.nova-lite-v1:0` |
+| Provider | `bedrock` |
+| Dialect | `T-SQL` |
+| Dialect Confidence | `High` |
+| Source Hash | `5c2b7fd3479eb707f46ebf8d377f0382b1a5853f8f7651c647112572c9170f0a` |
+| Configuration Version | `ddb60c677229031b` |
+| Run Timestamp | `2026-09-16T08:48:36.612953+00:00` |
+| Object ID | `obj_25da39e4d440` |
+
+## LLM Telemetry
+
+| Item | Value |
+|---|---|
+| Run ID | `telemetry_94dce95c7f79` |
+| Total LLM Calls | `6` |
+| Successful Calls | `6` |
+| Failed Calls | `0` |
+| Prompt Tokens | `61753` |
+| Completion Tokens | `13363` |
+| Total Tokens | `75116` |
+| Telemetry Availability | `available` |
+
+| Stage | Calls | Success | Failure | Tokens | Availability |
+|---|---:|---:|---:|---:|---|
+| extraction | 1 | 1 | 0 | 6170 | available |
+| synthesis | 3 | 3 | 0 | 25476 | available |
+| synthesis_revision | 2 | 2 | 0 | 43470 | available |
+
+## Business Rule Summary
+
+| Priority | Rule | Output | Business Purpose |
+|---|---|---|---|
+| ⚠️ 1 | Reset notification count [MATCHED] (`rule__3`) | `NotifyCount` | Reset the notification count to zero for accounts with overdue days and no last notification date. |
+| ⚠️ 2 | Insert into fee schedule [CONFLICT] (`rule__4`) | `NotifyCount, AccountId, LateFee, EscalateFlag` | Insert overdue accounts into the temporary fee schedule table with calculated late fees and incremented notification counts. |
+| ⚠️ 3 | Update escalate flag [CONFLICT] (`rule__5`) | `EscalateFlag` | Update the escalate flag in the temporary fee schedule table based on the notification count. |
+| ⚠️ 4 | Update late fee amount [MATCHED] (`rule__6`) | `LateFeeAmount, NotifyCount, LastNotifyDate` | Update the late fee amount, notification count, and last notification date in the loan account calendar table using the temporary fee sched… |
+| ⚠️ 5 | Merge into notification register [CONFLICT] (`rule__7`) | `AccountId, LateFee, NotifyCount, FirstNotifyDate, LastNotifyDate` | Merge the temporary fee schedule table into the notification register table, updating existing records or inserting new ones. |
+| ⚠️ 6 | Insert into collections queue [MATCHED] (`rule__8`) | `AccountId, EscalationDate, Reason` | Insert accounts with escalated notifications into the collections queue table. |
+| 🟠 7 | Determine LateFee [MATCHED] (`deterministic_decision_1928_2574_1_latefee`) | `LateFee` | First matching row wins. SQL type conversion still applies; ELSE includes false or NULL predicates. |
+
+## Source Traceability
+
+<details>
+<summary><strong>Show rule-to-source mapping</strong></summary>
+
+| # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |
+|---|---|---|---|---|---|---|
+| 1 | Reset notification count (rule__3) | UPDATE A SET A.NotifyCount = 0 FROM PRO.LoanAccountCal A WHERE A.OverdueDays > 0 AND A.LastNotifyDate IS NULL AND A.NotifyCount IS NOT NULL | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_01_17 | Not cited | Verified |
+| 2 | Insert into fee schedule (rule__4) | INSERT INTO #FeeSchedule (AccountId, LateFee, NotifyCount, EscalateFlag) SELECT AccountId, CASE WHEN ISNULL(NotifyCount, 0) = 0 THEN 250.00 WHEN ISNULL(NotifyCount, 0) = 1 THEN 500.00 ELSE 1000.00 END, ISNULL(NotifyCount, 0) + 1, NULL FROM PRO.LoanAccountCal… | Not cited | 03_batch3_main_body+batch3_nested_block:chunk_text_10 | Not cited | Verified |
+| 3 | Update escalate flag (rule__5) | UPDATE S SET S.EscalateFlag = (CASE WHEN S.NotifyCount >= 3 THEN 'Y' WHEN S.NotifyCount = 2 THEN 'PENDING' ELSE 'N' END) FROM #FeeSchedule S | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_03_19 | Not cited | Verified |
+| 4 | Update late fee amount (rule__6) | UPDATE A SET A.LateFeeAmount = ISNULL(A.LateFeeAmount, 0) + S.LateFee, A.NotifyCount = S.NotifyCount, A.LastNotifyDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN #FeeSchedule S ON S.AccountId = A.AccountId | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_04_20 | Not cited | Verified |
+| 5 | Merge into notification register (rule__7) | MERGE PRO.NotificationRegister AS Target USING #FeeSchedule AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.LateFee = Source.LateFee, Target.NotifyCount = Source.NotifyCount, Target.LastNotifyDate = @ProcessDate WHEN NOT M… | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_06_22 | Not cited | Verified |
+| 6 | Insert into collections queue (rule__8) | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'REPEATED_OVERDUE_NOTIFICATION' FROM #FeeSchedule WHERE EscalateFlag = 'Y' | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_07_23 | Not cited | Verified |
+| 7 | Determine LateFee (deterministic_decision_1928_2574_1_latefee) | Not cited | source \| Lines 53-68 | Not cited | Not cited | Verified |
+
+### Decision-Chain Branch Provenance
+
+| Branch | Condition | Source Location |
+|---|---|---|
+| decision_1928_2574_1:branch_001 | COALESCE(NotifyCount, 0) = 0 | source \| Lines 53-68 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_10 |
+| decision_1928_2574_1:branch_002 | COALESCE(NotifyCount, 0) = 1 | source \| Lines 53-68 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_10 |
+| decision_1928_2574_1:branch_003 | ELSE | source \| Lines 53-68 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_10 |
+| case_0070_0074_2630:branch_001 | S.NotifyCount >= 3 | source \| Lines 71-72 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_12 |
+| case_0070_0074_2630:branch_002 | S.NotifyCount = 2 | source \| Lines 72-73 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_12 |
+| case_0070_0074_2630:branch_003 | ELSE | source \| Lines 73-74 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_12 |
+| decision_chain_003:branch_001 | ISNULL(NotifyCount, 0) = 0 | source |
+| decision_chain_003:branch_002 | ISNULL(NotifyCount, 0) = 1 | source |
+| decision_chain_003:branch_003 | ELSE | source |
+| decision_chain_004:branch_001 | NotifyCount >= 3 | source |
+| decision_chain_004:branch_002 | NotifyCount = 2 | source |
+| decision_chain_004:branch_003 | ELSE | source |
+
+_Source evidence is the literal technical text carried through the pipeline; Source Location is derived deterministically from chunk and statement provenance when available; SQL Statements / Chunks and Technical References point back to the extracted chunk ids and statement references used by the guardrails. Technical references that repeat the same table/operation/target-columns are shown once._
+</details>
+
+## Completeness Ledger
+
+- **Executable constructs:** 79
+- **Disposition:** covered_by_rule=57, technical_only=6, uncovered=16
+
+| Construct | Status | Source location | Statement / chunk | Evidence |
+|---|---|---|---|---|
+| STATEMENT | uncovered | Lines 1-1 | 00_batch0_declaration:chunk_text_01, 00_batch0_declaration | USE [DEMO_MISDB] |
+| SET | uncovered | Lines 1-1 | 01_batch1_declaration:chunk_text_01, 01_batch1_declaration | SET ANSI_NULLS ON |
+| SET | uncovered | Lines 1-1 | 01_batch1_declaration:embedded_01_02, 01_batch1_declaration | SET ANSI_NULLS ON |
+| SET | uncovered | Lines 1-1 | 02_batch2_declaration:chunk_text_01, 02_batch2_declaration | SET QUOTED_IDENTIFIER ON |
+| SET | uncovered | Lines 1-1 | 02_batch2_declaration:embedded_01_02, 02_batch2_declaration | SET QUOTED_IDENTIFIER ON |
+| STATEMENT | covered_by_rule | Lines 1-2 | 03_batch3_main_body+batch3_nested_block:chunk_text_01, 03_batch3_main_body+batch3_nested_block | BEGIN SET NOCOUNT ON |
+| STATEMENT | covered_by_rule | Lines 4-4 | 03_batch3_main_body+batch3_nested_block:chunk_text_02, 03_batch3_main_body+batch3_nested_block | BEGIN TRY |
+| SELECT | covered_by_rule | Lines 6-6 | 03_batch3_main_body+batch3_nested_block:chunk_text_03, 03_batch3_main_body+batch3_nested_block | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
+| STATEMENT | covered_by_rule | Lines 7-7 | 03_batch3_main_body+batch3_nested_block:chunk_text_04, 03_batch3_main_body+batch3_nested_block | DECLARE @MonthStartDate DATE = DATEADD(DAY, -DAY(@ProcessDate) + 1, @ProcessDate) |
+| STATEMENT | covered_by_rule | Lines 8-10 | 03_batch3_main_body+batch3_nested_block:chunk_text_05, 03_batch3_main_body+batch3_nested_block | DECLARE @GraceWindowEnd DATE = DATEADD(DAY, 6, @MonthStartDate) |
+| STATEMENT | covered_by_rule | Lines 12-12 | 03_batch3_main_body+batch3_nested_block:chunk_text_06, 03_batch3_main_body+batch3_nested_block | IF OBJECT_ID('tempdb..#FeeSchedule') IS NOT NULL |
+| STATEMENT | covered_by_rule | Lines 13-13 | 03_batch3_main_body+batch3_nested_block:chunk_text_07, 03_batch3_main_body+batch3_nested_block | DROP TABLE #FeeSchedule |
+| STATEMENT | covered_by_rule | Lines 15-25 | 03_batch3_main_body+batch3_nested_block:chunk_text_08, 03_batch3_main_body+batch3_nested_block | CREATE TABLE #FeeSchedule ( AccountId VARCHAR(20), LateFee DECIMAL(18,2), NotifyCount INT, EscalateFlag VARCHAR(1) ) -- Rule 0: NULL check - accounts with no last-notify date on record -- are treated as never notified before, distinct fr... |
+| UPDATE | covered_by_rule | Lines 26-38 | 03_batch3_main_body+batch3_nested_block:chunk_text_09, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.NotifyCount = 0 FROM PRO.LoanAccountCal A WHERE A.OverdueDays > 0 AND A.LastNotifyDate IS NULL AND A.NotifyCount IS NOT NULL -- Rule 1: conditional INSERT - only accounts actually charged a -- fee this cycle are staged; ne... |
+| INSERT | covered_by_rule | Lines 39-53 | 03_batch3_main_body+batch3_nested_block:chunk_text_10, 03_batch3_main_body+batch3_nested_block | INSERT INTO #FeeSchedule (AccountId, LateFee, NotifyCount, EscalateFlag) SELECT AccountId, CASE WHEN ISNULL(NotifyCount, 0) = 0 THEN 250.00 WHEN ISNULL(NotifyCount, 0) = 1 THEN 500.00 ELSE 1000.00 END, ISNULL(NotifyCount, 0) + 1, NULL FR... |
+| UPDATE | covered_by_rule | Lines 54-65 | 03_batch3_main_body+batch3_nested_block:chunk_text_11, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.EscalateFlag = ( CASE WHEN S.NotifyCount >= 3 THEN 'Y' WHEN S.NotifyCount = 2 THEN 'PENDING' ELSE 'N' END ) FROM #FeeSchedule S -- Rule 3: derived-assignment UPDATE, apply the staged fee and -- record that a notification i... |
+| UPDATE | covered_by_rule | Lines 66-75 | 03_batch3_main_body+batch3_nested_block:chunk_text_12, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.LateFeeAmount = ISNULL(A.LateFeeAmount, 0) + S.LateFee, A.NotifyCount = S.NotifyCount, A.LastNotifyDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN #FeeSchedule S ON S.AccountId = A.AccountId -- Rule 4: upsert the... |
+| MERGE | covered_by_rule | Lines 76-89 | 03_batch3_main_body+batch3_nested_block:chunk_text_13, 03_batch3_main_body+batch3_nested_block | MERGE PRO.NotificationRegister AS Target USING #FeeSchedule AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.LateFee = Source.LateFee, Target.NotifyCount = Source.NotifyCount, Target.LastNotifyDate = @... |
+| INSERT | covered_by_rule | Lines 90-93 | 03_batch3_main_body+batch3_nested_block:chunk_text_14, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'REPEATED_OVERDUE_NOTIFICATION' FROM #FeeSchedule WHERE EscalateFlag = 'Y' |
+| UPDATE | covered_by_rule | Lines 95-97 | 03_batch3_main_body+batch3_nested_block:chunk_text_15, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Overdue_Account_Late_Fee_Assessment' |
+| STATEMENT | covered_by_rule | Lines 99-99 | 03_batch3_main_body+batch3_nested_block:chunk_text_16, 03_batch3_main_body+batch3_nested_block | END TRY |
+| UPDATE | covered_by_rule | Lines 26-38 | 03_batch3_main_body+batch3_nested_block:embedded_01_17, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.NotifyCount = 0 FROM PRO.LoanAccountCal A WHERE A.OverdueDays > 0 AND A.LastNotifyDate IS NULL AND A.NotifyCount IS NOT NULL -- Rule 1: conditional INSERT - only accounts actually charged a -- fee this cycle are staged; ne... |
+| INSERT | covered_by_rule | Lines 39-53 | 03_batch3_main_body+batch3_nested_block:embedded_02_18, 03_batch3_main_body+batch3_nested_block | INSERT INTO #FeeSchedule (AccountId, LateFee, NotifyCount, EscalateFlag) SELECT AccountId, CASE WHEN ISNULL(NotifyCount, 0) = 0 THEN 250.00 WHEN ISNULL(NotifyCount, 0) = 1 THEN 500.00 ELSE 1000.00 END, ISNULL(NotifyCount, 0) + 1, NULL FR... |
+| UPDATE | covered_by_rule | Lines 54-65 | 03_batch3_main_body+batch3_nested_block:embedded_03_19, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.EscalateFlag = ( CASE WHEN S.NotifyCount >= 3 THEN 'Y' WHEN S.NotifyCount = 2 THEN 'PENDING' ELSE 'N' END ) FROM #FeeSchedule S -- Rule 3: derived-assignment UPDATE, apply the staged fee and -- record that a notification i... |
+| UPDATE | covered_by_rule | Lines 66-75 | 03_batch3_main_body+batch3_nested_block:embedded_04_20, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.LateFeeAmount = ISNULL(A.LateFeeAmount, 0) + S.LateFee, A.NotifyCount = S.NotifyCount, A.LastNotifyDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN #FeeSchedule S ON S.AccountId = A.AccountId -- Rule 4: upsert the... |
+| MERGE | covered_by_rule | Lines 76-89 | 03_batch3_main_body+batch3_nested_block:embedded_05_21, 03_batch3_main_body+batch3_nested_block | MERGE PRO.NotificationRegister AS Target USING #FeeSchedule AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.LateFee = Source.LateFee, Target.NotifyCount = Source.NotifyCount, Target.LastNotifyDate = @... |
+| INSERT | covered_by_rule | Lines 90-93 | 03_batch3_main_body+batch3_nested_block:embedded_06_22, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'REPEATED_OVERDUE_NOTIFICATION' FROM #FeeSchedule WHERE EscalateFlag = 'Y' |
+| UPDATE | covered_by_rule | Lines 95-97 | 03_batch3_main_body+batch3_nested_block:embedded_07_23, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Overdue_Account_Late_Fee_Assessment' |
+| STATEMENT | uncovered | Lines 1-2 | 04_batch3_exception:chunk_text_01, 04_batch3_exception | BEGIN CATCH -- Exception handling: record the failure for operations to investigate |
+| UPDATE | uncovered | Lines 3-5 | 04_batch3_exception:chunk_text_02, 04_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Overdue_Account_Late_Fee_Assessment' |
+| STATEMENT | uncovered | Lines 6-6 | 04_batch3_exception:chunk_text_03, 04_batch3_exception | END CATCH |
+| SET | uncovered | Lines 7-7 | 04_batch3_exception:chunk_text_04, 04_batch3_exception | SET NOCOUNT OFF |
+| STATEMENT | covered_by_rule | Lines 6-6 | 04_batch3_exception:chunk_text_05, 04_batch3_exception | END |
+| UPDATE | uncovered | Lines 3-5 | 04_batch3_exception:embedded_01_06, 04_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Overdue_Account_Late_Fee_Assessment' |
+| SET | uncovered | Lines 7-7 | 04_batch3_exception:embedded_02_07, 04_batch3_exception | SET NOCOUNT OFF |
+| READ | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:chunk_text_03, 03_batch3_main_body+batch3_nested_block:chunk_text_03, 03_batch3_main_body+batch3_nested_block | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
+| UPDATE | covered_by_rule | samples/10_Overdue_Account_Late_Fee_Assessment.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_09, 03_batch3_main_body+batch3_nested_block:chunk_text_09, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.NotifyCount = 0 FROM PRO.LoanAccountCal A WHERE A.OverdueDays > 0 AND A.LastNotifyDate IS NULL AND A.NotifyCount IS NOT NULL -- Rule 1: conditional INSERT - only accounts actually charged a -- fee this cycle are staged; ne... |
+| INSERT_TEMP | technical_only | samples/10_Overdue_Account_Late_Fee_Assessment.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_10, 03_batch3_main_body+batch3_nested_block:chunk_text_10, 03_batch3_main_body+batch3_nested_block | INSERT INTO #FeeSchedule (AccountId, LateFee, NotifyCount, EscalateFlag) SELECT AccountId, CASE WHEN ISNULL(NotifyCount, 0) = 0 THEN 250.00 WHEN ISNULL(NotifyCount, 0) = 1 THEN 500.00 ELSE 1000.00 END, ISNULL(NotifyCount, 0) + 1, NULL FR... |
+| UPDATE_TEMP | technical_only | samples/10_Overdue_Account_Late_Fee_Assessment.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_11, 03_batch3_main_body+batch3_nested_block:chunk_text_11, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.EscalateFlag = ( CASE WHEN S.NotifyCount >= 3 THEN 'Y' WHEN S.NotifyCount = 2 THEN 'PENDING' ELSE 'N' END ) FROM #FeeSchedule S -- Rule 3: derived-assignment UPDATE, apply the staged fee and -- record that a notification i... |
+| UPDATE | covered_by_rule | samples/10_Overdue_Account_Late_Fee_Assessment.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_12, 03_batch3_main_body+batch3_nested_block:chunk_text_12, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.LateFeeAmount = ISNULL(A.LateFeeAmount, 0) + S.LateFee, A.NotifyCount = S.NotifyCount, A.LastNotifyDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN #FeeSchedule S ON S.AccountId = A.AccountId -- Rule 4: upsert the... |
+| READ_TEMP | technical_only | samples/10_Overdue_Account_Late_Fee_Assessment.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_12, 03_batch3_main_body+batch3_nested_block:chunk_text_12, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.LateFeeAmount = ISNULL(A.LateFeeAmount, 0) + S.LateFee, A.NotifyCount = S.NotifyCount, A.LastNotifyDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN #FeeSchedule S ON S.AccountId = A.AccountId -- Rule 4: upsert the... |
+| MERGE | covered_by_rule | samples/10_Overdue_Account_Late_Fee_Assessment.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_13, 03_batch3_main_body+batch3_nested_block:chunk_text_13, 03_batch3_main_body+batch3_nested_block | MERGE PRO.NotificationRegister AS Target USING #FeeSchedule AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.LateFee = Source.LateFee, Target.NotifyCount = Source.NotifyCount, Target.LastNotifyDate = @... |
+| INSERT | covered_by_rule | samples/10_Overdue_Account_Late_Fee_Assessment.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_14, 03_batch3_main_body+batch3_nested_block:chunk_text_14, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'REPEATED_OVERDUE_NOTIFICATION' FROM #FeeSchedule WHERE EscalateFlag = 'Y' |
+| UPDATE | covered_by_rule | samples/10_Overdue_Account_Late_Fee_Assessment.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_15, 03_batch3_main_body+batch3_nested_block:chunk_text_15, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Overdue_Account_Late_Fee_Assessment' |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_01_17, 03_batch3_main_body+batch3_nested_block:embedded_01_17, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.NotifyCount = 0 FROM PRO.LoanAccountCal A WHERE A.OverdueDays > 0 AND A.LastNotifyDate IS NULL AND A.NotifyCount IS NOT NULL -- Rule 1: conditional INSERT - only accounts actually charged a -- fee this cycle are staged; ne... |
+| READ | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_02_18, 03_batch3_main_body+batch3_nested_block:embedded_02_18, 03_batch3_main_body+batch3_nested_block | INSERT INTO #FeeSchedule (AccountId, LateFee, NotifyCount, EscalateFlag) SELECT AccountId, CASE WHEN ISNULL(NotifyCount, 0) = 0 THEN 250.00 WHEN ISNULL(NotifyCount, 0) = 1 THEN 500.00 ELSE 1000.00 END, ISNULL(NotifyCount, 0) + 1, NULL FR... |
+| INSERT_TEMP | technical_only | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_02_18, 03_batch3_main_body+batch3_nested_block:embedded_02_18, 03_batch3_main_body+batch3_nested_block | INSERT INTO #FeeSchedule (AccountId, LateFee, NotifyCount, EscalateFlag) SELECT AccountId, CASE WHEN ISNULL(NotifyCount, 0) = 0 THEN 250.00 WHEN ISNULL(NotifyCount, 0) = 1 THEN 500.00 ELSE 1000.00 END, ISNULL(NotifyCount, 0) + 1, NULL FR... |
+| UPDATE_TEMP | technical_only | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_03_19, 03_batch3_main_body+batch3_nested_block:embedded_03_19, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.EscalateFlag = ( CASE WHEN S.NotifyCount >= 3 THEN 'Y' WHEN S.NotifyCount = 2 THEN 'PENDING' ELSE 'N' END ) FROM #FeeSchedule S -- Rule 3: derived-assignment UPDATE, apply the staged fee and -- record that a notification i... |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_04_20, 03_batch3_main_body+batch3_nested_block:embedded_04_20, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.LateFeeAmount = ISNULL(A.LateFeeAmount, 0) + S.LateFee, A.NotifyCount = S.NotifyCount, A.LastNotifyDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN #FeeSchedule S ON S.AccountId = A.AccountId -- Rule 4: upsert the... |
+| READ_TEMP | technical_only | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_06_22, 03_batch3_main_body+batch3_nested_block:embedded_06_22, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'REPEATED_OVERDUE_NOTIFICATION' FROM #FeeSchedule WHERE EscalateFlag = 'Y' |
+| INSERT | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_06_22, 03_batch3_main_body+batch3_nested_block:embedded_06_22, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'REPEATED_OVERDUE_NOTIFICATION' FROM #FeeSchedule WHERE EscalateFlag = 'Y' |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_07_23, 03_batch3_main_body+batch3_nested_block:embedded_07_23, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Overdue_Account_Late_Fee_Assessment' |
+| UPDATE | uncovered | samples/10_Overdue_Account_Late_Fee_Assessment.sql / Lines 114-121 | 04_batch3_exception:chunk_text_02, 04_batch3_exception:chunk_text_02, 04_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Overdue_Account_Late_Fee_Assessment' |
+| UPDATE | uncovered | unavailable | 04_batch3_exception:embedded_01_06, 04_batch3_exception:embedded_01_06, 04_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Overdue_Account_Late_Fee_Assessment' |
+| IF_BRANCH | covered_by_rule | Lines 53-68 | 03_batch3_main_body+batch3_nested_block:chunk_text_10 | COALESCE(NotifyCount, 0) = 0 |
+| IF_BRANCH | covered_by_rule | Lines 53-68 | 03_batch3_main_body+batch3_nested_block:chunk_text_10 | COALESCE(NotifyCount, 0) = 1 |
+| ELSE | covered_by_rule | Lines 53-68 | 03_batch3_main_body+batch3_nested_block:chunk_text_10 | ELSE |
+| CASE | covered_by_rule | Lines 71-72 | 03_batch3_main_body+batch3_nested_block:chunk_text_12 | S.NotifyCount >= 3 |
+| CASE | covered_by_rule | Lines 72-73 | 03_batch3_main_body+batch3_nested_block:chunk_text_12 | S.NotifyCount = 2 |
+| ELSE | covered_by_rule | Lines 73-74 | 03_batch3_main_body+batch3_nested_block:chunk_text_12 | ELSE |
+| IF_BRANCH | covered_by_rule | samples/10_Overdue_Account_Late_Fee_Assessment.sql | full_source | ISNULL(NotifyCount, 0) = 0 |
+| IF_BRANCH | covered_by_rule | samples/10_Overdue_Account_Late_Fee_Assessment.sql | full_source | ISNULL(NotifyCount, 0) = 1 |
+| ELSE | covered_by_rule | samples/10_Overdue_Account_Late_Fee_Assessment.sql | full_source | ELSE |
+| IF_BRANCH | covered_by_rule | samples/10_Overdue_Account_Late_Fee_Assessment.sql | full_source | NotifyCount >= 3 |
+| IF_BRANCH | covered_by_rule | samples/10_Overdue_Account_Late_Fee_Assessment.sql | full_source | NotifyCount = 2 |
+| ELSE | covered_by_rule | samples/10_Overdue_Account_Late_Fee_Assessment.sql | full_source | ELSE |
+| IF | uncovered | Lines 26-26 | unavailable | IF OBJECT_ID( ) IS NOT NULL |
+| CASE | covered_by_rule | Lines 55-55 | unavailable | CASE |
+| CASE_BRANCH | covered_by_rule | Lines 56-56 | unavailable | WHEN ISNULL(NotifyCount, 0) = 0 THEN 250.00 |
+| CASE_BRANCH | covered_by_rule | Lines 57-57 | unavailable | WHEN ISNULL(NotifyCount, 0) = 1 THEN 500.00 |
+| ELSE | covered_by_rule | Lines 58-58 | unavailable | ELSE 1000.00 |
+| CASE | covered_by_rule | Lines 70-70 | unavailable | CASE |
+| CASE_BRANCH | covered_by_rule | Lines 71-71 | unavailable | WHEN S.NotifyCount >= 3 THEN |
+| CASE_BRANCH | covered_by_rule | Lines 72-72 | unavailable | WHEN S.NotifyCount = 2 THEN |
+| ELSE | covered_by_rule | Lines 73-73 | unavailable | ELSE |
+| CASE_BRANCH | covered_by_rule | Lines 93-93 | unavailable | WHEN MATCHED THEN |
+| CASE_BRANCH | covered_by_rule | Lines 98-98 | unavailable | WHEN NOT MATCHED BY TARGET THEN |
+| CATCH | uncovered | Lines 114-114 | unavailable | BEGIN CATCH |
+| CATCH | uncovered | Lines 119-119 | unavailable | END CATCH |
+
+## Confirmed Statement Dependencies
+
+The following dependencies are confirmed from exact table/field matches and source order:
+
+| Relationship | From | To | Confidence |
+|---|---|---|---|
+| table_write_to_later_use | 03_batch3_main_body+batch3_nested_block:embedded_01_17 / PRO.LoanAccountCal | 03_batch3_main_body+batch3_nested_block:embedded_02_18 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 03_batch3_main_body+batch3_nested_block:embedded_02_18 / #FeeSchedule | 03_batch3_main_body+batch3_nested_block:embedded_03_19 / #FeeSchedule | high |
+| temp_write_to_read | 03_batch3_main_body+batch3_nested_block:embedded_02_18 / #FeeSchedule | 03_batch3_main_body+batch3_nested_block:embedded_06_22 / #FeeSchedule | high |
+| temp_write_to_read | 03_batch3_main_body+batch3_nested_block:embedded_03_19 / #FeeSchedule | 03_batch3_main_body+batch3_nested_block:embedded_06_22 / #FeeSchedule | high |
+
+Unresolved dependency candidates: 22. They were not supplied as confirmed dependencies.
+
+## Rule Provenance Summary
+
+- **Total business rules:** 7
+- **By rule type:** deterministic_decision_table = 1, explicit = 6
+- **By validation status:** verified = 7
+
+_This count reflects every individually traceable rule (one per source statement/field, for full auditability). The business report may show a smaller number, because closely related rules that apply the same pattern to several fields (e.g. "reset each of these six DPD fields to zero if negative") are presented there as one combined rule for readability. Every rule counted here is still individually traceable in the Source Traceability table below - none are dropped, only grouped for display._
+
+## Reconciliation Summary
+
+- **Matched facts:** 15
+- **Deterministic-only facts:** 2
+- **LLM-only claims:** 2
+- **Conflicts:** 6
+- **Unresolved items:** 0
+- **Review required:** Yes
+
+### Review Items
+
+- `CONFLICT` tables_written (`recon_c48a5e0d5e51`): full_source
+- `CONFLICT` tables_written (`recon_c48a5e0d5e51`): full_source
+- `LLM_ONLY` tables_written (`recon_5d384a26c74f`): full_source
+- `CONFLICT` tables_written (`recon_c48a5e0d5e51`): full_source
+- `LLM_ONLY` tables_written (`recon_5d384a26c74f`): full_source
+
+## Quality Summary
+
+- **Overall status:** REVIEW_REQUIRED
+- **Quality score:** 87.52380952380952/100
+- **Statement coverage:** 22 / 35 (62.9%)
+- **Rule grounding coverage:** 6 / 7 (85.7%)
+- **Decision-chain coverage:** 6 / 6 branches (100.0%)
+- **Conflicts:** 6
+- **Contradictions:** 5
+- **Review required items:** 13
+- **Review required:** Yes
+
+Statement parse success is below the preferred threshold.
+
+### Contradictions
+
+- `HIGH` Operation Conflict on `source`: Synthesized table operation conflicts with deterministic SQL/AST evidence.
+- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+- `HIGH` Outcome Conflict on `rule__4`: Synthesized outcome/assignment conflicts with deterministic evidence.
+- `HIGH` Outcome Conflict on `rule__5`: Synthesized outcome/assignment conflicts with deterministic evidence.
+- `HIGH` Condition Conflict on `rule__7`: Synthesized condition conflicts with deterministic predicate evidence.
+
+_Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._
+
+## Pipeline Diagnostics
+
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: A.NotifyCount
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: AccountId, LateFee, NotifyCount, EscalateFlag
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: CASE WHEN ISNULL(NotifyCount, 0) = 0 THEN 250.00 WHEN ISNULL(NotifyCount, 0) = 1 THEN 500.00 ELSE 1000.00 END
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: UPDATE #FeeSchedule SET EscalateFlag = 1 WHERE NotifyCount > 1
+- Synthesized in 3 section(s) aligned to extraction chunk boundaries because the object exceeded the single-call output-token ceiling; sections were merged into this report.

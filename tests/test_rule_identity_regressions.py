@@ -132,6 +132,38 @@ def test_model_rule_name_copied_from_evaluation_order_is_replaced():
     assert next(r for r in result2 if r['rule_id'] == 'r2')['rule_name'] == 'Reset status on reprocessing'
 
 
+def test_qualified_chain_condition_is_recognized_as_covered_by_bare_model_rule():
+    """Root-cause regression: a deterministic chain's own condition text is
+    routinely alias/schema-qualified (`A.DpdDays IS NULL`,
+    `PRO.LoanAccountCal.DpdDays IS NULL`) while a model-authored rule for
+    the exact same statement just names the bare column (`DpdDays IS
+    NULL`) - before qualifier-stripping was added to the coverage-check's
+    row comparison, this mismatch meant `_field_is_covered` always
+    returned False for a qualified chain, so a synthetic duplicate got
+    appended right next to the model's already-correct rule (this is
+    exactly what produced two numbered rules for one decision in a real
+    generated report). The synthetic rule must now be skipped - only the
+    model's original (bare) rule survives.
+    """
+    chain = {
+        'chain_id': 'c1',
+        'branches': [
+            {'branch_condition': 'A.DpdDays IS NULL', 'assignments': [{'field': 'DpdBucket', 'value': "'NOT_APPLICABLE'"}]},
+            {'branch_condition': 'A.DpdDays = 0', 'assignments': [{'field': 'DpdBucket', 'value': "'CURRENT'"}]},
+        ],
+    }
+    bare_model_rule = {
+        'rule_id': 'r1', 'output_field': 'DpdBucket', 'rule_name': 'Classify accounts into overdue buckets',
+        'decision_logic_rows': [
+            {'condition': 'DpdDays IS NULL', 'outcome': "'NOT_APPLICABLE'"},
+            {'condition': 'DpdDays = 0', 'outcome': "'CURRENT'"},
+        ],
+    }
+    result = RuleSynthesizerAgent.ensure_decision_chain_coverage([bare_model_rule], [chain])
+    assert len(result) == 1
+    assert result[0]['rule_id'] == 'r1'
+
+
 def test_duplicate_rule_names_on_different_fields_are_disambiguated():
     """Two structurally distinct rules (different chains, different output
     fields) can legitimately share one synthesized name, e.g. the same MAX

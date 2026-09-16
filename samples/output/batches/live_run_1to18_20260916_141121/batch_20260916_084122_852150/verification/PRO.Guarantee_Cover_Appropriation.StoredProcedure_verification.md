@@ -1,0 +1,324 @@
+# Guarantee Cover Appropriation — Verification & Traceability
+
+> Companion artifact to `PRO.Guarantee_Cover_Appropriation.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
+
+| Item | Value |
+|---|---|
+| Object ID | `obj_490fdc2ddd1d` |
+| Raw technical object name (from source) | `Guarantee_Cover_Appropriation` |
+
+## Run Metadata
+
+| Item | Value |
+|---|---|
+| Pipeline Version | `2026-08-26-phase1` |
+| Prompt Version | `3fde9e2078dcda12` |
+| Knowledge Base Version | `2e6fc62902751973` |
+| Model | `amazon.nova-lite-v1:0` |
+| Provider | `bedrock` |
+| Dialect | `T-SQL` |
+| Dialect Confidence | `High` |
+| Source Hash | `bb41ee60c4c2dffc6cbea25a80376a1d68029a8fc0a202d7a3ad77a065ac6b6e` |
+| Configuration Version | `ddb60c677229031b` |
+| Run Timestamp | `2026-09-16T08:55:14.466474+00:00` |
+| Object ID | `obj_490fdc2ddd1d` |
+
+## LLM Telemetry
+
+| Item | Value |
+|---|---|
+| Run ID | `telemetry_dc2518642234` |
+| Total LLM Calls | `5` |
+| Successful Calls | `5` |
+| Failed Calls | `0` |
+| Prompt Tokens | `98051` |
+| Completion Tokens | `7897` |
+| Total Tokens | `105948` |
+| Telemetry Availability | `available` |
+
+| Stage | Calls | Success | Failure | Tokens | Availability |
+|---|---:|---:|---:|---:|---|
+| extraction | 1 | 1 | 0 | 7230 | available |
+| synthesis | 3 | 3 | 0 | 65966 | available |
+| synthesis_revision | 1 | 1 | 0 | 32752 | available |
+
+## Business Rule Summary
+
+| Priority | Rule | Output | Business Purpose |
+|---|---|---|---|
+| 🟠 1 | Determine CoverAppropriatedAmount [MATCHED] (`deterministic_decision_2622_3465_0_coverappropriatedamount`) | `CoverAppropriatedAmount` | First matching row wins. SQL type conversion still applies; ELSE includes false or NULL predicates. |
+| 🟠 2 | Update CoverRequestedAmount [LLM_ONLY] (`rule__1`) | `CoverRequestedAmount` | Set the CoverRequestedAmount field based on specific conditions. |
+| 🟠 3 | Update CoverShortfallFlag [LLM_ONLY] (`rule__2`) | `CoverShortfallFlag` | Set the CoverShortfallFlag field based on specific conditions. |
+| 🟠 4 | Update CoverAppropriatedAmount [LLM_ONLY] (`rule__3`) | `CoverAppropriatedAmount` | Set the CoverAppropriatedAmount field based on specific conditions. |
+| 🟠 5 | Update NetProvisionAfterCover [LLM_ONLY] (`rule__4`) | `NetProvisionAfterCover` | Set the NetProvisionAfterCover field based on specific conditions. |
+| 🔴 6 | Reset negative DPD to zero [CONFLICT] (`rule__1__5`) | `CoverRequestedAmount, CoverShortfallFlag` | For accounts with a guarantee flag 'Y' and no provision amount, the cover request amount is reset to null and the cover shortfall flag is s… |
+| 🟢 7 | Set cover request to provision amount [MATCHED] (`rule__2__6`) | `CoverRequestedAmount` | For accounts with a guarantee flag 'Y', a non-null provision amount, and a positive provision amount, the cover request amount is set to th… |
+| 🔴 8 | Set cover appropriation based on fund renewal [CONFLICT] (`rule__3__7`) | `CoverAppropriatedAmount, CoverShortfallFlag` | If the fund renewal date is within 7 days of the process date, set cover appropriation to zero and cover shortfall flag to 'Y' for accounts… |
+| 🟢 9 | Calculate cover appropriation based on asset class [MATCHED] (`rule__4__8`) | `CoverAppropriatedAmount` | For accounts with a guarantee flag 'Y' and a positive cover request amount, calculate cover appropriation based on the asset class. |
+| 🔴 10 | Set cover appropriation to zero if balance insufficient [CONFLICT] (`rule__5`) | `CoverAppropriatedAmount, CoverShortfallFlag` | If the available cover balance is not greater than zero, set cover appropriation to zero and cover shortfall flag to 'Y' for accounts with… |
+| 🟢 11 | Calculate net provision after cover [MATCHED] (`rule__6`) | `NetProvisionAfterCover` | For accounts with a guarantee flag 'Y', calculate the net provision after cover by subtracting the cover appropriated amount from the provi… |
+| 🟢 12 | Stage cover ledger data [MATCHED] (`rule__7`) | `AccountId, CoverAppropriatedAmount, NetProvisionAfterCover` | Insert data into the temporary cover ledger staging table from loan accounts with a guarantee flag 'Y' and a positive cover request amount. |
+| 🟠 13 | Merge cover ledger data [LLM_ONLY] (`rule__8`) | `Target.CoverAppropriatedAmount, Target.NetProvisionAfterCover, Target.LastAppropriationDate, Source.AccountId, Source.CoverAppropriatedAmount, Source.NetProvisionAfterCover, Source.FirstAppropriationDate, Source.LastAppropriationDate` | Merge data from the temporary cover ledger staging table into the guarantee cover ledger table, updating matched records and inserting new… |
+| 🔴 14 | Insert collections queue records [CONFLICT] (`rule__9`) | `AccountId, EscalationDate, Reason` | Insert records into the collections queue for accounts with a guarantee flag 'Y' and a cover shortfall flag 'Y'. |
+| 🔴 15 | Update guarantee fund balance [CONFLICT] (`rule__10`) | `AvailableBalance, LastAppropriationDate` | Update the guarantee fund's available balance and last appropriation date based on the sum of cover appropriated amounts from loan accounts… |
+
+## Source Traceability
+
+<details>
+<summary><strong>Show rule-to-source mapping</strong></summary>
+
+| # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |
+|---|---|---|---|---|---|---|
+| 1 | Determine CoverAppropriatedAmount (deterministic_decision_2622_3465_0_coverappropriatedamount) | Not cited | source \| Lines 62-80 | Not cited | Not cited | Verified |
+| 2 | Update CoverRequestedAmount (rule__1) | A.CoverRequestedAmount condition | Not cited | Not cited | Not cited | Needs Review |
+| 3 | Update CoverShortfallFlag (rule__2) | A.CoverShortfallFlag condition | Not cited | Not cited | Not cited | Needs Review |
+| 4 | Update CoverAppropriatedAmount (rule__3) | A.CoverAppropriatedAmount condition | Not cited | Not cited | Not cited | Needs Review |
+| 5 | Update NetProvisionAfterCover (rule__4) | A.NetProvisionAfterCover condition | Not cited | Not cited | Not cited | Needs Review |
+| 6 | Reset negative DPD to zero (rule__1__5) | UPDATE A SET A.CoverRequestedAmount = NULL, A.CoverShortfallFlag = 'N' FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.ProvisionAmount IS NULL | Not cited | Not cited | Not cited | Needs Review |
+| 7 | Set cover request to provision amount (rule__2__6) | UPDATE A SET A.CoverRequestedAmount = A.ProvisionAmount FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.ProvisionAmount IS NOT NULL AND A.ProvisionAmount > 0 | Not cited | Not cited | Not cited | Verified |
+| 8 | Set cover appropriation based on fund renewal (rule__3__7) | UPDATE A SET A.CoverAppropriatedAmount = 0, A.CoverShortfallFlag = 'Y' FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.CoverRequestedAmount > 0 | Not cited | Not cited | Not cited | Needs Review |
+| 9 | Calculate cover appropriation based on asset class (rule__4__8) | UPDATE A SET A.CoverAppropriatedAmount = CASE WHEN A.AssetClass IN ('DOUBTFUL', 'LOSS') THEN CASE WHEN A.CoverRequestedAmount <= @AvailableCoverBalance THEN A.CoverRequestedAmount ELSE @AvailableCoverBalance END WHEN A.AssetClass = 'SUBSTANDARD' THEN CASE WHE… | Not cited | Not cited | Not cited | Verified |
+| 10 | Set cover appropriation to zero if balance insufficient (rule__5) | UPDATE A SET A.CoverAppropriatedAmount = 0, A.CoverShortfallFlag = 'Y' FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.CoverRequestedAmount > 0 | Not cited | Not cited | Not cited | Needs Review |
+| 11 | Calculate net provision after cover (rule__6) | UPDATE A SET A.NetProvisionAfterCover = A.ProvisionAmount - ISNULL(A.CoverAppropriatedAmount, 0) FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' | Not cited | Not cited | Not cited | Verified |
+| 12 | Stage cover ledger data (rule__7) | INSERT INTO #CoverLedgerStaging (AccountId, CoverAppropriatedAmount, NetProvisionAfterCover) SELECT AccountId, CoverAppropriatedAmount, NetProvisionAfterCover FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' AND CoverRequestedAmount > 0 | Not cited | Not cited | Not cited | Verified |
+| 13 | Merge cover ledger data (rule__8) | MERGE PRO.GuaranteeCoverLedger AS Target USING #CoverLedgerStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.CoverAppropriatedAmount = Source.CoverAppropriatedAmount, Target.NetProvisionAfterCover = Source.NetProvisi… | Not cited | Not cited | Not cited | Needs Review |
+| 14 | Insert collections queue records (rule__9) | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'GUARANTEE_COVER_SHORTFALL' FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' AND CoverShortfallFlag = 'Y' | Not cited | Not cited | Not cited | Needs Review |
+| 15 | Update guarantee fund balance (rule__10) | UPDATE PRO.GuaranteeFund SET AvailableBalance = @AvailableCoverBalance - (SELECT ISNULL(SUM(CoverAppropriatedAmount), 0) FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y'), LastAppropriationDate = @ProcessDate WHERE FundId = 'GOVT_CGF' | Not cited | Not cited | Not cited | Needs Review |
+
+### Decision-Chain Branch Provenance
+
+| Branch | Condition | Source Location |
+|---|---|---|
+| decision_2622_3465_0:branch_001 | (A.AssetClass IN ('DOUBTFUL', 'LOSS')) AND (A.CoverRequestedAmount <= @AvailableCoverBalance) | samples/16_Guarantee_Cover_Appropriation.sql \| Lines 62-80 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_13 |
+| decision_2622_3465_0:branch_002 | A.AssetClass IN ('DOUBTFUL', 'LOSS') | samples/16_Guarantee_Cover_Appropriation.sql \| Lines 62-80 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_13 |
+| decision_2622_3465_0:branch_003 | (A.AssetClass = 'SUBSTANDARD') AND (A.CoverRequestedAmount <= @AvailableCoverBalance * 0.5) | samples/16_Guarantee_Cover_Appropriation.sql \| Lines 62-80 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_13 |
+| decision_2622_3465_0:branch_004 | A.AssetClass = 'SUBSTANDARD' | samples/16_Guarantee_Cover_Appropriation.sql \| Lines 62-80 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_13 |
+| decision_2622_3465_0:branch_005 | ELSE | samples/16_Guarantee_Cover_Appropriation.sql \| Lines 62-80 \| Chunk 04_batch3_nested_block \| Statement 04_batch3_nested_block:chunk_text_13 |
+| decision_chain_002:branch_001 | A.AssetClass IN ('DOUBTFUL', 'LOSS') | source |
+| decision_chain_002:branch_002 | A.AssetClass = 'SUBSTANDARD' | source |
+| decision_chain_002:branch_003 | ELSE | source |
+
+_Source evidence is the literal technical text carried through the pipeline; Source Location is derived deterministically from chunk and statement provenance when available; SQL Statements / Chunks and Technical References point back to the extracted chunk ids and statement references used by the guardrails. Technical references that repeat the same table/operation/target-columns are shown once._
+</details>
+
+## Completeness Ledger
+
+- **Executable constructs:** 108
+- **Disposition:** covered_by_rule=70, technical_only=2, uncovered=36
+
+| Construct | Status | Source location | Statement / chunk | Evidence |
+|---|---|---|---|---|
+| STATEMENT | uncovered | Lines 1-1 | 00_batch0_declaration:chunk_text_01, 00_batch0_declaration | USE [DEMO_MISDB] |
+| SET | uncovered | Lines 1-1 | 01_batch1_declaration:chunk_text_01, 01_batch1_declaration | SET ANSI_NULLS ON |
+| SET | uncovered | Lines 1-1 | 01_batch1_declaration:embedded_01_02, 01_batch1_declaration | SET ANSI_NULLS ON |
+| SET | uncovered | Lines 1-1 | 02_batch2_declaration:chunk_text_01, 02_batch2_declaration | SET QUOTED_IDENTIFIER ON |
+| SET | uncovered | Lines 1-1 | 02_batch2_declaration:embedded_01_02, 02_batch2_declaration | SET QUOTED_IDENTIFIER ON |
+| STATEMENT | uncovered | Lines 1-2 | 03_batch3_main_body:chunk_text_01, 03_batch3_main_body | BEGIN SET NOCOUNT ON |
+| STATEMENT | uncovered | Lines 1-1 | 04_batch3_nested_block:chunk_text_01, 04_batch3_nested_block | BEGIN TRY |
+| SELECT | uncovered | Lines 3-3 | 04_batch3_nested_block:chunk_text_02, 04_batch3_nested_block | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
+| SELECT | uncovered | Lines 4-4 | 04_batch3_nested_block:chunk_text_03, 04_batch3_nested_block | DECLARE @AvailableCoverBalance DECIMAL(18,2) = (SELECT AvailableBalance FROM PRO.GuaranteeFund WHERE FundId = 'GOVT_CGF') |
+| SELECT | uncovered | Lines 5-8 | 04_batch3_nested_block:chunk_text_04, 04_batch3_nested_block | DECLARE @FundRenewalDate DATE = (SELECT RenewalDate FROM PRO.GuaranteeFund WHERE FundId = 'GOVT_CGF') -- Rule 1: NULL check - accounts flagged guarantee-covered but with -- no provisioning requirement recorded at all cannot be assessed |
+| UPDATE | covered_by_rule | Lines 9-17 | 04_batch3_nested_block:chunk_text_05, 04_batch3_nested_block | UPDATE A SET A.CoverRequestedAmount = NULL, A.CoverShortfallFlag = 'N' FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.ProvisionAmount IS NULL -- Rule 2: only guaranteed accounts with a positive provisioning -- require... |
+| UPDATE | covered_by_rule | Lines 18-26 | 04_batch3_nested_block:chunk_text_06, 04_batch3_nested_block | UPDATE A SET A.CoverRequestedAmount = A.ProvisionAmount FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.ProvisionAmount IS NOT NULL AND A.ProvisionAmount > 0 -- Rule 2: sequential IF/ELSE - the fund must not be within... |
+| STATEMENT | uncovered | Lines 27-27 | 04_batch3_nested_block:chunk_text_07, 04_batch3_nested_block | IF @FundRenewalDate IS NOT NULL AND @ProcessDate >= DATEADD(DAY, -7, @FundRenewalDate) |
+| STATEMENT | uncovered | Lines 1-1 | 04_batch3_nested_block:chunk_text_08, 04_batch3_nested_block | BEGIN |
+| UPDATE | covered_by_rule | Lines 29-34 | 04_batch3_nested_block:chunk_text_09, 04_batch3_nested_block | UPDATE A SET A.CoverAppropriatedAmount = 0, A.CoverShortfallFlag = 'Y' FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.CoverRequestedAmount > 0 |
+| STATEMENT | covered_by_rule | Lines 35-35 | 04_batch3_nested_block:chunk_text_10, 04_batch3_nested_block | END |
+| STATEMENT | uncovered | Lines 36-36 | 04_batch3_nested_block:chunk_text_11, 04_batch3_nested_block | ELSE IF @AvailableCoverBalance IS NOT NULL AND @AvailableCoverBalance > 0 |
+| STATEMENT | uncovered | Lines 37-40 | 04_batch3_nested_block:chunk_text_12, 04_batch3_nested_block | BEGIN -- Rule 3: nested condition on both asset class and whether the -- fund can cover it in full - accounts in the worse asset -- classes are appropriated first when balance is insufficient |
+| UPDATE | covered_by_rule | Lines 41-58 | 04_batch3_nested_block:chunk_text_13, 04_batch3_nested_block | UPDATE A SET A.CoverAppropriatedAmount = CASE WHEN A.AssetClass IN ('DOUBTFUL', 'LOSS') THEN CASE WHEN A.CoverRequestedAmount <= @AvailableCoverBalance THEN A.CoverRequestedAmount ELSE @AvailableCoverBalance END WHEN A.AssetClass = 'SUBS... |
+| STATEMENT | covered_by_rule | Lines 35-35 | 04_batch3_nested_block:chunk_text_14, 04_batch3_nested_block | END |
+| STATEMENT | covered_by_rule | Lines 25-25 | 04_batch3_nested_block:chunk_text_15, 04_batch3_nested_block | ELSE |
+| STATEMENT | covered_by_rule | Lines 61-63 | 04_batch3_nested_block:chunk_text_16, 04_batch3_nested_block | BEGIN -- Rule 4: no fund balance available this cycle - nothing is -- appropriated, and the shortfall is flagged |
+| UPDATE | covered_by_rule | Lines 29-34 | 04_batch3_nested_block:chunk_text_17, 04_batch3_nested_block | UPDATE A SET A.CoverAppropriatedAmount = 0, A.CoverShortfallFlag = 'Y' FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.CoverRequestedAmount > 0 |
+| STATEMENT | covered_by_rule | Lines 70-72 | 04_batch3_nested_block:chunk_text_18, 04_batch3_nested_block | END -- Rule 5: net provisioning required after appropriation |
+| UPDATE | covered_by_rule | Lines 73-76 | 04_batch3_nested_block:chunk_text_19, 04_batch3_nested_block | UPDATE A SET A.NetProvisionAfterCover = A.ProvisionAmount - ISNULL(A.CoverAppropriatedAmount, 0) FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' |
+| STATEMENT | covered_by_rule | Lines 78-78 | 04_batch3_nested_block:chunk_text_20, 04_batch3_nested_block | IF OBJECT_ID('tempdb..#CoverLedgerStaging') IS NOT NULL |
+| STATEMENT | covered_by_rule | Lines 79-79 | 04_batch3_nested_block:chunk_text_21, 04_batch3_nested_block | DROP TABLE #CoverLedgerStaging |
+| INSERT | uncovered | Lines 81-89 | 04_batch3_nested_block:chunk_text_22, 04_batch3_nested_block | CREATE TABLE #CoverLedgerStaging ( AccountId VARCHAR(20), CoverAppropriatedAmount DECIMAL(18,2), NetProvisionAfterCover DECIMAL(18,2) ) -- Rule 6: conditional INSERT - only accounts actually processed -- for cover this cycle are staged |
+| INSERT | covered_by_rule | Lines 90-97 | 04_batch3_nested_block:chunk_text_23, 04_batch3_nested_block | INSERT INTO #CoverLedgerStaging (AccountId, CoverAppropriatedAmount, NetProvisionAfterCover) SELECT AccountId, CoverAppropriatedAmount, NetProvisionAfterCover FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' AND CoverRequestedAmo... |
+| MERGE | covered_by_rule | Lines 98-110 | 04_batch3_nested_block:chunk_text_24, 04_batch3_nested_block | MERGE PRO.GuaranteeCoverLedger AS Target USING #CoverLedgerStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.CoverAppropriatedAmount = Source.CoverAppropriatedAmount, Target.NetProvisionAfterCov... |
+| INSERT | covered_by_rule | Lines 111-117 | 04_batch3_nested_block:chunk_text_25, 04_batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'GUARANTEE_COVER_SHORTFALL' FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' AND CoverShortfallFlag = 'Y' -- Rule 9: record the... |
+| UPDATE | covered_by_rule | Lines 118-125 | 04_batch3_nested_block:chunk_text_26, 04_batch3_nested_block | UPDATE PRO.GuaranteeFund SET AvailableBalance = @AvailableCoverBalance - ( SELECT ISNULL(SUM(CoverAppropriatedAmount), 0) FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' ), LastAppropriationDate = @ProcessDate WHERE FundId = 'GO... |
+| UPDATE | uncovered | Lines 127-129 | 04_batch3_nested_block:chunk_text_27, 04_batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Guarantee_Cover_Appropriation' |
+| STATEMENT | uncovered | Lines 131-131 | 04_batch3_nested_block:chunk_text_28, 04_batch3_nested_block | END TRY |
+| UPDATE | covered_by_rule | Lines 9-17 | 04_batch3_nested_block:embedded_01_29, 04_batch3_nested_block | UPDATE A SET A.CoverRequestedAmount = NULL, A.CoverShortfallFlag = 'N' FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.ProvisionAmount IS NULL -- Rule 2: only guaranteed accounts with a positive provisioning -- require... |
+| UPDATE | covered_by_rule | Lines 18-26 | 04_batch3_nested_block:embedded_02_30, 04_batch3_nested_block | UPDATE A SET A.CoverRequestedAmount = A.ProvisionAmount FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.ProvisionAmount IS NOT NULL AND A.ProvisionAmount > 0 -- Rule 2: sequential IF/ELSE - the fund must not be within... |
+| UPDATE | covered_by_rule | Lines 29-34 | 04_batch3_nested_block:embedded_03_31, 04_batch3_nested_block | UPDATE A SET A.CoverAppropriatedAmount = 0, A.CoverShortfallFlag = 'Y' FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.CoverRequestedAmount > 0 |
+| UPDATE | covered_by_rule | Lines 41-58 | 04_batch3_nested_block:embedded_04_32, 04_batch3_nested_block | UPDATE A SET A.CoverAppropriatedAmount = CASE WHEN A.AssetClass IN ('DOUBTFUL', 'LOSS') THEN CASE WHEN A.CoverRequestedAmount <= @AvailableCoverBalance THEN A.CoverRequestedAmount ELSE @AvailableCoverBalance END WHEN A.AssetClass = 'SUBS... |
+| UPDATE | covered_by_rule | Lines 29-34 | 04_batch3_nested_block:embedded_05_33, 04_batch3_nested_block | UPDATE A SET A.CoverAppropriatedAmount = 0, A.CoverShortfallFlag = 'Y' FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.CoverRequestedAmount > 0 |
+| UPDATE | covered_by_rule | Lines 73-76 | 04_batch3_nested_block:embedded_06_34, 04_batch3_nested_block | UPDATE A SET A.NetProvisionAfterCover = A.ProvisionAmount - ISNULL(A.CoverAppropriatedAmount, 0) FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' |
+| INSERT | covered_by_rule | Lines 90-97 | 04_batch3_nested_block:embedded_07_35, 04_batch3_nested_block | INSERT INTO #CoverLedgerStaging (AccountId, CoverAppropriatedAmount, NetProvisionAfterCover) SELECT AccountId, CoverAppropriatedAmount, NetProvisionAfterCover FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' AND CoverRequestedAmo... |
+| MERGE | covered_by_rule | Lines 98-110 | 04_batch3_nested_block:embedded_08_36, 04_batch3_nested_block | MERGE PRO.GuaranteeCoverLedger AS Target USING #CoverLedgerStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.CoverAppropriatedAmount = Source.CoverAppropriatedAmount, Target.NetProvisionAfterCov... |
+| INSERT | covered_by_rule | Lines 111-117 | 04_batch3_nested_block:embedded_09_37, 04_batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'GUARANTEE_COVER_SHORTFALL' FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' AND CoverShortfallFlag = 'Y' -- Rule 9: record the... |
+| UPDATE | covered_by_rule | Lines 118-125 | 04_batch3_nested_block:embedded_10_38, 04_batch3_nested_block | UPDATE PRO.GuaranteeFund SET AvailableBalance = @AvailableCoverBalance - ( SELECT ISNULL(SUM(CoverAppropriatedAmount), 0) FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' ), LastAppropriationDate = @ProcessDate WHERE FundId = 'GO... |
+| UPDATE | uncovered | Lines 127-129 | 04_batch3_nested_block:embedded_11_39, 04_batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Guarantee_Cover_Appropriation' |
+| STATEMENT | uncovered | Lines 1-2 | 05_batch3_exception:chunk_text_01, 05_batch3_exception | BEGIN CATCH -- Exception handling: record the failure for operations to investigate |
+| UPDATE | uncovered | Lines 3-5 | 05_batch3_exception:chunk_text_02, 05_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Guarantee_Cover_Appropriation' |
+| STATEMENT | uncovered | Lines 6-6 | 05_batch3_exception:chunk_text_03, 05_batch3_exception | END CATCH |
+| SET | uncovered | Lines 7-7 | 05_batch3_exception:chunk_text_04, 05_batch3_exception | SET NOCOUNT OFF |
+| STATEMENT | covered_by_rule | Lines 6-6 | 05_batch3_exception:chunk_text_05, 05_batch3_exception | END |
+| UPDATE | uncovered | Lines 3-5 | 05_batch3_exception:embedded_01_06, 05_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Guarantee_Cover_Appropriation' |
+| SET | uncovered | Lines 7-7 | 05_batch3_exception:embedded_02_07, 05_batch3_exception | SET NOCOUNT OFF |
+| READ | uncovered | unavailable | 04_batch3_nested_block:chunk_text_02, 04_batch3_nested_block:chunk_text_02, 04_batch3_nested_block | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
+| READ | uncovered | unavailable | 04_batch3_nested_block:chunk_text_03, 04_batch3_nested_block:chunk_text_03, 04_batch3_nested_block | DECLARE @AvailableCoverBalance DECIMAL(18,2) = (SELECT AvailableBalance FROM PRO.GuaranteeFund WHERE FundId = 'GOVT_CGF') |
+| READ | uncovered | unavailable | 04_batch3_nested_block:chunk_text_04, 04_batch3_nested_block:chunk_text_04, 04_batch3_nested_block | DECLARE @FundRenewalDate DATE = (SELECT RenewalDate FROM PRO.GuaranteeFund WHERE FundId = 'GOVT_CGF') -- Rule 1: NULL check - accounts flagged guarantee-covered but with -- no provisioning requirement recorded at all cannot be assessed |
+| UPDATE | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql / Lines 22-152 | 04_batch3_nested_block:chunk_text_05, 04_batch3_nested_block:chunk_text_05, 04_batch3_nested_block | UPDATE A SET A.CoverRequestedAmount = NULL, A.CoverShortfallFlag = 'N' FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.ProvisionAmount IS NULL -- Rule 2: only guaranteed accounts with a positive provisioning -- require... |
+| UPDATE | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql / Lines 22-152 | 04_batch3_nested_block:chunk_text_06, 04_batch3_nested_block:chunk_text_06, 04_batch3_nested_block | UPDATE A SET A.CoverRequestedAmount = A.ProvisionAmount FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.ProvisionAmount IS NOT NULL AND A.ProvisionAmount > 0 -- Rule 2: sequential IF/ELSE - the fund must not be within... |
+| UPDATE | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql / Lines 22-152 | 04_batch3_nested_block:chunk_text_09, 04_batch3_nested_block:chunk_text_09, 04_batch3_nested_block | UPDATE A SET A.CoverAppropriatedAmount = 0, A.CoverShortfallFlag = 'Y' FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.CoverRequestedAmount > 0 |
+| UPDATE | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql / Lines 22-152 | 04_batch3_nested_block:chunk_text_13, 04_batch3_nested_block:chunk_text_13, 04_batch3_nested_block | UPDATE A SET A.CoverAppropriatedAmount = CASE WHEN A.AssetClass IN ('DOUBTFUL', 'LOSS') THEN CASE WHEN A.CoverRequestedAmount <= @AvailableCoverBalance THEN A.CoverRequestedAmount ELSE @AvailableCoverBalance END WHEN A.AssetClass = 'SUBS... |
+| UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:chunk_text_17, 04_batch3_nested_block:chunk_text_17, 04_batch3_nested_block | UPDATE A SET A.CoverAppropriatedAmount = 0, A.CoverShortfallFlag = 'Y' FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.CoverRequestedAmount > 0 |
+| UPDATE | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql / Lines 22-152 | 04_batch3_nested_block:chunk_text_19, 04_batch3_nested_block:chunk_text_19, 04_batch3_nested_block | UPDATE A SET A.NetProvisionAfterCover = A.ProvisionAmount - ISNULL(A.CoverAppropriatedAmount, 0) FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' |
+| INSERT_TEMP | technical_only | samples/16_Guarantee_Cover_Appropriation.sql / Lines 22-152 | 04_batch3_nested_block:chunk_text_23, 04_batch3_nested_block:chunk_text_23, 04_batch3_nested_block | INSERT INTO #CoverLedgerStaging (AccountId, CoverAppropriatedAmount, NetProvisionAfterCover) SELECT AccountId, CoverAppropriatedAmount, NetProvisionAfterCover FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' AND CoverRequestedAmo... |
+| MERGE | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql / Lines 22-152 | 04_batch3_nested_block:chunk_text_24, 04_batch3_nested_block:chunk_text_24, 04_batch3_nested_block | MERGE PRO.GuaranteeCoverLedger AS Target USING #CoverLedgerStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.CoverAppropriatedAmount = Source.CoverAppropriatedAmount, Target.NetProvisionAfterCov... |
+| INSERT | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql / Lines 22-152 | 04_batch3_nested_block:chunk_text_25, 04_batch3_nested_block:chunk_text_25, 04_batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'GUARANTEE_COVER_SHORTFALL' FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' AND CoverShortfallFlag = 'Y' -- Rule 9: record the... |
+| UPDATE | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql / Lines 22-152 | 04_batch3_nested_block:chunk_text_26, 04_batch3_nested_block:chunk_text_26, 04_batch3_nested_block | UPDATE PRO.GuaranteeFund SET AvailableBalance = @AvailableCoverBalance - ( SELECT ISNULL(SUM(CoverAppropriatedAmount), 0) FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' ), LastAppropriationDate = @ProcessDate WHERE FundId = 'GO... |
+| READ | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql / Lines 22-152 | 04_batch3_nested_block:chunk_text_26, 04_batch3_nested_block:chunk_text_26, 04_batch3_nested_block | UPDATE PRO.GuaranteeFund SET AvailableBalance = @AvailableCoverBalance - ( SELECT ISNULL(SUM(CoverAppropriatedAmount), 0) FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' ), LastAppropriationDate = @ProcessDate WHERE FundId = 'GO... |
+| UPDATE | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql / Lines 22-152 | 04_batch3_nested_block:chunk_text_27, 04_batch3_nested_block:chunk_text_27, 04_batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Guarantee_Cover_Appropriation' |
+| UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_01_29, 04_batch3_nested_block:embedded_01_29, 04_batch3_nested_block | UPDATE A SET A.CoverRequestedAmount = NULL, A.CoverShortfallFlag = 'N' FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.ProvisionAmount IS NULL -- Rule 2: only guaranteed accounts with a positive provisioning -- require... |
+| UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_02_30, 04_batch3_nested_block:embedded_02_30, 04_batch3_nested_block | UPDATE A SET A.CoverRequestedAmount = A.ProvisionAmount FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' AND A.ProvisionAmount IS NOT NULL AND A.ProvisionAmount > 0 -- Rule 2: sequential IF/ELSE - the fund must not be within... |
+| UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_04_32, 04_batch3_nested_block:embedded_04_32, 04_batch3_nested_block | UPDATE A SET A.CoverAppropriatedAmount = CASE WHEN A.AssetClass IN ('DOUBTFUL', 'LOSS') THEN CASE WHEN A.CoverRequestedAmount <= @AvailableCoverBalance THEN A.CoverRequestedAmount ELSE @AvailableCoverBalance END WHEN A.AssetClass = 'SUBS... |
+| UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_06_34, 04_batch3_nested_block:embedded_06_34, 04_batch3_nested_block | UPDATE A SET A.NetProvisionAfterCover = A.ProvisionAmount - ISNULL(A.CoverAppropriatedAmount, 0) FROM PRO.LoanAccountCal A WHERE A.GuaranteeCoveredFlag = 'Y' |
+| READ | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_07_35, 04_batch3_nested_block:embedded_07_35, 04_batch3_nested_block | INSERT INTO #CoverLedgerStaging (AccountId, CoverAppropriatedAmount, NetProvisionAfterCover) SELECT AccountId, CoverAppropriatedAmount, NetProvisionAfterCover FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' AND CoverRequestedAmo... |
+| INSERT_TEMP | technical_only | unavailable | 04_batch3_nested_block:embedded_07_35, 04_batch3_nested_block:embedded_07_35, 04_batch3_nested_block | INSERT INTO #CoverLedgerStaging (AccountId, CoverAppropriatedAmount, NetProvisionAfterCover) SELECT AccountId, CoverAppropriatedAmount, NetProvisionAfterCover FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' AND CoverRequestedAmo... |
+| READ | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_09_37, 04_batch3_nested_block:embedded_09_37, 04_batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'GUARANTEE_COVER_SHORTFALL' FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' AND CoverShortfallFlag = 'Y' -- Rule 9: record the... |
+| INSERT | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_09_37, 04_batch3_nested_block:embedded_09_37, 04_batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'GUARANTEE_COVER_SHORTFALL' FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' AND CoverShortfallFlag = 'Y' -- Rule 9: record the... |
+| READ | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_10_38, 04_batch3_nested_block:embedded_10_38, 04_batch3_nested_block | UPDATE PRO.GuaranteeFund SET AvailableBalance = @AvailableCoverBalance - ( SELECT ISNULL(SUM(CoverAppropriatedAmount), 0) FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' ), LastAppropriationDate = @ProcessDate WHERE FundId = 'GO... |
+| UPDATE | covered_by_rule | unavailable | 04_batch3_nested_block:embedded_10_38, 04_batch3_nested_block:embedded_10_38, 04_batch3_nested_block | UPDATE PRO.GuaranteeFund SET AvailableBalance = @AvailableCoverBalance - ( SELECT ISNULL(SUM(CoverAppropriatedAmount), 0) FROM PRO.LoanAccountCal WHERE GuaranteeCoveredFlag = 'Y' ), LastAppropriationDate = @ProcessDate WHERE FundId = 'GO... |
+| UPDATE | uncovered | unavailable | 04_batch3_nested_block:embedded_11_39, 04_batch3_nested_block:embedded_11_39, 04_batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Guarantee_Cover_Appropriation' |
+| UPDATE | uncovered | samples/16_Guarantee_Cover_Appropriation.sql / Lines 153-160 | 05_batch3_exception:chunk_text_02, 05_batch3_exception:chunk_text_02, 05_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Guarantee_Cover_Appropriation' |
+| UPDATE | uncovered | unavailable | 05_batch3_exception:embedded_01_06, 05_batch3_exception:embedded_01_06, 05_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Guarantee_Cover_Appropriation' |
+| IF_BRANCH | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql / Lines 62-80 | 04_batch3_nested_block:chunk_text_13, 04_batch3_nested_block | (A.AssetClass IN ('DOUBTFUL', 'LOSS')) AND (A.CoverRequestedAmount <= @AvailableCoverBalance) |
+| IF_BRANCH | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql / Lines 62-80 | 04_batch3_nested_block:chunk_text_13, 04_batch3_nested_block | A.AssetClass IN ('DOUBTFUL', 'LOSS') |
+| IF_BRANCH | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql / Lines 62-80 | 04_batch3_nested_block:chunk_text_13, 04_batch3_nested_block | (A.AssetClass = 'SUBSTANDARD') AND (A.CoverRequestedAmount <= @AvailableCoverBalance * 0.5) |
+| IF_BRANCH | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql / Lines 62-80 | 04_batch3_nested_block:chunk_text_13, 04_batch3_nested_block | A.AssetClass = 'SUBSTANDARD' |
+| ELSE | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql / Lines 62-80 | 04_batch3_nested_block:chunk_text_13, 04_batch3_nested_block | ELSE |
+| IF_BRANCH | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql | full_source | A.AssetClass IN ('DOUBTFUL', 'LOSS') |
+| IF_BRANCH | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql | full_source | A.AssetClass = 'SUBSTANDARD' |
+| ELSE | covered_by_rule | samples/16_Guarantee_Cover_Appropriation.sql | full_source | ELSE |
+| IF | uncovered | Lines 48-48 | unavailable | IF @FundRenewalDate IS NOT NULL AND @ProcessDate >= DATEADD(DAY, -7, @FundRenewalDate) |
+| ELSE | uncovered | Lines 57-57 | unavailable | ELSE IF @AvailableCoverBalance IS NOT NULL AND @AvailableCoverBalance > 0 |
+| IF | uncovered | Lines 57-57 | unavailable | ELSE IF @AvailableCoverBalance IS NOT NULL AND @AvailableCoverBalance > 0 |
+| CASE | covered_by_rule | Lines 64-64 | unavailable | CASE |
+| CASE_BRANCH | covered_by_rule | Lines 65-65 | unavailable | WHEN A.AssetClass IN ( , ) THEN |
+| CASE | covered_by_rule | Lines 66-66 | unavailable | CASE |
+| CASE_BRANCH | covered_by_rule | Lines 67-67 | unavailable | WHEN A.CoverRequestedAmount <= @AvailableCoverBalance THEN A.CoverRequestedAmount |
+| ELSE | covered_by_rule | Lines 68-68 | unavailable | ELSE @AvailableCoverBalance |
+| CASE_BRANCH | covered_by_rule | Lines 70-70 | unavailable | WHEN A.AssetClass = THEN |
+| CASE | covered_by_rule | Lines 71-71 | unavailable | CASE |
+| CASE_BRANCH | covered_by_rule | Lines 72-72 | unavailable | WHEN A.CoverRequestedAmount <= @AvailableCoverBalance * 0.5 THEN A.CoverRequestedAmount |
+| ELSE | covered_by_rule | Lines 73-73 | unavailable | ELSE @AvailableCoverBalance * 0.5 |
+| ELSE | covered_by_rule | Lines 75-75 | unavailable | ELSE 0 |
+| ELSE | covered_by_rule | Lines 81-81 | unavailable | ELSE |
+| IF | uncovered | Lines 99-99 | unavailable | IF OBJECT_ID( ) IS NOT NULL |
+| CASE_BRANCH | covered_by_rule | Lines 122-122 | unavailable | WHEN MATCHED THEN |
+| CASE_BRANCH | covered_by_rule | Lines 127-127 | unavailable | WHEN NOT MATCHED BY TARGET THEN |
+| CALCULATION | covered_by_rule | Lines 141-141 | unavailable | SELECT ISNULL(SUM(CoverAppropriatedAmount), 0) |
+| CATCH | uncovered | Lines 153-153 | unavailable | BEGIN CATCH |
+| CATCH | uncovered | Lines 158-158 | unavailable | END CATCH |
+
+## Confirmed Statement Dependencies
+
+The following dependencies are confirmed from exact table/field matches and source order:
+
+| Relationship | From | To | Confidence |
+|---|---|---|---|
+| table_write_to_later_use | 04_batch3_nested_block:embedded_01_29 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_26 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_01_29 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_07_35 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_01_29 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_37 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_01_29 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_10_38 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_05 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_26 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_05 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_07_35 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_05 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_37 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_05 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_10_38 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_06 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_26 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_06 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_07_35 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_06 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_37 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_06 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_10_38 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_09 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_26 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_09 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_07_35 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_09 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_37 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_09 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_10_38 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_13 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_26 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_13 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_07_35 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_13 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_37 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_13 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_10_38 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_19 / PRO.LoanAccountCal | 04_batch3_nested_block:chunk_text_26 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_19 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_07_35 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_19 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_37 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_19 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_10_38 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_23 / #CoverLedgerStaging | 04_batch3_nested_block:embedded_07_35 / #CoverLedgerStaging | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_25 / PRO.CollectionsQueue | 04_batch3_nested_block:embedded_09_37 / PRO.CollectionsQueue | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_02_30 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_07_35 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_02_30 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_37 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_02_30 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_10_38 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_17 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_07_35 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_17 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_37 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:chunk_text_17 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_10_38 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_04_32 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_07_35 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_04_32 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_37 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_04_32 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_10_38 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_06_34 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_07_35 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_06_34 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_09_37 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_nested_block:embedded_06_34 / PRO.LoanAccountCal | 04_batch3_nested_block:embedded_10_38 / PRO.LoanAccountCal | high |
+
+Unresolved dependency candidates: 24. They were not supplied as confirmed dependencies.
+
+## Rule Provenance Summary
+
+- **Total business rules:** 15
+- **By rule type:** deterministic_decision_table = 1, explicit = 14
+- **By validation status:** unverified = 10, verified = 5
+
+_This count reflects every individually traceable rule (one per source statement/field, for full auditability). The business report may show a smaller number, because closely related rules that apply the same pattern to several fields (e.g. "reset each of these six DPD fields to zero if negative") are presented there as one combined rule for readability. Every rule counted here is still individually traceable in the Source Traceability table below - none are dropped, only grouped for display._
+
+_Rules marked **unverified** could not be matched back to the technical extraction or source code - this specific claim remains unresolved and should not yet be treated as a confirmed business rule._
+
+## Reconciliation Summary
+
+- **Matched facts:** 13
+- **Deterministic-only facts:** 21
+- **LLM-only claims:** 6
+- **Conflicts:** 11
+- **Unresolved items:** 0
+- **Review required:** Yes
+
+### Review Items
+
+- `CONFLICT` tables_written (`recon_456a863962fe`): full_source
+- `CONFLICT` tables_written (`recon_456a863962fe`): full_source
+- `CONFLICT` tables_written (`recon_456a863962fe`): full_source
+- `CONFLICT` tables_written (`recon_456a863962fe`): full_source
+- `CONFLICT` tables_written (`recon_456a863962fe`): full_source
+
+## Quality Summary
+
+- **Overall status:** REVIEW_REQUIRED
+- **Quality score:** 72.68553459119497/100
+- **Statement coverage:** 30 / 52 (57.7%)
+- **Rule grounding coverage:** 9 / 15 (60.0%)
+- **Decision-chain coverage:** 5 / 5 branches (100.0%)
+- **Conflicts:** 11
+- **Contradictions:** 16
+- **Review required items:** 33
+- **Review required:** Yes
+
+Statement parse success is below the preferred threshold.; Rule grounding coverage is below the preferred threshold.
+
+### Contradictions
+
+- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+
+_Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._
+
+## Pipeline Diagnostics
+
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: A.CoverRequestedAmount condition
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: A.CoverShortfallFlag condition
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: A.CoverAppropriatedAmount condition
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: A.NetProvisionAfterCover condition
+- Synthesized in 3 section(s) aligned to extraction chunk boundaries because the object exceeded the single-call output-token ceiling; sections were merged into this report.

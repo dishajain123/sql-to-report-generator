@@ -65,6 +65,22 @@ def _synthesis_json() -> str:
     })
 
 
+def _synthesis_json_with_one_rule() -> str:
+    return json.dumps({
+        "purpose_summary": "Demo procedure.", "step_by_step_flow": [],
+        "business_rules": [{
+            "rule_id": "r1",
+            "rule_name": "Classify demo status",
+            "output_field": "DemoStatus",
+            "decision_logic_rows": [
+                {"condition": "Score > 90", "outcome": "'HIGH'"},
+                {"condition": "ELSE", "outcome": "'LOW'"},
+            ],
+        }],
+        "calculations": [], "exception_handling_summary": "", "ambiguities": [],
+    })
+
+
 def _is_extraction_prompt(system_text: str) -> bool:
     return "decision_chains" in system_text and "business_rules" not in system_text
 
@@ -189,3 +205,74 @@ def test_failed_synthesis_call_sets_degraded_banner_and_report_still_completes()
     assert client.chat.completions.synthesis_calls >= 1
     assert "DEGRADED RUN" in result.report
     assert "rule synthesis section(s)" in result.report or "1 rule synthesis section(s)" in result.report
+
+
+def test_truncated_synthesis_response_produces_inline_per_rule_marker(tmp_path):
+    """Root cause 2: a truncated (not failed) synthesis response - the
+    real, common failure mode (finish_reason == "length"), distinct from
+    an outright exception - must mark its own rule(s) with a visible
+    inline marker, not just contribute to the existing run-level footer/
+    banner. Scripts the single synthesis call to return valid JSON with a
+    real rule but finish_reason "length" (simulating an output cut short
+    by the model's token budget), and asserts the report shows the inline
+    "Needs Review" marker on that specific rule, not just a run-level
+    banner alone. Uses a small, self-contained source (rather than the
+    large SMA_MARKING sample used elsewhere in this file) so synthesis
+    takes the single-call path and this is the only rule in the report.
+    """
+    small_sql = tmp_path / "small.sql"
+    small_sql.write_text(
+        "CREATE PROCEDURE dbo.DemoProc\nAS\nBEGIN\n    UPDATE t SET x = 1 WHERE y = 2\nEND\n",
+        encoding="utf-8",
+    )
+    client = _FakeClient(synthesis_script=[(_synthesis_json_with_one_rule(), "length")])
+    pipeline = _make_pipeline(client, single_pass_token_budget=500_000)
+
+    result = pipeline.run(str(small_sql), dialect="tsql")
+
+    assert "### R1 — Classify demo status" in result.report
+    assert "⚠️ **Needs Review — possibly incomplete.**" in result.report
+    # The inline marker must appear for THIS rule, not just as a generic
+    # run-level note - i.e. it appears between this rule's own heading and
+    # the next section/rule.
+    rule_block = result.report.split("### R1 — Classify demo status", 1)[1]
+    rule_block = rule_block.split("### R2", 1)[0] if "### R2" in rule_block else rule_block
+    assert "Needs Review — possibly incomplete" in rule_block
+    # Still shows the existing run-level banner/summary too - additive,
+    # not a replacement.
+    assert "needs review" in result.report.lower()
+
+
+def test_mark_rules_degraded_if_unreliable_tags_the_reason():
+    """`degraded_reason` (added alongside the boolean `degraded` flag) must
+    distinguish an actual model-capacity failure from other paths that also
+    set `degraded` (see `test_coverage_check.
+    test_revision_only_degrades_the_genuinely_new_rule_not_echoed_ones` for
+    the coverage-gap-review path's own, different reason). Without this,
+    report_formatter cannot tell "this rule's own LLM call was truncated"
+    apart from "this rule is new output from an otherwise-successful
+    targeted review pass" and previously showed the same "truncated or
+    failed" wording for both.
+    """
+    from pipeline import _mark_rules_degraded_if_unreliable
+    from src.synthesis.rule_synthesizer import SynthesisResult
+
+    truncated_result = SynthesisResult(
+        data={"business_rules": [{"rule_name": "R"}]},
+        truncated=True,
+    )
+    marked = _mark_rules_degraded_if_unreliable(truncated_result)
+    assert marked.data["business_rules"][0]["degraded"] is True
+    assert marked.data["business_rules"][0]["degraded_reason"] == "truncated"
+
+    failed_result = SynthesisResult(
+        data={"business_rules": [{"rule_name": "R"}]},
+        synthesis_failed=True,
+    )
+    marked = _mark_rules_degraded_if_unreliable(failed_result)
+    assert marked.data["business_rules"][0]["degraded_reason"] == "synthesis_failed"
+
+    clean_result = SynthesisResult(data={"business_rules": [{"rule_name": "R"}]})
+    marked = _mark_rules_degraded_if_unreliable(clean_result)
+    assert "degraded" not in marked.data["business_rules"][0]
+    assert "degraded_reason" not in marked.data["business_rules"][0]

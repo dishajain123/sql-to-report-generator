@@ -1,0 +1,60 @@
+{
+  "batch_end_time": "2026-09-16T09:11:39.678823+00:00",
+  "batch_id": "batch_20260916_090754_711063",
+  "batch_output_dir": "samples/output/batches/verify_fix_143753/batch_20260916_090754_711063",
+  "batch_start_time": "2026-09-16T09:07:54.711456+00:00",
+  "call_graph": [],
+  "failed_files": 0,
+  "files": [
+    {
+      "detected_dialect": "TSQL",
+      "effective_dialect": "TSQL",
+      "error_message": "",
+      "filename": "12_Customer_Risk_Score_Update.sql",
+      "log_filename": "PRO.Customer_Risk_Score_Update.StoredProcedure_pipeline.log",
+      "object_identity": "PRO.Customer_Risk_Score_Update.StoredProcedure",
+      "report_filename": "PRO.Customer_Risk_Score_Update.StoredProcedure_report.md",
+      "selected_dialect_mode": "auto",
+      "status": "success",
+      "verification_filename": "PRO.Customer_Risk_Score_Update.StoredProcedure_verification.md"
+    },
+    {
+      "detected_dialect": "TSQL",
+      "effective_dialect": "TSQL",
+      "error_message": "",
+      "filename": "02_SMA_Stage_Marking_Simple.sql",
+      "log_filename": "PRO.SMA_Stage_Marking_Simple.StoredProcedure_pipeline.log",
+      "object_identity": "PRO.SMA_Stage_Marking_Simple.StoredProcedure",
+      "report_filename": "PRO.SMA_Stage_Marking_Simple.StoredProcedure_report.md",
+      "selected_dialect_mode": "auto",
+      "status": "success",
+      "verification_filename": "PRO.SMA_Stage_Marking_Simple.StoredProcedure_verification.md"
+    },
+    {
+      "detected_dialect": "TSQL",
+      "effective_dialect": "TSQL",
+      "error_message": "",
+      "filename": "17_Dishonoured_Cheque_Penalty_Calc.sql",
+      "log_filename": "PRO.Dishonoured_Cheque_Penalty_Calc.StoredProcedure_pipeline.log",
+      "object_identity": "PRO.Dishonoured_Cheque_Penalty_Calc.StoredProcedure",
+      "report_filename": "PRO.Dishonoured_Cheque_Penalty_Calc.StoredProcedure_report.md",
+      "selected_dialect_mode": "auto",
+      "status": "success",
+      "verification_filename": "PRO.Dishonoured_Cheque_Penalty_Calc.StoredProcedure_verification.md"
+    },
+    {
+      "detected_dialect": "TSQL",
+      "effective_dialect": "TSQL",
+      "error_message": "",
+      "filename": "15_NPA_Upgrade_Watchlist_Merge.sql",
+      "log_filename": "PRO.NPA_Upgrade_Watchlist_Merge.StoredProcedure_pipeline.log",
+      "object_identity": "PRO.NPA_Upgrade_Watchlist_Merge.StoredProcedure",
+      "report_filename": "PRO.NPA_Upgrade_Watchlist_Merge.StoredProcedure_report.md",
+      "selected_dialect_mode": "auto",
+      "status": "success",
+      "verification_filename": "PRO.NPA_Upgrade_Watchlist_Merge.StoredProcedure_verification.md"
+    }
+  ],
+  "successful_files": 4,
+  "total_files": 4
+}

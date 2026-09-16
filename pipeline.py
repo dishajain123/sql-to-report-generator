@@ -35,7 +35,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from src.ingestion.ingestion import (
     MAX_CHUNK_CHARS,
@@ -45,7 +45,7 @@ from src.ingestion.ingestion import (
 )
 from src.retrieval.retriever import PatternRetrievalAgent
 from src.extraction.logic_extractor import LogicExtractionAgent, ChunkExtraction
-from src.synthesis.rule_synthesizer import RuleSynthesizerAgent, SynthesisResult
+from src.synthesis.rule_synthesizer import RuleSynthesizerAgent, SynthesisResult, rule_identity_key
 from src.output.report_formatter import ReportFormatterAgent
 from src.parsing.technical_sql_ops import extract_table_operations_from_chunks, split_table_operations
 from src.parsing.calculations import calculations_from_operations
@@ -62,6 +62,7 @@ from src.validation.semantic_validation import (
     extract_tsql_if_elseif_chains,
     merge_decision_chains,
     find_semantic_anomalies,
+    find_exception_handler_spans,
 )
 from src.validation.coverage_check import (
     build_completeness_ledger,
@@ -208,6 +209,67 @@ def _merge_into_truncation_ambiguity(container: Dict[str, Any], gap_summary: str
             container["ambiguities"] = ambiguities
             return True
     return False
+
+
+def _exclude_exception_handler_calculations(
+    calculations: List[Dict[str, Any]], raw_source: str, handler_spans: List[Tuple[int, int]]
+) -> List[Dict[str, Any]]:
+    """Drop any calculation whose own source text falls inside one of
+    `handler_spans` (an exception/error-handler block body - see
+    `find_exception_handler_spans`). Matched by substring against the
+    handler block's own source text, using the calculation's captured
+    `source_evidence` (the exact originating statement text, when
+    present) or else its `expression`/`formula` text - never by field
+    name, so this generalizes to any status/bookkeeping table without
+    hardcoding one.
+    """
+    if not handler_spans or not calculations:
+        return calculations
+    handler_texts = [raw_source[start:end] for start, end in handler_spans]
+    filtered: List[Dict[str, Any]] = []
+    for calc in calculations:
+        if not isinstance(calc, dict):
+            filtered.append(calc)
+            continue
+        evidence = [str(item).strip() for item in (calc.get("source_evidence") or []) if str(item).strip()]
+        expression = str(calc.get("expression") or calc.get("formula") or "").strip()
+        needles = evidence or ([expression] if expression else [])
+        if needles and any(
+            needle in handler_text for needle in needles for handler_text in handler_texts
+        ):
+            continue
+        filtered.append(calc)
+    return filtered
+
+
+def _mark_rules_degraded_if_unreliable(result: "SynthesisResult") -> "SynthesisResult":
+    """Stamp `degraded: True` onto every business rule a synthesis call
+    (single-call or one section) returned, when that specific call's own
+    response was truncated (`finish_reason == "length"`) or the call
+    itself is flagged as having failed (`synthesis_failed`). This is the
+    per-call granularity available today - no `business_rule` dict carries
+    a source line range or chunk id, so a reader sees "this rule came from
+    an unreliable pass" rather than nothing beyond the existing run-level
+    footer, but not exactly which lines within that pass are suspect.
+
+    `RuleSynthesizerAgent.consolidate_duplicate_rules` (called once, after
+    every synthesis/revision call has finished) relies on this: when two
+    candidates for the same decision merge, only the *kept* (narrowest)
+    candidate's own `degraded` value survives - so a clean rule that
+    happens to have a noisier duplicate is never shown as degraded just
+    because that duplicate existed.
+    """
+    truncated = getattr(result, "truncated", False)
+    synthesis_failed = getattr(result, "synthesis_failed", False)
+    if not (truncated or synthesis_failed):
+        return result
+    reason = "synthesis_failed" if synthesis_failed else "truncated"
+    rules = result.data.get("business_rules") if isinstance(result.data, dict) else None
+    for rule in rules or []:
+        if isinstance(rule, dict):
+            rule["degraded"] = True
+            rule["degraded_reason"] = reason
+    return result
 
 
 def _annotate_decision_chain_provenance(
@@ -662,6 +724,18 @@ class LogicRulesExtractorPipeline:
             list(merged_extraction.get("calculations", []))
             + calculations_from_operations(table_operations)
         )
+        # Exception/error-handling bookkeeping (a retry-counter increment,
+        # a status-flag write inside a BEGIN CATCH/EXCEPTION block) is not
+        # a business calculation - it already appears verbatim under
+        # Exception Handling. Identified by where in the source it comes
+        # from, not any field name, so it generalizes regardless of what
+        # the status table/columns are called.
+        exception_handler_spans = find_exception_handler_spans(
+            ingestion.raw_code, dialect=analysis_dialect or ingestion.dialect
+        )
+        merged_extraction["calculations"] = _exclude_exception_handler_calculations(
+            merged_extraction["calculations"], ingestion.raw_code, exception_handler_spans
+        )
         merged_extraction["statement_dependencies"] = build_statement_dependencies(
             merged_extraction.get("table_operations", []),
             merged_extraction.get("statement_provenance", []),
@@ -716,9 +790,42 @@ class LogicRulesExtractorPipeline:
                 # call itself failed to parse - either way, stop retrying
                 # rather than loop on a call that isn't making progress.
                 break
-            synthesis.data["business_rules"] = revision.data.get(
-                "business_rules", synthesis.data.get("business_rules", [])
-            )
+            revised_rules = revision.data.get("business_rules")
+            if revised_rules is None:
+                revised_rules = synthesis.data.get("business_rules", [])
+            else:
+                # A revise() call runs because a purely lexical scan found
+                # an uncited CASE/WHEN/IF/ELSIF line - it says nothing about
+                # whether the call's own response was reliable. Live runs
+                # show the call succeeding cleanly (`finish_reason=stop`,
+                # valid JSON) is the common case, not the exception: the
+                # previous "the call happening at all is the degradation
+                # signal for whatever it returns" logic stamped `degraded:
+                # True` on the WHOLE returned array regardless, including
+                # every already-accepted rule the model was only asked to
+                # echo back unchanged - a report showing "0 confident, 7
+                # needs review: truncated or failed" for a run where every
+                # single LLM call actually succeeded (see the 01-18 sample
+                # batch analysis). Only a rule that is genuinely NEW here -
+                # not present, in substance, in what synthesize() already
+                # had - is the actual product of "the model had to look
+                # again"; an existing rule's own identity (everything but
+                # `rule_id`/`degraded*`, see `rule_identity_key`) is
+                # unaffected by simply being echoed back in the same JSON
+                # array. `degraded_reason` names *why* separately from the
+                # boolean, so report_formatter can stop claiming every
+                # flagged rule was "truncated or failed" when this path was
+                # actually a successful, targeted second look.
+                previously_known = {
+                    rule_identity_key(rule)
+                    for rule in (synthesis.data.get("business_rules") or [])
+                    if isinstance(rule, dict)
+                }
+                for rule in revised_rules:
+                    if isinstance(rule, dict) and rule_identity_key(rule) not in previously_known:
+                        rule["degraded"] = True
+                        rule["degraded_reason"] = "gap_review"
+            synthesis.data["business_rules"] = revised_rules
             synthesis.guardrail_warnings = list(synthesis.guardrail_warnings or []) + list(
                 revision.guardrail_warnings or []
             )
@@ -797,6 +904,37 @@ class LogicRulesExtractorPipeline:
         # produced the rule.
         synthesis.data["business_rules"] = RuleSynthesizerAgent._remove_operational_status_rules(
             synthesis.data.get("business_rules", []), merged_extraction
+        )
+
+        # Drop rules whose entire "decision" is a null-check guarding its
+        # own field's write (`X IS NOT NULL -> update X`) - zero business
+        # content, just a restatement of the write itself. Run after the
+        # coverage backfill above for the same reason `_remove_operational_
+        # status_rules` is re-run here: a synthetic chain-derived rule can
+        # be just as tautological as a model-authored one.
+        synthesis.data["business_rules"] = RuleSynthesizerAgent._remove_tautological_rules(
+            synthesis.data.get("business_rules", [])
+        )
+
+        # Consolidate rules that are really the same underlying decision
+        # extracted more than once - most commonly a deterministic chain's
+        # own (qualified) rule next to a model-authored (bare) rule for the
+        # exact same statement that the qualifier mismatch above already
+        # prevents in the common case, but also two model-authored rules
+        # from different synthesis/revision passes describing the same
+        # condition ladder. Run last, once every other filter has settled
+        # the final rule set, so consolidation sees the true final
+        # candidates rather than something a later filter would have
+        # dropped anyway.
+        synthesis.data["business_rules"] = RuleSynthesizerAgent.consolidate_duplicate_rules(
+            synthesis.data.get("business_rules", [])
+        )
+
+        # Same exception-handler exclusion as merged_extraction["calculations"]
+        # above, applied to the model-authored calculations list too - a
+        # calculation can come from either source.
+        synthesis.data["calculations"] = _exclude_exception_handler_calculations(
+            synthesis.data.get("calculations", []), ingestion.raw_code, exception_handler_spans
         )
 
         # Diagnostic-only inventory: this is deliberately built after
@@ -1481,7 +1619,7 @@ class LogicRulesExtractorPipeline:
             # already supplies the correct empty schema) keeps the run
             # alive and marks it for the run-level "degraded run" signal.
             try:
-                return self.synthesizer_agent.synthesize(
+                result = self.synthesizer_agent.synthesize(
                     object_name=ingestion.object_name,
                     object_type=ingestion.object_type,
                     parameter_summary=parameter_summary,
@@ -1490,6 +1628,7 @@ class LogicRulesExtractorPipeline:
                     raw_source=raw_source,
                     telemetry_tracker=telemetry_tracker,
                 )
+                return _mark_rules_degraded_if_unreliable(result)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Rule synthesis failed for '%s': %s", ingestion.object_name, exc)
                 return SynthesisResult(
@@ -1533,9 +1672,17 @@ class LogicRulesExtractorPipeline:
             chunk_ids = set(chunk_id_list)
             section_extraction = self._scope_extraction_to_chunks(merged_extraction, chunk_ids)
             section_synthesis_input = self._build_synthesis_input(section_extraction)
+            text_override = section.get("text_override")
             start = section.get("char_start")
             end = section.get("char_end")
-            if (
+            if isinstance(text_override, str) and text_override:
+                # Set by `plan_synthesis_sections` when a single chunk's own
+                # decision-point count exceeded the section budget and had
+                # to be sub-split (see `_split_oversized_chunk_into_sections`)
+                # - an explicit, exact slice of that chunk's own text, valid
+                # whether or not absolute source offsets are available.
+                section_raw_source = text_override
+            elif (
                 isinstance(start, int)
                 and isinstance(end, int)
                 and 0 <= start < end <= len(raw_source)
@@ -1568,7 +1715,7 @@ class LogicRulesExtractorPipeline:
             # section to an empty-but-valid result lets its siblings'
             # rules survive `merge_section_results` untouched.
             try:
-                return self.synthesizer_agent.synthesize(
+                result = self.synthesizer_agent.synthesize(
                     object_name=ingestion.object_name,
                     object_type=ingestion.object_type,
                     parameter_summary=parameter_summary,
@@ -1577,6 +1724,7 @@ class LogicRulesExtractorPipeline:
                     raw_source=section_raw_source,
                     telemetry_tracker=telemetry_tracker,
                 )
+                return _mark_rules_degraded_if_unreliable(result)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Rule synthesis section failed for '%s' (chunks %s): %s",

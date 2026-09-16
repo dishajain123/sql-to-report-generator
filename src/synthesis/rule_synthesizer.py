@@ -33,6 +33,7 @@ from src.parsing.sql_comments import executable_sql
 from src.ir.rule_identity import unique_rule_ids
 
 import json
+import logging
 import os
 import re
 import time
@@ -49,6 +50,39 @@ from src.parsing.dedup import dedup_table_operations
 from src.prompts.prompt_loader import get_prompt_set, render_user_prompt
 from src.telemetry.tracker import LLMTelemetryTracker
 from src.validation.coverage_check import find_decision_points
+from src.validation.coverage_check import _group_lines as _group_decision_point_lines
+
+logger = logging.getLogger(__name__)
+
+
+def rule_identity_key(rule: Dict[str, Any]) -> Tuple[str, ...]:
+    """Stable identity for a business rule, ignoring volatile fields.
+
+    Two rule dicts with the same identity are the same rule as far as this
+    pipeline is concerned - same business meaning, same evidence, same
+    everything except `rule_id`/`original_rule_id` (regenerated per call).
+    Used both to dedupe genuine duplicates across sectioned synthesis calls
+    (`merge_section_results`) and, in `pipeline.py`'s coverage-gap revision
+    loop, to tell an already-accepted rule the model merely echoed back
+    unchanged apart from a truly NEW rule the same call also introduced -
+    only the latter is the actual product of "the model had to look again."
+    """
+    return (
+        str(rule.get("rule_name") or "").strip(),
+        str(rule.get("condition") or "").strip(),
+        str(rule.get("action") or "").strip(),
+        str(rule.get("output_field") or "").strip(),
+        json.dumps(
+            {
+                key: value for key, value in rule.items()
+                if key not in {
+                    "rule_id", "original_rule_id", "rule_name", "condition",
+                    "action", "output_field", "degraded", "degraded_reason",
+                }
+            },
+            sort_keys=True, default=str,
+        ),
+    )
 
 _EMPTY_SYNTHESIS: Dict[str, Any] = {
     "purpose_summary": "",
@@ -359,6 +393,31 @@ class RuleSynthesizerAgent:
             chunk_points = max(1, len(find_decision_points(chunk_text)))
             chunk_chars = len(chunk_text)
 
+            if chunk_points > section_point_budget:
+                # This single chunk alone already needs more decision-point
+                # budget than any section may have - grouping can't help
+                # (grouping only ever adds MORE points to a section), and
+                # every other chunk in this object is irrelevant to fixing
+                # it. This is the real-world failure mode behind most
+                # "Needs Review" rules on live runs against small-ceiling
+                # models: a stored procedure whose entire body is one long,
+                # un-nested run of sibling UPDATE/IF/CASE statements (no
+                # BEGIN...END for the extraction stage to split on) becomes
+                # one chunk with dozens of decision points, which used to
+                # become one section guaranteed to blow the output-token
+                # ceiling no matter what. Flush whatever was accumulating,
+                # sub-split this one chunk on its own, then resume grouping
+                # fresh from the next chunk.
+                _flush()
+                current_ids, current_start, current_end = [], None, None
+                current_points, current_chars = 0, 0
+                sections.extend(
+                    self._split_oversized_chunk_into_sections(
+                        chunk_id, chunk_text, char_start, char_end, section_point_budget
+                    )
+                )
+                continue
+
             would_exceed_points = current_points + chunk_points > section_point_budget
             would_exceed_chars = current_chars + chunk_chars > _SYNTHESIS_SECTION_MAX_CHARS
             if current_ids and (would_exceed_points or would_exceed_chars):
@@ -376,6 +435,90 @@ class RuleSynthesizerAgent:
 
         _flush()
         return sections
+
+    @staticmethod
+    def _split_oversized_chunk_into_sections(
+        chunk_id: Any,
+        chunk_text: str,
+        char_start: Any,
+        char_end: Any,
+        section_point_budget: int,
+    ) -> List[Dict[str, Any]]:
+        """Break one chunk whose own decision-point count exceeds
+        `section_point_budget` into multiple synthesis sections.
+
+        Splits only ever fall between decision-point clusters - lines
+        grouped the same way `coverage_check._group_lines` groups citation
+        evidence for coverage checking - never inside one, so a single
+        CASE/IF statement's branches always stay together in one call.
+        Every returned section repeats `chunk_id` in `chunk_ids`: the same
+        chunk-level extraction evidence (already only chunk-granular, not
+        statement-granular, everywhere else in this pipeline) is handed to
+        each sub-slice, and `merge_section_results`'s existing rule-identity
+        dedup collapses any resulting overlap between adjacent sub-slices.
+        Each section carries an explicit `text_override` with its own exact
+        slice of `chunk_text`, so `_run_rule_synthesis` never has to rely on
+        (possibly unavailable, see `CodeChunk.source_char_start/end`)
+        absolute source offsets to use it.
+        """
+        has_offset = isinstance(char_start, int) and char_start >= 0
+        points = find_decision_points(chunk_text)
+        point_lines = sorted({int(p["line"]) for p in points if isinstance(p, dict) and "line" in p})
+        if not point_lines:
+            return [{
+                "chunk_ids": [chunk_id],
+                "char_start": char_start if has_offset else None,
+                "char_end": char_end if isinstance(char_end, int) and char_end >= 0 else None,
+                "text_override": chunk_text,
+            }]
+
+        groups = _group_decision_point_lines(point_lines)
+        lines = chunk_text.splitlines(keepends=True)
+        line_char_offsets = [0]
+        for line in lines:
+            line_char_offsets.append(line_char_offsets[-1] + len(line))
+
+        def _chars_for_line_range(start_line: int, end_line: int) -> Tuple[int, int]:
+            start_idx = max(0, start_line - 1)
+            end_idx = min(len(lines), end_line)
+            return line_char_offsets[start_idx], line_char_offsets[end_idx]
+
+        sub_sections: List[Dict[str, Any]] = []
+        group_start_line = 1
+        accumulated_points = 0
+        pending = False
+        last_group_end_line = 0
+
+        def _flush_pending(end_line: int) -> None:
+            rel_start, rel_end = _chars_for_line_range(group_start_line, end_line)
+            text_slice = chunk_text[rel_start:rel_end]
+            if not text_slice.strip():
+                return
+            sub_sections.append({
+                "chunk_ids": [chunk_id],
+                "char_start": char_start + rel_start if has_offset else None,
+                "char_end": char_start + rel_end if has_offset else None,
+                "text_override": text_slice,
+            })
+
+        for group in groups:
+            group_points = len(group)
+            if pending and accumulated_points + group_points > section_point_budget:
+                _flush_pending(last_group_end_line)
+                group_start_line = last_group_end_line + 1
+                accumulated_points = 0
+                pending = False
+            pending = True
+            accumulated_points += group_points
+            last_group_end_line = group[-1]
+        _flush_pending(len(lines))
+
+        return sub_sections or [{
+            "chunk_ids": [chunk_id],
+            "char_start": char_start if has_offset else None,
+            "char_end": char_end if isinstance(char_end, int) and char_end >= 0 else None,
+            "text_override": chunk_text,
+        }]
 
     @staticmethod
     def merge_section_results(results: Sequence["SynthesisResult"]) -> "SynthesisResult":
@@ -427,23 +570,7 @@ class RuleSynthesizerAgent:
             _dedup_preserve_order([text for text in exception_summaries if text])
         )
 
-        def _rule_identity_key(rule: Dict[str, Any]) -> Tuple[str, ...]:
-            # Sectioning runs the same synthesis prompt once per section, and
-            # overlapping/duplicated evidence (e.g. a rule whose condition
-            # spans a boundary and gets re-derived by two adjacent sections)
-            # can produce the exact same rule twice. Identity on the
-            # business-meaning fields - not `rule_id` (regenerated per call)
-            # or any other volatile field - so only genuine duplicates
-            # collapse.
-            return (
-                str(rule.get("rule_name") or "").strip(),
-                str(rule.get("condition") or "").strip(),
-                str(rule.get("action") or "").strip(),
-                str(rule.get("output_field") or "").strip(),
-                json.dumps({key: value for key, value in rule.items()
-                            if key not in {"rule_id", "original_rule_id", "rule_name", "condition", "action", "output_field"}},
-                           sort_keys=True, default=str),
-            )
+        _rule_identity_key = rule_identity_key
 
         def _rule_has_degenerate_text(rule: Dict[str, Any]) -> bool:
             return any(
@@ -784,11 +911,15 @@ class RuleSynthesizerAgent:
         truncated = finish_reason == "length"
 
         data, error = self._parse_json(raw_response)
+        used_recovery = False
+        retried = False
         if truncated and error:
             recovered = self._recover_partial_json(raw_response)
             if recovered is not None:
                 data, error = recovered, ""
+                used_recovery = True
             else:
+                retried = True
                 retry = self._retry_with_ceiling(completion_kwargs, telemetry_tracker)
                 if retry is not None:
                     response, raw_response = retry
@@ -799,6 +930,7 @@ class RuleSynthesizerAgent:
                         recovered = self._recover_partial_json(raw_response)
                         if recovered is not None:
                             data, error = recovered, ""
+                            used_recovery = True
         elif error:
             # Malformed JSON with `finish_reason != "length"` means the model
             # reported it finished normally - it just produced an invalid
@@ -812,6 +944,7 @@ class RuleSynthesizerAgent:
             # SMA_REASON classification section on PRO.SMA_MARKING. One
             # bounded retry of the identical request gives the model a
             # second, independent attempt at valid JSON before giving up.
+            retried = True
             retry = self._retry_same_request(completion_kwargs, telemetry_tracker)
             if retry is not None:
                 response, raw_response = retry
@@ -822,6 +955,53 @@ class RuleSynthesizerAgent:
                     recovered = self._recover_partial_json(raw_response)
                     if recovered is not None:
                         data, error = recovered, ""
+                        used_recovery = True
+        if error:
+            # Every retry above only re-attempted recovery when `truncated`
+            # was set - but `_recover_partial_json` walks the object
+            # key-by-key from the start and simply stops at whichever key's
+            # value first fails to decode, so it salvages everything before
+            # that point regardless of *why* decoding failed. A malformed-
+            # but-*complete* response (`finish_reason != "length"` - a
+            # stray/missing comma, an unescaped quote, one bad field deep in
+            # the object) previously fell straight through to an empty
+            # result and the "needs manual review" placeholder even when
+            # `purpose_summary`, `step_by_step_flow`, and most of
+            # `business_rules` were intact ahead of the one bad key. One
+            # last unconditional recovery attempt here costs nothing when
+            # the response truly has nothing usable (`_recover_partial_json`
+            # returns `None`), and salvages real content otherwise.
+            recovered = self._recover_partial_json(raw_response)
+            if recovered is not None:
+                data, error = recovered, ""
+                used_recovery = True
+        # Permanent, model-agnostic observability for exactly the trace this
+        # module previously had none of: which outcome each synthesis call
+        # (single-call or one section) actually reached, and why. Without
+        # this, diagnosing "why is this rule Needs Review" required
+        # re-running with ad hoc instrumentation every time - see the 01-18
+        # sample batch analysis, where this was reconstructed by hand.
+        result_points = len(find_decision_points(raw_source or ""))
+        if error:
+            outcome = "unresolved_parse_failure"
+        elif used_recovery:
+            outcome = "recovered_partial_json"
+        elif truncated:
+            outcome = "recovered_truncated_but_parsed"
+        elif retried:
+            outcome = "ok_after_retry"
+        else:
+            outcome = "ok"
+        logger.info(
+            "Synthesis call outcome=%s decision_points=%d requested_max_tokens=%d "
+            "finish_reason=%s response_chars=%d rules=%d",
+            outcome,
+            result_points,
+            effective_max_tokens,
+            finish_reason or "unknown",
+            len(raw_response or ""),
+            len((data or {}).get("business_rules") or []) if isinstance(data, dict) else 0,
+        )
         if error:
             jargon_flags = self._scan_for_jargon(data)
             return SynthesisResult(
@@ -1585,6 +1765,141 @@ class RuleSynthesizerAgent:
                 filtered.append(rule)
         return filtered
 
+    # A single-row condition that is purely an existence/non-null check on
+    # one or more fields, with nothing else - no comparison, no threshold,
+    # no OR/AND branch content. Deliberately loose about field-list shape
+    # ("X is not null", "X, Y, Z are not null", "NOT X IS NULL") since the
+    # goal is to catch every phrasing the synthesis prompt is observed to
+    # produce for this shape, not just one.
+    _TAUTOLOGY_NULL_CHECK_RE = re.compile(
+        r"(?i)^\s*(?:not\s+)?[\w #@\[\]$.,]+?\s+(?:is|are)(?:\s+not)?\s+null\s*$"
+    )
+    # A real business outcome states a literal value, a calculation, or a
+    # branch-dependent choice. An outcome that names none of those - just an
+    # operation verb (update/insert/merge) plus a target, or the bare field
+    # name being written - carries no decision content on its own.
+    _TAUTOLOGY_OUTCOME_HAS_CONTENT_RE = re.compile(r"(?i)['\"]|\bcase\b|\bwhen\b|[+\-*/]")
+    _TAUTOLOGY_OPERATION_VERB_RE = re.compile(r"(?i)^\s*(?:update|insert|merge)\b")
+
+    @staticmethod
+    def _remove_tautological_rules(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Drop rules whose only "decision" is a null-check guarding the
+        very field(s) it writes - e.g. `PenalInterestAmount is not null ->
+        Update PenalInterestAmount`, or `AccountId, DpdBucket... are not
+        null -> Insert and update records in #Staging`. This describes that
+        a write happens, not any business condition under which it
+        happens differently - it is a restatement of the write's own
+        existence, not a rule. A single-row requirement (no ELSE/second
+        branch) keeps this from ever touching a genuine multi-branch
+        decision that merely starts with a null guard.
+        """
+        from src.parsing.decision_identity import bare_field_key
+
+        def _is_tautological(rule: Dict[str, Any]) -> bool:
+            rows = rule.get("decision_logic_rows") or []
+            if len(rows) != 1 or not isinstance(rows[0], dict):
+                return False
+            condition = str(rows[0].get("condition") or "").strip()
+            outcome = str(rows[0].get("outcome") or "").strip()
+            if not condition or not outcome:
+                return False
+            if not RuleSynthesizerAgent._TAUTOLOGY_NULL_CHECK_RE.match(condition):
+                return False
+            if RuleSynthesizerAgent._TAUTOLOGY_OUTCOME_HAS_CONTENT_RE.search(outcome):
+                return False
+            if RuleSynthesizerAgent._TAUTOLOGY_OPERATION_VERB_RE.match(outcome):
+                return True
+            condition_fields = {
+                bare_field_key(part)
+                for part in re.split(r"[,\s]+", condition)
+                if part and part.upper() not in {"IS", "ARE", "NOT", "NULL"}
+            }
+            return bare_field_key(outcome) in condition_fields
+
+        return [
+            rule for rule in (rules or [])
+            if not (isinstance(rule, dict) and _is_tautological(rule))
+        ]
+
+    @staticmethod
+    def consolidate_duplicate_rules(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merge rules that independently describe the same underlying
+        decision - same target field, same normalized condition ladder -
+        into one, instead of rendering each extraction attempt as its own
+        numbered rule.
+
+        Outcomes are deliberately NOT part of the merge key (see
+        `rule_decision_identity`'s docstring): two candidates for the same
+        statement can disagree on outcome text while still being the same
+        decision, most often because one bundles in content that actually
+        belongs to a different, nearby statement (observed for real, from a
+        coverage-retry pass that fused an unrelated CASE's results into an
+        already-correct rule's branches). When a group merges, the
+        *narrowest* candidate (fewest total fields in
+        `output_field`/`fields_affected`) is kept as-is, and the other
+        candidates' extra fields are recorded as a footnote
+        (`consolidation_note`) rather than unioned into the kept rule's own
+        content - unioning would risk presenting fused, possibly-incorrect
+        content as one confident rule, which is worse than a visible
+        footnote naming what else was seen. A `degraded` flag (if present)
+        is taken from the kept candidate only, not OR'd across the group -
+        merging into a clean, non-degraded rule must not mark it degraded
+        just because a noisier duplicate also existed.
+
+        Rules with no `decision_logic_rows` at all (nothing to key
+        structural identity on) are never merged with anything, including
+        each other - safe by construction, not by coincidence.
+        """
+        from src.parsing.decision_identity import rule_decision_identity
+
+        def _all_fields(rule: Dict[str, Any]) -> List[str]:
+            output_field = rule.get("output_field")
+            fields = rule.get("fields_affected") or []
+            if isinstance(fields, str):
+                fields = [fields]
+            values: List[str] = []
+            if isinstance(output_field, str) and output_field.strip():
+                values.append(output_field.strip())
+            values.extend(str(field).strip() for field in fields if str(field).strip())
+            return list(dict.fromkeys(values))
+
+        groups: Dict[Any, List[Dict[str, Any]]] = {}
+        order: List[Any] = []
+        for rule in rules or []:
+            if not isinstance(rule, dict):
+                continue
+            rows = rule.get("decision_logic_rows") or []
+            key = ("__unkeyed__", id(rule)) if not rows else rule_decision_identity(
+                rule.get("output_field"), rows
+            )
+            if key not in groups:
+                order.append(key)
+            groups.setdefault(key, []).append(rule)
+
+        consolidated: List[Dict[str, Any]] = []
+        for key in order:
+            group = groups[key]
+            if len(group) == 1:
+                consolidated.append(group[0])
+                continue
+            kept = min(group, key=lambda rule: len(_all_fields(rule)))
+            kept_fields = set(_all_fields(kept))
+            other_fields = sorted(
+                {field for rule in group if rule is not kept for field in _all_fields(rule)}
+                - kept_fields
+            )
+            merged = dict(kept)
+            if other_fields:
+                note = (
+                    "Also extracted with additional fields attached in another pass ("
+                    + ", ".join(other_fields)
+                    + ") - kept the narrower, consistent version of this rule."
+                )
+                existing_note = str(merged.get("consolidation_note") or "").strip()
+                merged["consolidation_note"] = f"{existing_note} {note}".strip() if existing_note else note
+            consolidated.append(merged)
+        return consolidated
+
     @staticmethod
     def _remove_non_business_cleanup_rules(
         rules: List[Dict[str, Any]],
@@ -2241,8 +2556,19 @@ class RuleSynthesizerAgent:
             return RuleSynthesizerAgent._bare_field_key(value)
 
         def _normalized_condition(value: Any) -> str:
-            from src.parsing.decision_identity import decision_text_key
-            return decision_text_key(value)
+            # Qualifier-stripping, not just decision_text_key's whitespace/
+            # case normalization: a deterministic chain's own condition/
+            # outcome text is routinely fully-qualified or alias-qualified
+            # (`PRO.LoanAccountCal.DpdDays = 0`, `#DpdStaging.AdjustedPenalty
+            # * 1.10`) while a model-authored rule for the exact same
+            # statement just names the bare column (`DpdDays = 0`,
+            # `AdjustedPenalty * 1.10`). Without stripping qualifiers here,
+            # `_field_is_covered` below never recognizes the two as the same
+            # decision, and a synthetic backfill rule gets added right next
+            # to the model's already-correct one - the real duplicate-rule
+            # bug this normalization exists to close.
+            from src.parsing.decision_identity import normalized_condition_key
+            return normalized_condition_key(value)
 
         def _rows_key(rows: List[Dict[str, Any]]) -> list:
             return [

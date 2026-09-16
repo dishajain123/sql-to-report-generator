@@ -1,0 +1,268 @@
+# Account Closure Audit Trail — Verification & Traceability
+
+> Companion artifact to `PRO.Account_Closure_Audit_Trail.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
+
+| Item | Value |
+|---|---|
+| Object ID | `obj_acc34f0279ea` |
+| Raw technical object name (from source) | `Account_Closure_Audit_Trail` |
+
+## Run Metadata
+
+| Item | Value |
+|---|---|
+| Pipeline Version | `2026-08-26-phase1` |
+| Prompt Version | `3fde9e2078dcda12` |
+| Knowledge Base Version | `2e6fc62902751973` |
+| Model | `amazon.nova-lite-v1:0` |
+| Provider | `bedrock` |
+| Dialect | `T-SQL` |
+| Dialect Confidence | `High` |
+| Source Hash | `dbd70daccf7e4c93750a154552f19e03fc03b6af1aa265203447e991ea5f2dd8` |
+| Configuration Version | `ddb60c677229031b` |
+| Run Timestamp | `2026-09-16T08:51:48.878155+00:00` |
+| Object ID | `obj_acc34f0279ea` |
+
+## LLM Telemetry
+
+| Item | Value |
+|---|---|
+| Run ID | `telemetry_56c3cb03d9f5` |
+| Total LLM Calls | `5` |
+| Successful Calls | `5` |
+| Failed Calls | `0` |
+| Prompt Tokens | `47732` |
+| Completion Tokens | `11354` |
+| Total Tokens | `59086` |
+| Telemetry Availability | `available` |
+
+| Stage | Calls | Success | Failure | Tokens | Availability |
+|---|---:|---:|---:|---:|---|
+| extraction | 1 | 1 | 0 | 7047 | available |
+| synthesis | 3 | 3 | 0 | 26216 | available |
+| synthesis_revision | 1 | 1 | 0 | 25823 | available |
+
+## Business Rule Summary
+
+| Priority | Rule | Output | Business Purpose |
+|---|---|---|---|
+| 🔴 1 | Update account status and closure date [CONFLICT] (`rule__1`) | `ClosureDate, AccountStatus` | If an account's status is 'CLOSED' and its closure date is NULL, update the account status to 'CLOSED' and set the closure date to the curr… |
+| 🔴 2 | Update account status and closure reject reason [CONFLICT] (`rule__2`) | `ClosureRejectReason, AccountStatus` | If an account's status is 'CLOSED' and its closure reject reason is NULL, update the account status to 'CLOSED' and set the closure reject… |
+| 🟠 3 | Determine AccountStatus [MATCHED] (`deterministic_decision_1056_2119_0_accountstatus`) | `AccountStatus` | First matching row wins. SQL type conversion still applies; ELSE includes false or NULL predicates. |
+| 🟠 4 | Determine ClosureDate [MATCHED] (`deterministic_case_0040_0046_1564_closuredate`) | `ClosureDate` | First matching row wins; ELSE includes false or NULL predicates. |
+| 🟠 5 | Determine Reason [MATCHED] (`deterministic_decision_3292_3811_2_reason`) | `Reason` | First matching row wins. SQL type conversion still applies; ELSE includes false or NULL predicates. |
+| 🟢 6 | Update account status [MATCHED] (`rule__1__4`) | `AccountStatus, ClosureDate` | Determine the account status based on outstanding balance and dispute status for accounts pending closure. |
+| 🔴 7 | Set account status to active [CONFLICT] (`rule__2__5`) | `AccountStatus, ClosureRejectReason` | Set account status to 'ACTIVE' and provide a rejection reason for accounts pending closure with an outstanding balance or unresolved disput… |
+| 🔴 8 | Set account status to active with dispute [CONFLICT] (`rule__3__6`) | `AccountStatus, ClosureRejectReason` | Set account status to 'ACTIVE' and provide a rejection reason for accounts pending closure with an unresolved dispute. |
+| 🔴 9 | Insert closure decisions [CONFLICT] (`rule__4`) | `AccountId, NewStatus, Reason` | Insert closure decisions into a temporary table for accounts with a closure date matching the process date or with specific rejection reaso… |
+| 🟠 10 | Merge closure decisions [LLM_ONLY] (`rule__5`) | `NewStatus, Reason, LastDecisionDate, AccountId, FirstDecisionDate` | Merge closure decisions into the closure register, updating existing records or inserting new ones. |
+| 🔴 11 | Insert collections queue records [CONFLICT] (`rule__6`) | `AccountId, EscalationDate, Reason` | Insert records into the collections queue for closure rejections that are not due to zero balance. |
+| 🔴 12 | Clear closure rejection reasons [CONFLICT] (`rule__8`) | `ClosureRejectReason` | Clear closure rejection reasons for accounts not in active status or with null rejection reasons. |
+
+## Source Traceability
+
+<details>
+<summary><strong>Show rule-to-source mapping</strong></summary>
+
+| # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |
+|---|---|---|---|---|---|---|
+| 1 | Update account status and closure date (rule__1) | A.AccountStatus = 'CLOSED' AND A.ClosureDate IS NULL | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_01_18 | dependency_0001 | Needs Review |
+| 2 | Update account status and closure reject reason (rule__2) | A.AccountStatus = 'CLOSED' AND ISNULL(A.ClosureRejectReason, '') = '' | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_02_19 | dependency_0002 | Needs Review |
+| 3 | Determine AccountStatus (deterministic_decision_1056_2119_0_accountstatus) | Not cited | source \| Lines 29-52 | Not cited | Not cited | Verified |
+| 4 | Determine ClosureDate (deterministic_case_0040_0046_1564_closuredate) | Not cited | source \| Lines 40-46 | Not cited | Not cited | Verified |
+| 5 | Determine Reason (deterministic_decision_3292_3811_2_reason) | Not cited | source \| Lines 83-93 | Not cited | Not cited | Verified |
+| 6 | Update account status (rule__1__4) | UPDATE A SET A.AccountStatus = CASE... END, A.ClosureDate = CASE... END FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'PENDING_CLOSURE' | Not cited | Not cited | Not cited | Verified |
+| 7 | Set account status to active (rule__2__5) | UPDATE A SET A.AccountStatus = 'ACTIVE', A.ClosureRejectReason = 'OUTSTANDING_BALANCE' FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'PENDING_CLOSURE' AND ISNULL(A.OutstandingBalance, 0) > 0 | Not cited | Not cited | Not cited | Needs Review |
+| 8 | Set account status to active with dispute (rule__3__6) | UPDATE A SET A.AccountStatus = 'ACTIVE', A.ClosureRejectReason = 'UNRESOLVED_DISPUTE' FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'PENDING_CLOSURE' AND ISNULL(A.OutstandingBalance, 0) = 0 AND A.DisputeFlag = 'Y' AND (A.DisputeRaisedDate IS NULL OR A.Dis… | Not cited | Not cited | Not cited | Needs Review |
+| 9 | Insert closure decisions (rule__4) | INSERT INTO #ClosureDecisions (AccountId, NewStatus, Reason) SELECT A.AccountId, A.AccountStatus, ISNULL(A.ClosureRejectReason, 'CLOSED_ZERO_BALANCE') FROM PRO.LoanAccountCal A WHERE A.ClosureDate = @ProcessDate OR A.ClosureRejectReason IN ('OUTSTANDING_BALAN… | Not cited | Not cited | Not cited | Needs Review |
+| 10 | Merge closure decisions (rule__5) | MERGE PRO.ClosureRegister AS Target USING #ClosureDecisions AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.NewStatus = Source.NewStatus, Target.Reason = Source.Reason, Target.LastDecisionDate = @ProcessDate WHEN NOT MATCH… | Not cited | Not cited | Not cited | Needs Review |
+| 11 | Insert collections queue records (rule__6) | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'CLOSURE_REJECTED_' + Reason FROM #ClosureDecisions WHERE Reason <> 'CLOSED_ZERO_BALANCE' | Not cited | Not cited | Not cited | Needs Review |
+| 12 | Clear closure rejection reasons (rule__8) | UPDATE A SET A.ClosureRejectReason = NULL FROM PRO.LoanAccountCal A WHERE A.AccountStatus NOT IN ('ACTIVE') OR A.ClosureRejectReason IS NULL | Not cited | Not cited | Not cited | Needs Review |
+
+### Decision-Chain Branch Provenance
+
+| Branch | Condition | Source Location |
+|---|---|---|
+| decision_1056_2119_0:branch_001 | (COALESCE(A.OutstandingBalance, 0) = 0) AND (A.DisputeFlag = 'N' OR A.DisputeFlag IS NULL) | source \| Lines 29-52 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_05 |
+| decision_1056_2119_0:branch_002 | (COALESCE(A.OutstandingBalance, 0) = 0) AND (NOT A.DisputeRaisedDate IS NULL AND A.DisputeRaisedDate <= @DisputeGraceCutoff) | source \| Lines 29-52 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_05 |
+| decision_1056_2119_0:branch_003 | COALESCE(A.OutstandingBalance, 0) = 0 | source \| Lines 29-52 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_05 |
+| decision_1056_2119_0:branch_004 | ELSE | source \| Lines 29-52 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_05 |
+| case_0040_0046_1564:branch_001 | ISNULL(A.OutstandingBalance, 0) = 0<br>                     AND (A.DisputeFlag = 'N' OR A.DisputeFlag IS NULL<br>                          OR (A.DisputeRaisedDate IS NOT NULL AND A.DisputeRaisedDate <= @DisputeGraceCutoff)) | source \| Lines 41-45 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_06 |
+| case_0040_0046_1564:branch_002 | ELSE | source \| Lines 45-46 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_07 |
+| decision_3292_3811_2:branch_001 | A.ClosureRejectReason IS NOT NULL | source \| Lines 83-93 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_12 |
+| decision_3292_3811_2:branch_002 | ELSE | source \| Lines 83-93 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_12 |
+| decision_chain_004:branch_001 | ISNULL(A.OutstandingBalance, 0) = 0 | source |
+| decision_chain_004:branch_002 | ELSE | source |
+| decision_chain_005:branch_001 | A.AccountStatus = 'PENDING_CLOSURE' AND ISNULL(A.OutstandingBalance, 0) > 0 | source |
+| decision_chain_005:branch_002 | A.AccountStatus = 'PENDING_CLOSURE' AND ISNULL(A.OutstandingBalance, 0) = 0 AND A.DisputeFlag = 'Y' AND (A.DisputeRaisedDate IS NULL OR A.DisputeRaisedDate > @DisputeGraceCutoff) | source |
+
+_Source evidence is the literal technical text carried through the pipeline; Source Location is derived deterministically from chunk and statement provenance when available; SQL Statements / Chunks and Technical References point back to the extracted chunk ids and statement references used by the guardrails. Technical references that repeat the same table/operation/target-columns are shown once._
+</details>
+
+## Completeness Ledger
+
+- **Executable constructs:** 88
+- **Disposition:** covered_by_rule=68, technical_only=4, uncovered=16
+
+| Construct | Status | Source location | Statement / chunk | Evidence |
+|---|---|---|---|---|
+| STATEMENT | uncovered | Lines 1-1 | 00_batch0_declaration:chunk_text_01, 00_batch0_declaration | USE [DEMO_MISDB] |
+| SET | uncovered | Lines 1-1 | 01_batch1_declaration:chunk_text_01, 01_batch1_declaration | SET ANSI_NULLS ON |
+| SET | uncovered | Lines 1-1 | 01_batch1_declaration:embedded_01_02, 01_batch1_declaration | SET ANSI_NULLS ON |
+| SET | uncovered | Lines 1-1 | 02_batch2_declaration:chunk_text_01, 02_batch2_declaration | SET QUOTED_IDENTIFIER ON |
+| SET | uncovered | Lines 1-1 | 02_batch2_declaration:embedded_01_02, 02_batch2_declaration | SET QUOTED_IDENTIFIER ON |
+| STATEMENT | covered_by_rule | Lines 1-2 | 03_batch3_main_body+batch3_nested_block:chunk_text_01, 03_batch3_main_body+batch3_nested_block | BEGIN SET NOCOUNT ON |
+| STATEMENT | covered_by_rule | Lines 4-4 | 03_batch3_main_body+batch3_nested_block:chunk_text_02, 03_batch3_main_body+batch3_nested_block | BEGIN TRY |
+| SELECT | covered_by_rule | Lines 6-6 | 03_batch3_main_body+batch3_nested_block:chunk_text_03, 03_batch3_main_body+batch3_nested_block | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
+| STATEMENT | covered_by_rule | Lines 7-10 | 03_batch3_main_body+batch3_nested_block:chunk_text_04, 03_batch3_main_body+batch3_nested_block | DECLARE @DisputeGraceCutoff DATE = DATEADD(DAY, -30, @ProcessDate) -- Rule 1: nested IF/ELSE - accounts pending closure with a zero -- or null balance are checked for disputes before closing |
+| UPDATE | covered_by_rule | Lines 11-33 | 03_batch3_main_body+batch3_nested_block:chunk_text_05, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.AccountStatus = CASE WHEN ISNULL(A.OutstandingBalance, 0) = 0 THEN CASE WHEN A.DisputeFlag = 'N' OR A.DisputeFlag IS NULL THEN 'CLOSED' WHEN A.DisputeRaisedDate IS NOT NULL AND A.DisputeRaisedDate <= @DisputeGraceCutoff TH... |
+| UPDATE | covered_by_rule | Lines 34-43 | 03_batch3_main_body+batch3_nested_block:chunk_text_06, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.AccountStatus = 'ACTIVE', A.ClosureRejectReason = 'OUTSTANDING_BALANCE' FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'PENDING_CLOSURE' AND ISNULL(A.OutstandingBalance, 0) > 0 -- Rule 3: accounts pending closure with a... |
+| UPDATE | covered_by_rule | Lines 44-51 | 03_batch3_main_body+batch3_nested_block:chunk_text_07, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.AccountStatus = 'ACTIVE', A.ClosureRejectReason = 'UNRESOLVED_DISPUTE' FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'PENDING_CLOSURE' AND ISNULL(A.OutstandingBalance, 0) = 0 AND A.DisputeFlag = 'Y' AND (A.DisputeRaise... |
+| STATEMENT | covered_by_rule | Lines 53-53 | 03_batch3_main_body+batch3_nested_block:chunk_text_08, 03_batch3_main_body+batch3_nested_block | IF OBJECT_ID('tempdb..#ClosureDecisions') IS NOT NULL |
+| STATEMENT | covered_by_rule | Lines 54-54 | 03_batch3_main_body+batch3_nested_block:chunk_text_09, 03_batch3_main_body+batch3_nested_block | DROP TABLE #ClosureDecisions |
+| INSERT | covered_by_rule | Lines 56-64 | 03_batch3_main_body+batch3_nested_block:chunk_text_10, 03_batch3_main_body+batch3_nested_block | CREATE TABLE #ClosureDecisions ( AccountId VARCHAR(20), NewStatus VARCHAR(20), Reason VARCHAR(30) ) -- Rule 4: conditional INSERT - stage only accounts that actually -- transitioned status this run |
+| INSERT | covered_by_rule | Lines 65-74 | 03_batch3_main_body+batch3_nested_block:chunk_text_11, 03_batch3_main_body+batch3_nested_block | INSERT INTO #ClosureDecisions (AccountId, NewStatus, Reason) SELECT A.AccountId, A.AccountStatus, ISNULL(A.ClosureRejectReason, 'CLOSED_ZERO_BALANCE') FROM PRO.LoanAccountCal A WHERE A.ClosureDate = @ProcessDate OR A.ClosureRejectReason... |
+| MERGE | covered_by_rule | Lines 75-88 | 03_batch3_main_body+batch3_nested_block:chunk_text_12, 03_batch3_main_body+batch3_nested_block | MERGE PRO.ClosureRegister AS Target USING #ClosureDecisions AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.NewStatus = Source.NewStatus, Target.Reason = Source.Reason, Target.LastDecisionDate = @Proc... |
+| INSERT | covered_by_rule | Lines 89-95 | 03_batch3_main_body+batch3_nested_block:chunk_text_13, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'CLOSURE_REJECTED_' + Reason FROM #ClosureDecisions WHERE Reason <> 'CLOSED_ZERO_BALANCE' -- Rule 7: every account that transitioned sta... |
+| INSERT | covered_by_rule | Lines 96-101 | 03_batch3_main_body+batch3_nested_block:chunk_text_14, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.AccountStatusAuditLog (AccountId, TransitionDate, NewStatus, Reason) SELECT AccountId, @ProcessDate, NewStatus, Reason FROM #ClosureDecisions -- Rule 8: clear the reject reason for accounts that are not -- currently in a... |
+| UPDATE | covered_by_rule | Lines 102-106 | 03_batch3_main_body+batch3_nested_block:chunk_text_15, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.ClosureRejectReason = NULL FROM PRO.LoanAccountCal A WHERE A.AccountStatus NOT IN ('ACTIVE') OR A.ClosureRejectReason IS NULL |
+| UPDATE | covered_by_rule | Lines 108-110 | 03_batch3_main_body+batch3_nested_block:chunk_text_16, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Account_Closure_Audit_Trail' |
+| STATEMENT | covered_by_rule | Lines 112-112 | 03_batch3_main_body+batch3_nested_block:chunk_text_17, 03_batch3_main_body+batch3_nested_block | END TRY |
+| UPDATE | covered_by_rule | Lines 11-33 | 03_batch3_main_body+batch3_nested_block:embedded_01_18, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.AccountStatus = CASE WHEN ISNULL(A.OutstandingBalance, 0) = 0 THEN CASE WHEN A.DisputeFlag = 'N' OR A.DisputeFlag IS NULL THEN 'CLOSED' WHEN A.DisputeRaisedDate IS NOT NULL AND A.DisputeRaisedDate <= @DisputeGraceCutoff TH... |
+| UPDATE | covered_by_rule | Lines 34-43 | 03_batch3_main_body+batch3_nested_block:embedded_02_19, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.AccountStatus = 'ACTIVE', A.ClosureRejectReason = 'OUTSTANDING_BALANCE' FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'PENDING_CLOSURE' AND ISNULL(A.OutstandingBalance, 0) > 0 -- Rule 3: accounts pending closure with a... |
+| UPDATE | covered_by_rule | Lines 44-51 | 03_batch3_main_body+batch3_nested_block:embedded_03_20, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.AccountStatus = 'ACTIVE', A.ClosureRejectReason = 'UNRESOLVED_DISPUTE' FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'PENDING_CLOSURE' AND ISNULL(A.OutstandingBalance, 0) = 0 AND A.DisputeFlag = 'Y' AND (A.DisputeRaise... |
+| INSERT | covered_by_rule | Lines 65-74 | 03_batch3_main_body+batch3_nested_block:embedded_04_21, 03_batch3_main_body+batch3_nested_block | INSERT INTO #ClosureDecisions (AccountId, NewStatus, Reason) SELECT A.AccountId, A.AccountStatus, ISNULL(A.ClosureRejectReason, 'CLOSED_ZERO_BALANCE') FROM PRO.LoanAccountCal A WHERE A.ClosureDate = @ProcessDate OR A.ClosureRejectReason... |
+| MERGE | covered_by_rule | Lines 75-88 | 03_batch3_main_body+batch3_nested_block:embedded_05_22, 03_batch3_main_body+batch3_nested_block | MERGE PRO.ClosureRegister AS Target USING #ClosureDecisions AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.NewStatus = Source.NewStatus, Target.Reason = Source.Reason, Target.LastDecisionDate = @Proc... |
+| INSERT | covered_by_rule | Lines 89-95 | 03_batch3_main_body+batch3_nested_block:embedded_06_23, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'CLOSURE_REJECTED_' + Reason FROM #ClosureDecisions WHERE Reason <> 'CLOSED_ZERO_BALANCE' -- Rule 7: every account that transitioned sta... |
+| INSERT | covered_by_rule | Lines 96-101 | 03_batch3_main_body+batch3_nested_block:embedded_07_24, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.AccountStatusAuditLog (AccountId, TransitionDate, NewStatus, Reason) SELECT AccountId, @ProcessDate, NewStatus, Reason FROM #ClosureDecisions -- Rule 8: clear the reject reason for accounts that are not -- currently in a... |
+| UPDATE | covered_by_rule | Lines 102-106 | 03_batch3_main_body+batch3_nested_block:embedded_08_25, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.ClosureRejectReason = NULL FROM PRO.LoanAccountCal A WHERE A.AccountStatus NOT IN ('ACTIVE') OR A.ClosureRejectReason IS NULL |
+| UPDATE | covered_by_rule | Lines 108-110 | 03_batch3_main_body+batch3_nested_block:embedded_09_26, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Account_Closure_Audit_Trail' |
+| STATEMENT | uncovered | Lines 1-2 | 04_batch3_exception:chunk_text_01, 04_batch3_exception | BEGIN CATCH -- Exception handling: record the failure for operations to investigate |
+| UPDATE | uncovered | Lines 3-5 | 04_batch3_exception:chunk_text_02, 04_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Account_Closure_Audit_Trail' |
+| STATEMENT | uncovered | Lines 6-6 | 04_batch3_exception:chunk_text_03, 04_batch3_exception | END CATCH |
+| SET | uncovered | Lines 7-7 | 04_batch3_exception:chunk_text_04, 04_batch3_exception | SET NOCOUNT OFF |
+| STATEMENT | covered_by_rule | Lines 6-6 | 04_batch3_exception:chunk_text_05, 04_batch3_exception | END |
+| UPDATE | uncovered | Lines 3-5 | 04_batch3_exception:embedded_01_06, 04_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Account_Closure_Audit_Trail' |
+| SET | uncovered | Lines 7-7 | 04_batch3_exception:embedded_02_07, 04_batch3_exception | SET NOCOUNT OFF |
+| READ | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:chunk_text_03, 03_batch3_main_body+batch3_nested_block:chunk_text_03, 03_batch3_main_body+batch3_nested_block | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
+| UPDATE | covered_by_rule | samples/13_Account_Closure_Audit_Trail.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_05, 03_batch3_main_body+batch3_nested_block:chunk_text_05, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.AccountStatus = CASE WHEN ISNULL(A.OutstandingBalance, 0) = 0 THEN CASE WHEN A.DisputeFlag = 'N' OR A.DisputeFlag IS NULL THEN 'CLOSED' WHEN A.DisputeRaisedDate IS NOT NULL AND A.DisputeRaisedDate <= @DisputeGraceCutoff TH... |
+| UPDATE | covered_by_rule | samples/13_Account_Closure_Audit_Trail.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_06, 03_batch3_main_body+batch3_nested_block:chunk_text_06, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.AccountStatus = 'ACTIVE', A.ClosureRejectReason = 'OUTSTANDING_BALANCE' FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'PENDING_CLOSURE' AND ISNULL(A.OutstandingBalance, 0) > 0 -- Rule 3: accounts pending closure with a... |
+| UPDATE | covered_by_rule | samples/13_Account_Closure_Audit_Trail.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_07, 03_batch3_main_body+batch3_nested_block:chunk_text_07, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.AccountStatus = 'ACTIVE', A.ClosureRejectReason = 'UNRESOLVED_DISPUTE' FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'PENDING_CLOSURE' AND ISNULL(A.OutstandingBalance, 0) = 0 AND A.DisputeFlag = 'Y' AND (A.DisputeRaise... |
+| INSERT_TEMP | technical_only | samples/13_Account_Closure_Audit_Trail.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_11, 03_batch3_main_body+batch3_nested_block:chunk_text_11, 03_batch3_main_body+batch3_nested_block | INSERT INTO #ClosureDecisions (AccountId, NewStatus, Reason) SELECT A.AccountId, A.AccountStatus, ISNULL(A.ClosureRejectReason, 'CLOSED_ZERO_BALANCE') FROM PRO.LoanAccountCal A WHERE A.ClosureDate = @ProcessDate OR A.ClosureRejectReason... |
+| MERGE | covered_by_rule | samples/13_Account_Closure_Audit_Trail.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_12, 03_batch3_main_body+batch3_nested_block:chunk_text_12, 03_batch3_main_body+batch3_nested_block | MERGE PRO.ClosureRegister AS Target USING #ClosureDecisions AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.NewStatus = Source.NewStatus, Target.Reason = Source.Reason, Target.LastDecisionDate = @Proc... |
+| INSERT | covered_by_rule | samples/13_Account_Closure_Audit_Trail.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_13, 03_batch3_main_body+batch3_nested_block:chunk_text_13, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'CLOSURE_REJECTED_' + Reason FROM #ClosureDecisions WHERE Reason <> 'CLOSED_ZERO_BALANCE' -- Rule 7: every account that transitioned sta... |
+| INSERT | covered_by_rule | samples/13_Account_Closure_Audit_Trail.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_14, 03_batch3_main_body+batch3_nested_block:chunk_text_14, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.AccountStatusAuditLog (AccountId, TransitionDate, NewStatus, Reason) SELECT AccountId, @ProcessDate, NewStatus, Reason FROM #ClosureDecisions -- Rule 8: clear the reject reason for accounts that are not -- currently in a... |
+| UPDATE | covered_by_rule | samples/13_Account_Closure_Audit_Trail.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_15, 03_batch3_main_body+batch3_nested_block:chunk_text_15, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.ClosureRejectReason = NULL FROM PRO.LoanAccountCal A WHERE A.AccountStatus NOT IN ('ACTIVE') OR A.ClosureRejectReason IS NULL |
+| UPDATE | covered_by_rule | samples/13_Account_Closure_Audit_Trail.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_16, 03_batch3_main_body+batch3_nested_block:chunk_text_16, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Account_Closure_Audit_Trail' |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_01_18, 03_batch3_main_body+batch3_nested_block:embedded_01_18, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.AccountStatus = CASE WHEN ISNULL(A.OutstandingBalance, 0) = 0 THEN CASE WHEN A.DisputeFlag = 'N' OR A.DisputeFlag IS NULL THEN 'CLOSED' WHEN A.DisputeRaisedDate IS NOT NULL AND A.DisputeRaisedDate <= @DisputeGraceCutoff TH... |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_02_19, 03_batch3_main_body+batch3_nested_block:embedded_02_19, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.AccountStatus = 'ACTIVE', A.ClosureRejectReason = 'OUTSTANDING_BALANCE' FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'PENDING_CLOSURE' AND ISNULL(A.OutstandingBalance, 0) > 0 -- Rule 3: accounts pending closure with a... |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_03_20, 03_batch3_main_body+batch3_nested_block:embedded_03_20, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.AccountStatus = 'ACTIVE', A.ClosureRejectReason = 'UNRESOLVED_DISPUTE' FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'PENDING_CLOSURE' AND ISNULL(A.OutstandingBalance, 0) = 0 AND A.DisputeFlag = 'Y' AND (A.DisputeRaise... |
+| READ | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_04_21, 03_batch3_main_body+batch3_nested_block:embedded_04_21, 03_batch3_main_body+batch3_nested_block | INSERT INTO #ClosureDecisions (AccountId, NewStatus, Reason) SELECT A.AccountId, A.AccountStatus, ISNULL(A.ClosureRejectReason, 'CLOSED_ZERO_BALANCE') FROM PRO.LoanAccountCal A WHERE A.ClosureDate = @ProcessDate OR A.ClosureRejectReason... |
+| INSERT_TEMP | technical_only | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_04_21, 03_batch3_main_body+batch3_nested_block:embedded_04_21, 03_batch3_main_body+batch3_nested_block | INSERT INTO #ClosureDecisions (AccountId, NewStatus, Reason) SELECT A.AccountId, A.AccountStatus, ISNULL(A.ClosureRejectReason, 'CLOSED_ZERO_BALANCE') FROM PRO.LoanAccountCal A WHERE A.ClosureDate = @ProcessDate OR A.ClosureRejectReason... |
+| READ_TEMP | technical_only | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_06_23, 03_batch3_main_body+batch3_nested_block:embedded_06_23, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'CLOSURE_REJECTED_' + Reason FROM #ClosureDecisions WHERE Reason <> 'CLOSED_ZERO_BALANCE' -- Rule 7: every account that transitioned sta... |
+| INSERT | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_06_23, 03_batch3_main_body+batch3_nested_block:embedded_06_23, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, 'CLOSURE_REJECTED_' + Reason FROM #ClosureDecisions WHERE Reason <> 'CLOSED_ZERO_BALANCE' -- Rule 7: every account that transitioned sta... |
+| READ_TEMP | technical_only | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_07_24, 03_batch3_main_body+batch3_nested_block:embedded_07_24, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.AccountStatusAuditLog (AccountId, TransitionDate, NewStatus, Reason) SELECT AccountId, @ProcessDate, NewStatus, Reason FROM #ClosureDecisions -- Rule 8: clear the reject reason for accounts that are not -- currently in a... |
+| INSERT | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_07_24, 03_batch3_main_body+batch3_nested_block:embedded_07_24, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.AccountStatusAuditLog (AccountId, TransitionDate, NewStatus, Reason) SELECT AccountId, @ProcessDate, NewStatus, Reason FROM #ClosureDecisions -- Rule 8: clear the reject reason for accounts that are not -- currently in a... |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_08_25, 03_batch3_main_body+batch3_nested_block:embedded_08_25, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.ClosureRejectReason = NULL FROM PRO.LoanAccountCal A WHERE A.AccountStatus NOT IN ('ACTIVE') OR A.ClosureRejectReason IS NULL |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_09_26, 03_batch3_main_body+batch3_nested_block:embedded_09_26, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Account_Closure_Audit_Trail' |
+| UPDATE | uncovered | samples/13_Account_Closure_Audit_Trail.sql / Lines 131-138 | 04_batch3_exception:chunk_text_02, 04_batch3_exception:chunk_text_02, 04_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Account_Closure_Audit_Trail' |
+| UPDATE | uncovered | unavailable | 04_batch3_exception:embedded_01_06, 04_batch3_exception:embedded_01_06, 04_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Account_Closure_Audit_Trail' |
+| IF_BRANCH | covered_by_rule | Lines 29-52 | 03_batch3_main_body+batch3_nested_block:chunk_text_05 | (COALESCE(A.OutstandingBalance, 0) = 0) AND (A.DisputeFlag = 'N' OR A.DisputeFlag IS NULL) |
+| IF_BRANCH | covered_by_rule | Lines 29-52 | 03_batch3_main_body+batch3_nested_block:chunk_text_05 | (COALESCE(A.OutstandingBalance, 0) = 0) AND (NOT A.DisputeRaisedDate IS NULL AND A.DisputeRaisedDate <= @DisputeGraceCutoff) |
+| IF_BRANCH | covered_by_rule | Lines 29-52 | 03_batch3_main_body+batch3_nested_block:chunk_text_05 | COALESCE(A.OutstandingBalance, 0) = 0 |
+| ELSE | covered_by_rule | Lines 29-52 | 03_batch3_main_body+batch3_nested_block:chunk_text_05 | ELSE |
+| CASE | covered_by_rule | Lines 41-45 | 03_batch3_main_body+batch3_nested_block:chunk_text_06 | ISNULL(A.OutstandingBalance, 0) = 0 AND (A.DisputeFlag = 'N' OR A.DisputeFlag IS NULL OR (A.DisputeRaisedDate IS NOT NULL AND A.DisputeRaisedDate <= @DisputeGraceCutoff)) |
+| ELSE | covered_by_rule | Lines 45-46 | 03_batch3_main_body+batch3_nested_block:chunk_text_07 | ELSE |
+| IF_BRANCH | covered_by_rule | Lines 83-93 | 03_batch3_main_body+batch3_nested_block:chunk_text_12 | A.ClosureRejectReason IS NOT NULL |
+| ELSE | covered_by_rule | Lines 83-93 | 03_batch3_main_body+batch3_nested_block:chunk_text_12 | ELSE |
+| IF_BRANCH | covered_by_rule | samples/13_Account_Closure_Audit_Trail.sql | full_source | ISNULL(A.OutstandingBalance, 0) = 0 |
+| ELSE | covered_by_rule | samples/13_Account_Closure_Audit_Trail.sql | full_source | ELSE |
+| IF_BRANCH | covered_by_rule | samples/13_Account_Closure_Audit_Trail.sql | full_source | A.AccountStatus = 'PENDING_CLOSURE' AND ISNULL(A.OutstandingBalance, 0) > 0 |
+| IF_BRANCH | covered_by_rule | samples/13_Account_Closure_Audit_Trail.sql | full_source | A.AccountStatus = 'PENDING_CLOSURE' AND ISNULL(A.OutstandingBalance, 0) = 0 AND A.DisputeFlag = 'Y' AND (A.DisputeRaisedDate IS NULL OR A.DisputeRaisedDate > @DisputeGraceCutoff) |
+| CASE | covered_by_rule | Lines 31-31 | unavailable | CASE |
+| CASE_BRANCH | covered_by_rule | Lines 32-32 | unavailable | WHEN ISNULL(A.OutstandingBalance, 0) = 0 THEN |
+| CASE | covered_by_rule | Lines 33-33 | unavailable | CASE |
+| CASE_BRANCH | covered_by_rule | Lines 34-34 | unavailable | WHEN A.DisputeFlag = OR A.DisputeFlag IS NULL THEN |
+| CASE_BRANCH | covered_by_rule | Lines 35-35 | unavailable | WHEN A.DisputeRaisedDate IS NOT NULL AND A.DisputeRaisedDate <= @DisputeGraceCutoff THEN |
+| ELSE | covered_by_rule | Lines 36-36 | unavailable | ELSE |
+| ELSE | covered_by_rule | Lines 38-38 | unavailable | ELSE |
+| CASE | covered_by_rule | Lines 40-40 | unavailable | A.ClosureDate = CASE |
+| CASE_BRANCH | covered_by_rule | Lines 41-41 | unavailable | WHEN ISNULL(A.OutstandingBalance, 0) = 0 |
+| ELSE | covered_by_rule | Lines 45-45 | unavailable | ELSE A.ClosureDate |
+| IF | uncovered | Lines 71-71 | unavailable | IF OBJECT_ID( ) IS NOT NULL |
+| CASE_BRANCH | covered_by_rule | Lines 96-96 | unavailable | WHEN MATCHED THEN |
+| CASE_BRANCH | covered_by_rule | Lines 101-101 | unavailable | WHEN NOT MATCHED BY TARGET THEN |
+| CATCH | uncovered | Lines 131-131 | unavailable | BEGIN CATCH |
+| CATCH | uncovered | Lines 136-136 | unavailable | END CATCH |
+
+## Confirmed Statement Dependencies
+
+The following dependencies are confirmed from exact table/field matches and source order:
+
+| Relationship | From | To | Confidence |
+|---|---|---|---|
+| table_write_to_later_use | 03_batch3_main_body+batch3_nested_block:embedded_01_18 / PRO.LoanAccountCal | 03_batch3_main_body+batch3_nested_block:embedded_04_21 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 03_batch3_main_body+batch3_nested_block:embedded_02_19 / PRO.LoanAccountCal | 03_batch3_main_body+batch3_nested_block:embedded_04_21 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 03_batch3_main_body+batch3_nested_block:embedded_03_20 / PRO.LoanAccountCal | 03_batch3_main_body+batch3_nested_block:embedded_04_21 / PRO.LoanAccountCal | high |
+| temp_write_to_read | 03_batch3_main_body+batch3_nested_block:embedded_04_21 / #ClosureDecisions | 03_batch3_main_body+batch3_nested_block:embedded_06_23 / #ClosureDecisions | high |
+| temp_write_to_read | 03_batch3_main_body+batch3_nested_block:embedded_04_21 / #ClosureDecisions | 03_batch3_main_body+batch3_nested_block:embedded_07_24 / #ClosureDecisions | high |
+
+Unresolved dependency candidates: 36. They were not supplied as confirmed dependencies.
+
+## Rule Provenance Summary
+
+- **Total business rules:** 12
+- **By rule type:** deterministic_decision_table = 3, explicit = 9
+- **By validation status:** unverified = 8, verified = 4
+
+_This count reflects every individually traceable rule (one per source statement/field, for full auditability). The business report may show a smaller number, because closely related rules that apply the same pattern to several fields (e.g. "reset each of these six DPD fields to zero if negative") are presented there as one combined rule for readability. Every rule counted here is still individually traceable in the Source Traceability table below - none are dropped, only grouped for display._
+
+_Rules marked **unverified** could not be matched back to the technical extraction or source code - this specific claim remains unresolved and should not yet be treated as a confirmed business rule._
+
+## Reconciliation Summary
+
+- **Matched facts:** 12
+- **Deterministic-only facts:** 2
+- **LLM-only claims:** 2
+- **Conflicts:** 9
+- **Unresolved items:** 0
+- **Review required:** Yes
+
+### Review Items
+
+- `CONFLICT` tables_written (`recon_aafcaa5f3169`): full_source
+- `LLM_ONLY` tables_written (`recon_d0302c65b857`): full_source
+- `CONFLICT` tables_written (`recon_aafcaa5f3169`): full_source
+- `CONFLICT` rule (`recon_7236f3b5c157`): rule__1, 03_batch3_main_body+batch3_nested_block, 03_batch3_main_body+batch3_nested_block:chunk_text_05;03_batch3_main_body+batch3_nested_block:chunk_text_06;03_batch3_main_body+batch3_nested_block:chunk_text_07;03_batch3_main_body+batch3_nested_block:embedded_01_18;03_batch3_main_body+batch3_nested_block:embedded_02_19;03_batch3_main_body+batch3_nested_block:embedded_03_20;03_batch3_main_body+batch3_nested_block:embedded_04_21 - Deterministic evidence conflicts with the synthesized claim.
+- `CONFLICT` rule (`recon_3894a6b6d847`): rule__2, 03_batch3_main_body+batch3_nested_block, 03_batch3_main_body+batch3_nested_block:chunk_text_05;03_batch3_main_body+batch3_nested_block:chunk_text_06;03_batch3_main_body+batch3_nested_block:chunk_text_07;03_batch3_main_body+batch3_nested_block:chunk_text_15;03_batch3_main_body+batch3_nested_block:embedded_01_18;03_batch3_main_body+batch3_nested_block:embedded_02_19;03_batch3_main_body+batch3_nested_block:embedded_03_20;03_batch3_main_body+batch3_nested_block:embedded_04_21;03_batch3_main_body+batch3_nested_block:embedded_08_25 - Deterministic evidence conflicts with the synthesized claim.
+
+## Quality Summary
+
+- **Overall status:** REVIEW_REQUIRED
+- **Quality score:** 76.04166666666669/100
+- **Statement coverage:** 26 / 38 (68.4%)
+- **Rule grounding coverage:** 8 / 12 (66.7%)
+- **Decision-chain coverage:** 8 / 8 branches (100.0%)
+- **Conflicts:** 9
+- **Contradictions:** 10
+- **Review required items:** 21
+- **Review required:** Yes
+
+Statement parse success is below the preferred threshold.; Rule grounding coverage is below the preferred threshold.
+
+### Contradictions
+
+- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Outcome Conflict on `rule__1`: Synthesized outcome/assignment conflicts with deterministic evidence.
+- `HIGH` Outcome Conflict on `rule__2`: Synthesized outcome/assignment conflicts with deterministic evidence.
+
+_Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._
+
+## Pipeline Diagnostics
+
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: A.AccountStatus = 'CLOSED' AND A.ClosureDate IS NULL
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: A.AccountStatus = 'CLOSED' AND ISNULL(A.ClosureRejectReason, '') = ''
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: UPDATE A SET A.AccountStatus = CASE... END, A.ClosureDate = CASE... END FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'PENDING_CLOSURE'
+- Synthesized in 3 section(s) aligned to extraction chunk boundaries because the object exceeded the single-call output-token ceiling; sections were merged into this report.

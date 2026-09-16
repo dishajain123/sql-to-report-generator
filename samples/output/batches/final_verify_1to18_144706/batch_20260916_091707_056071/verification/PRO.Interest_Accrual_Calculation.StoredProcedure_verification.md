@@ -1,0 +1,312 @@
+# Interest Accrual Calculation — Verification & Traceability
+
+> Companion artifact to `PRO.Interest_Accrual_Calculation.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
+
+| Item | Value |
+|---|---|
+| Object ID | `obj_b44e6db12050` |
+| Raw technical object name (from source) | `Interest_Accrual_Calculation` |
+
+## Run Metadata
+
+| Item | Value |
+|---|---|
+| Pipeline Version | `2026-08-26-phase1` |
+| Prompt Version | `3fde9e2078dcda12` |
+| Knowledge Base Version | `2e6fc62902751973` |
+| Model | `amazon.nova-lite-v1:0` |
+| Provider | `bedrock` |
+| Dialect | `T-SQL` |
+| Dialect Confidence | `High` |
+| Source Hash | `1b19d69b88a9d5796a4a078905e8df18bed196202c07fbe535790ca99bf79fd8` |
+| Configuration Version | `ddb60c677229031b` |
+| Run Timestamp | `2026-09-16T09:27:47.665474+00:00` |
+| Object ID | `obj_b44e6db12050` |
+
+## LLM Telemetry
+
+| Item | Value |
+|---|---|
+| Run ID | `telemetry_5d41ebfe1432` |
+| Total LLM Calls | `6` |
+| Successful Calls | `6` |
+| Failed Calls | `0` |
+| Prompt Tokens | `54400` |
+| Completion Tokens | `14778` |
+| Total Tokens | `69178` |
+| Telemetry Availability | `available` |
+
+| Stage | Calls | Success | Failure | Tokens | Availability |
+|---|---:|---:|---:|---:|---|
+| extraction | 1 | 1 | 0 | 6559 | available |
+| synthesis | 5 | 5 | 0 | 62619 | available |
+
+## Business Rule Summary
+
+| Priority | Rule | Output | Business Purpose |
+|---|---|---|---|
+| 🔴 1 | Update DaysSinceLastAccrual [CONFLICT] (`rule__1`) | `DaysSinceLastAccrual` | Calculate the number of days since the last interest accrual for each loan account. |
+| 🔴 2 | Update EffectiveInterestRate [CONFLICT] (`rule__2`) | `EffectiveInterestRate` | Update the effective interest rate for each loan account. |
+| 🔴 3 | Calculate Accrued Interest Amount [CONFLICT] (`rule__3`) | `AccruedInterestAmount` | Calculate the accrued interest amount for each loan account based on the outstanding balance, effective interest rate, and days since last… |
+| 🟢 4 | Classify Accrual Tier [MATCHED] (`rule__4`) | `AccrualTier` | Classify the accrued interest amount into tiers (LARGE, MEDIUM, SMALL). |
+| 🟢 5 | Insert into Accrual Staging [MATCHED] (`rule__5`) | `AccountId, AccruedInterestAmount, AccrualTier` | Insert the calculated interest accruals into a staging table for further processing. |
+| 🟢 6 | Adjust Effective Interest Rate for Promotional Accounts [MATCHED] (`rule__2__13`) | `EffectiveInterestRate` | Adjust the effective interest rate for promotional accounts opened within a specified promotional window. |
+| 🔴 7 | Insert Accrued Interest Amounts and Tiers [CONFLICT] (`rule__3__14`) | `AccountId, AccruedInterestAmount, AccrualTier` | Insert calculated accrued interest amounts and accrual tiers into a staging table. |
+| 🟢 8 | Update Outstanding Balance with Accrued Interest [MATCHED] (`rule__4__15`) | `OutstandingBalance` | Update the outstanding balance of accounts with accrued interest from the staging table. |
+| 🟢 9 | Adjust Effective Interest Rate for Promotional Accounts [MATCHED] (`rule__2__17`) | `EffectiveInterestRate` | Adjust the effective interest rate for promotional accounts opened within a specified promotional window. |
+| 🟢 10 | Calculate Accrued Interest Amount [MATCHED] (`rule__3__18`) | `AccruedInterestAmount` | Calculate the accrued interest amount for active accounts with a non-null outstanding balance. |
+| 🟢 11 | Insert Accrued Interest into Staging Table [MATCHED] (`rule__5__20`) | `AccountId, AccruedInterestAmount, AccrualTier` | Insert the calculated accrual amount, account ID, and accrual tier into a staging table. |
+| 🟢 12 | Log Review Case for Large Accruals [MATCHED] (`rule__8`) | `AccountId, ReviewDate, ShortfallAmount` | Log a review case for every large-accrual account, read back from the staging table populated above. |
+| 🟠 13 | Determine DaysSinceLastAccrual [MATCHED] (`deterministic_case_0030_0033_1067_dayssincelastaccrual`) | `DaysSinceLastAccrual` | First matching row wins; ELSE includes false or NULL predicates. |
+| 🟠 14 | Determine EffectiveInterestRate [MATCHED] (`deterministic_tsql_if_0041_0064_effectiveinterestrate`) | `EffectiveInterestRate` | Not specified |
+| 🟢 15 | Calculate Days Since Last Accrual [MATCHED] (`rule__1__6`) | `DaysSinceLastAccrual` | Determine the number of days since the last accrual for active accounts. |
+| 🟢 16 | Adjust Effective Interest Rate for Promotional Accounts [MATCHED] (`rule__2__7`) | `EffectiveInterestRate` | Adjust the effective interest rate for promotional accounts opened within the last 90 days. |
+| 🟢 17 | Calculate Accrued Interest Amount [MATCHED] (`rule__3__8`) | `AccruedInterestAmount` | Calculate the accrued interest amount for active accounts with a non-null outstanding balance. |
+| 🟢 18 | Categorize Accrual Tier [MATCHED] (`rule__4__9`) | `AccrualTier` | Categorize the accrual amount into 'LARGE', 'MEDIUM', or 'SMALL' tiers based on the calculated interest amount. |
+| 🟠 19 | Update Outstanding Balance with Accrued Interest [LLM_ONLY] (`rule__5__10`) | `OutstandingBalance, LastAccrualDate` | Update the outstanding balance of accounts with accrued interest and set the last accrual date. |
+| 🟠 20 | Merge Accrual Data into Ledger [LLM_ONLY] (`rule__6`) | `InterestAccrualLedger` | Merge the accrual data from the staging table into the interest accrual ledger. |
+| 🟠 21 | Merge Staging Data into Interest Ledger [LLM_ONLY] (`rule__5__16`) | `AccountId, AccruedInterestAmount, AccrualTier` | Merge the staging table data into the interest accrual ledger. |
+| 🟠 22 | Merge Staging Table into Interest Accrual Ledger [LLM_ONLY] (`rule__6__21`) | `AccountId, AccruedInterestAmount, AccrualTier, LastAccrualDate` | Merge the staging table data into the interest accrual ledger, updating existing records and inserting new ones. |
+| 🔴 23 | Calculate Accrued Interest Amount [CONFLICT] (`rule__3__25`) | `AccruedInterestAmount` | Compute the accrued interest amount for active accounts with outstanding balances. |
+| 🟠 24 | Update Outstanding Balance with Accrued Interest [LLM_ONLY] (`rule__5__27`) | `OutstandingBalance` | Update the outstanding balance of accounts with accrued interest from the staging table. |
+| 🟠 25 | Insert Interest Accrual Ledger Record [LLM_ONLY] (`rule__6__28`) | `Not specified` | Insert a record into the interest accrual ledger by merging with existing records. |
+| 🟢 26 | Insert Collateral Review Case [MATCHED] (`rule__7`) | `Not specified` | Insert a review case for accounts with large accruals into the collateral review table. |
+
+## Source Traceability
+
+<details>
+<summary><strong>Show rule-to-source mapping</strong></summary>
+
+| # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |
+|---|---|---|---|---|---|---|
+| 1 | Update DaysSinceLastAccrual (rule__1) | (A.DaysSinceLastAccrual) | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_01_29 | dependency_0001; dependency_0002 | Needs Review |
+| 2 | Update EffectiveInterestRate (rule__2) | (A.EffectiveInterestRate) | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_02_30; 03_batch3_main_body+batch3_nested_block:embedded_03_31; 03_batch3_main_body+batch3_nested_block:embedded_04_32 | dependency_0003; dependency_0004; dependency_0005 | Needs Review |
+| 3 | Calculate Accrued Interest Amount (rule__3) | (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_05_33 | dependency_0002; dependency_0003; dependency_0004; dependency_0005 | Needs Review |
+| 4 | Classify Accrual Tier (rule__4) | CASE WHEN (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual > 5000 THEN 'LARGE' WHEN (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual > 1000 THEN 'MEDIUM' ELSE 'SMALL' END | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_05_33 | dependency_0002; dependency_0003; dependency_0004; dependency_0005 | Verified |
+| 5 | Insert into Accrual Staging (rule__5) | AccountId; AccruedInterestAmount; AccrualTier | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_05_33 | dependency_0006 | Verified |
+| 6 | Adjust Effective Interest Rate for Promotional Accounts (rule__2__13) | UPDATE A SET A.EffectiveInterestRate = A.BaseInterestRate - 0.02 FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' AND A.PromotionalFlag = 'Y' AND A.AccountOpenDate >= @PromoWindowStart | Not cited | 03_batch3_main_body+batch3_nested_block:chunk_text_08 | 03_batch3_main_body+batch3_nested_block:chunk_text_08 | Verified |
+| 7 | Insert Accrued Interest Amounts and Tiers (rule__3__14) | INSERT INTO #AccrualStaging (AccountId, AccruedInterestAmount, AccrualTier) SELECT A.AccountId, (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual, CASE WHEN (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLast… | Not cited | 03_batch3_main_body+batch3_nested_block:chunk_text_18 | 03_batch3_main_body+batch3_nested_block:chunk_text_18 | Needs Review |
+| 8 | Update Outstanding Balance with Accrued Interest (rule__4__15) | UPDATE A SET A.OutstandingBalance = A.OutstandingBalance + ISNULL(S.AccruedInterestAmount, 0), A.LastAccrualDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN #AccrualStaging S ON S.AccountId = A.AccountId | Not cited | 03_batch3_main_body+batch3_nested_block:chunk_text_20 | 03_batch3_main_body+batch3_nested_block:chunk_text_20 | Verified |
+| 9 | Adjust Effective Interest Rate for Promotional Accounts (rule__2__17) | UPDATE A SET A.EffectiveInterestRate = A.BaseInterestRate - 0.02 FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' AND A.PromotionalFlag = 'Y' AND A.AccountOpenDate >= @PromoWindowStart | Not cited | 03_batch3_main_body+batch3_nested_block:chunk_text_08 | 03_batch3_main_body+batch3_nested_block:chunk_text_08 | Verified |
+| 10 | Calculate Accrued Interest Amount (rule__3__18) | INSERT INTO #AccrualStaging (AccountId, AccruedInterestAmount, AccrualTier) SELECT A.AccountId, (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual, CASE WHEN (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLast… | Not cited | 03_batch3_main_body+batch3_nested_block:chunk_text_18 | 03_batch3_main_body+batch3_nested_block:chunk_text_18 | Verified |
+| 11 | Insert Accrued Interest into Staging Table (rule__5__20) | INSERT INTO #AccrualStaging (AccountId, AccruedInterestAmount, AccrualTier) SELECT A.AccountId, (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual, CASE WHEN (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLast… | Not cited | 03_batch3_main_body+batch3_nested_block:chunk_text_18 | 03_batch3_main_body+batch3_nested_block:chunk_text_18 | Verified |
+| 12 | Log Review Case for Large Accruals (rule__8) | INSERT INTO PRO.CollateralReview (AccountId, ReviewDate, ShortfallAmount) SELECT AccountId, @ProcessDate, AccruedInterestAmount FROM #AccrualStaging WHERE AccrualTier = 'LARGE' | Not cited | 03_batch3_main_body+batch3_nested_block:chunk_text_21 | 03_batch3_main_body+batch3_nested_block:chunk_text_21 | Verified |
+| 13 | Determine DaysSinceLastAccrual (deterministic_case_0030_0033_1067_dayssincelastaccrual) | Not cited | source \| Lines 30-33 | Not cited | Not cited | Verified |
+| 14 | Determine EffectiveInterestRate (deterministic_tsql_if_0041_0064_effectiveinterestrate) | Not cited | source \| Lines 41-64 | Not cited | Not cited | Verified |
+| 15 | Calculate Days Since Last Accrual (rule__1__6) | UPDATE A SET A.DaysSinceLastAccrual = (CASE WHEN A.LastAccrualDate IS NULL THEN 1 ELSE DATEDIFF(DAY, A.LastAccrualDate, @ProcessDate) END) FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' | Not cited | Not cited | Not cited | Verified |
+| 16 | Adjust Effective Interest Rate for Promotional Accounts (rule__2__7) | UPDATE A SET A.EffectiveInterestRate = A.BaseInterestRate - 0.02 FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' AND A.PromotionalFlag = 'Y' AND A.AccountOpenDate >= @PromoWindowStart | Not cited | Not cited | Not cited | Verified |
+| 17 | Calculate Accrued Interest Amount (rule__3__8) | INSERT INTO #AccrualStaging (AccountId, AccruedInterestAmount, AccrualTier) SELECT A.AccountId, (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual, CASE WHEN (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLast… | Not cited | Not cited | Not cited | Verified |
+| 18 | Categorize Accrual Tier (rule__4__9) | INSERT INTO #AccrualStaging (AccountId, AccruedInterestAmount, AccrualTier) SELECT A.AccountId, (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual, CASE WHEN (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLast… | Not cited | Not cited | Not cited | Verified |
+| 19 | Update Outstanding Balance with Accrued Interest (rule__5__10) | UPDATE A SET A.OutstandingBalance = A.OutstandingBalance + ISNULL(S.AccruedInterestAmount, 0), A.LastAccrualDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN #AccrualStaging S ON S.AccountId = A.AccountId | Not cited | Not cited | Not cited | Needs Review |
+| 20 | Merge Accrual Data into Ledger (rule__6) | MERGE INTO PRO.InterestAccrualLedger TARGET USING (SELECT AccountId, AccruedInterestAmount, AccrualTier FROM #AccrualStaging) SOURCE ON TARGET.AccountId = SOURCE.AccountId WHEN MATCHED THEN UPDATE SET TARGET.AccruedInterestAmount = SOURCE.AccruedInterestAmoun… | Not cited | Not cited | Not cited | Needs Review |
+| 21 | Merge Staging Data into Interest Ledger (rule__5__16) | MERGE PRO.InterestAccrualLedger AS Target USING #AccrualStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.AccruedInterestAmount = Source.AccruedInterestAmount, Target.AccrualTier = Source.AccrualTier WHEN NOT MATCHED… | Not cited | Not cited | Not cited | Needs Review |
+| 22 | Merge Staging Table into Interest Accrual Ledger (rule__6__21) | MERGE INTO PRO.InterestAccrualLedger USING #AccrualStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.AccruedInterestAmount = Source.AccruedInterestAmount, Target.AccrualTier = Source.AccrualTier, Target.LastAccrualDa… | Not cited | Not cited | Not cited | Needs Review |
+| 23 | Calculate Accrued Interest Amount (rule__3__25) | INSERT INTO #AccrualStaging (AccountId, AccruedInterestAmount, AccrualTier) SELECT A.AccountId, (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual, CASE WHEN (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLast… | Not cited | Not cited | Not cited | Needs Review |
+| 24 | Update Outstanding Balance with Accrued Interest (rule__5__27) | UPDATE A SET A.OutstandingBalance = A.OutstandingBalance + ISNULL(S.AccruedInterestAmount, 0), A.LastAccrualDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN #AccrualStaging S ON S.AccountId = A.AccountId | Not cited | Not cited | Not cited | Needs Review |
+| 25 | Insert Interest Accrual Ledger Record (rule__6__28) | MERGE INTO PRO.InterestAccrualLedger AS Target USING (SELECT AccountId, AccruedInterestAmount, AccrualTier FROM #AccrualStaging) AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.AccruedInterestAmount = Source.AccruedInteres… | Not cited | Not cited | Not cited | Needs Review |
+| 26 | Insert Collateral Review Case (rule__7) | INSERT INTO PRO.CollateralReview (AccountId, ReviewDate, ShortfallAmount) SELECT AccountId, @ProcessDate, AccruedInterestAmount FROM #AccrualStaging WHERE AccrualTier = 'LARGE' | Not cited | Not cited | Not cited | Verified |
+
+### Decision-Chain Branch Provenance
+
+| Branch | Condition | Source Location |
+|---|---|---|
+| case_0030_0033_1067:branch_001 | A.LastAccrualDate IS NULL | source \| Lines 31-32 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_08 |
+| case_0030_0033_1067:branch_002 | ELSE | source \| Lines 32-33 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_08 |
+| tsql_if_0041_0064:branch_001 | EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE PromotionalFlag = 'Y' AND AccountOpenDate >= @PromoWindowStart) | source \| Lines 42-56 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_15 |
+| tsql_if_0041_0064:branch_002 | ELSE | source \| Lines 58-63 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_17 |
+| decision_2859_3687_2:branch_001 | (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual > 5000 | source \| Lines 77-92 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_18 |
+| decision_2859_3687_2:branch_002 | (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual > 1000 | source \| Lines 77-92 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_18 |
+| decision_2859_3687_2:branch_003 | ELSE | source \| Lines 77-92 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_18 |
+| decision_chain_004:branch_001 | EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE PromotionalFlag = 'Y' AND AccountOpenDate >= @PromoWindowStart) | source |
+| decision_chain_004:branch_002 | ELSE | source |
+| decision_chain_005:branch_001 | (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual > 5000 | source |
+| decision_chain_005:branch_002 | (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual > 1000 | source |
+| decision_chain_005:branch_003 | ELSE | source |
+
+_Source evidence is the literal technical text carried through the pipeline; Source Location is derived deterministically from chunk and statement provenance when available; SQL Statements / Chunks and Technical References point back to the extracted chunk ids and statement references used by the guardrails. Technical references that repeat the same table/operation/target-columns are shown once._
+</details>
+
+## Completeness Ledger
+
+- **Executable constructs:** 98
+- **Disposition:** covered_by_rule=86, technical_only=4, uncovered=8
+
+| Construct | Status | Source location | Statement / chunk | Evidence |
+|---|---|---|---|---|
+| STATEMENT | uncovered | Lines 1-1 | 00_batch0_declaration:chunk_text_01, 00_batch0_declaration | USE [DEMO_MISDB] |
+| SET | uncovered | Lines 1-1 | 01_batch1_declaration:chunk_text_01, 01_batch1_declaration | SET ANSI_NULLS ON |
+| SET | uncovered | Lines 1-1 | 01_batch1_declaration:embedded_01_02, 01_batch1_declaration | SET ANSI_NULLS ON |
+| SET | uncovered | Lines 1-1 | 02_batch2_declaration:chunk_text_01, 02_batch2_declaration | SET QUOTED_IDENTIFIER ON |
+| SET | uncovered | Lines 1-1 | 02_batch2_declaration:embedded_01_02, 02_batch2_declaration | SET QUOTED_IDENTIFIER ON |
+| STATEMENT | covered_by_rule | Lines 1-2 | 03_batch3_main_body+batch3_nested_block:chunk_text_01, 03_batch3_main_body+batch3_nested_block | BEGIN SET NOCOUNT ON |
+| STATEMENT | covered_by_rule | Lines 4-4 | 03_batch3_main_body+batch3_nested_block:chunk_text_02, 03_batch3_main_body+batch3_nested_block | BEGIN TRY |
+| SELECT | covered_by_rule | Lines 6-6 | 03_batch3_main_body+batch3_nested_block:chunk_text_03, 03_batch3_main_body+batch3_nested_block | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
+| STATEMENT | covered_by_rule | Lines 7-10 | 03_batch3_main_body+batch3_nested_block:chunk_text_04, 03_batch3_main_body+batch3_nested_block | DECLARE @PromoWindowStart DATE = DATEADD(DAY, -90, @ProcessDate) -- Rule 1: number of days to accrue since the last accrual run; -- accounts never accrued before default to a single day |
+| UPDATE | covered_by_rule | Lines 11-23 | 03_batch3_main_body+batch3_nested_block:chunk_text_05, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.DaysSinceLastAccrual = ( CASE WHEN A.LastAccrualDate IS NULL THEN 1 ELSE DATEDIFF(DAY, A.LastAccrualDate, @ProcessDate) END ) FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' -- Rule 2: sequential IF/ELSE - accou... |
+| SELECT | covered_by_rule | Lines 24-24 | 03_batch3_main_body+batch3_nested_block:chunk_text_06, 03_batch3_main_body+batch3_nested_block | IF EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE PromotionalFlag = 'Y' AND AccountOpenDate >= @PromoWindowStart) |
+| STATEMENT | covered_by_rule | Lines 1-1 | 03_batch3_main_body+batch3_nested_block:chunk_text_07, 03_batch3_main_body+batch3_nested_block | BEGIN |
+| UPDATE | covered_by_rule | Lines 26-31 | 03_batch3_main_body+batch3_nested_block:chunk_text_08, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.EffectiveInterestRate = A.BaseInterestRate - 0.02 FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' AND A.PromotionalFlag = 'Y' AND A.AccountOpenDate >= @PromoWindowStart |
+| UPDATE | covered_by_rule | Lines 33-38 | 03_batch3_main_body+batch3_nested_block:chunk_text_09, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.EffectiveInterestRate = A.BaseInterestRate FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' AND (A.PromotionalFlag = 'N' OR A.PromotionalFlag IS NULL OR A.AccountOpenDate < @PromoWindowStart) |
+| STATEMENT | covered_by_rule | Lines 16-16 | 03_batch3_main_body+batch3_nested_block:chunk_text_10, 03_batch3_main_body+batch3_nested_block | END |
+| STATEMENT | covered_by_rule | Lines 15-15 | 03_batch3_main_body+batch3_nested_block:chunk_text_11, 03_batch3_main_body+batch3_nested_block | ELSE |
+| STATEMENT | covered_by_rule | Lines 1-1 | 03_batch3_main_body+batch3_nested_block:chunk_text_12, 03_batch3_main_body+batch3_nested_block | BEGIN |
+| UPDATE | covered_by_rule | Lines 33-36 | 03_batch3_main_body+batch3_nested_block:chunk_text_13, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.EffectiveInterestRate = A.BaseInterestRate FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' |
+| STATEMENT | covered_by_rule | Lines 16-16 | 03_batch3_main_body+batch3_nested_block:chunk_text_14, 03_batch3_main_body+batch3_nested_block | END |
+| STATEMENT | covered_by_rule | Lines 48-48 | 03_batch3_main_body+batch3_nested_block:chunk_text_15, 03_batch3_main_body+batch3_nested_block | IF OBJECT_ID('tempdb..#AccrualStaging') IS NOT NULL |
+| STATEMENT | covered_by_rule | Lines 49-49 | 03_batch3_main_body+batch3_nested_block:chunk_text_16, 03_batch3_main_body+batch3_nested_block | DROP TABLE #AccrualStaging |
+| INSERT | covered_by_rule | Lines 51-59 | 03_batch3_main_body+batch3_nested_block:chunk_text_17, 03_batch3_main_body+batch3_nested_block | CREATE TABLE #AccrualStaging ( AccountId VARCHAR(20), AccruedInterestAmount DECIMAL(18,2), AccrualTier VARCHAR(10) ) -- Rule 3: conditional INSERT - compute and stage the accrued -- interest only for active accounts with a known balance |
+| INSERT | covered_by_rule | Lines 60-74 | 03_batch3_main_body+batch3_nested_block:chunk_text_18, 03_batch3_main_body+batch3_nested_block | INSERT INTO #AccrualStaging (AccountId, AccruedInterestAmount, AccrualTier) SELECT A.AccountId, (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual, CASE WHEN (A.OutstandingBalance * A.EffectiveInterestRate /... |
+| MERGE | covered_by_rule | Lines 75-88 | 03_batch3_main_body+batch3_nested_block:chunk_text_19, 03_batch3_main_body+batch3_nested_block | MERGE PRO.InterestAccrualLedger AS Target USING #AccrualStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.AccruedInterestAmount = Source.AccruedInterestAmount, Target.AccrualTier = Source.Accrua... |
+| UPDATE | covered_by_rule | Lines 89-96 | 03_batch3_main_body+batch3_nested_block:chunk_text_20, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.OutstandingBalance = A.OutstandingBalance + ISNULL(S.AccruedInterestAmount, 0), A.LastAccrualDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN #AccrualStaging S ON S.AccountId = A.AccountId -- Rule 6: log a review c... |
+| INSERT | covered_by_rule | Lines 97-100 | 03_batch3_main_body+batch3_nested_block:chunk_text_21, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollateralReview (AccountId, ReviewDate, ShortfallAmount) SELECT AccountId, @ProcessDate, AccruedInterestAmount FROM #AccrualStaging WHERE AccrualTier = 'LARGE' |
+| UPDATE | covered_by_rule | Lines 102-104 | 03_batch3_main_body+batch3_nested_block:chunk_text_22, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Interest_Accrual_Calculation' |
+| STATEMENT | covered_by_rule | Lines 106-106 | 03_batch3_main_body+batch3_nested_block:chunk_text_23, 03_batch3_main_body+batch3_nested_block | END TRY |
+| STATEMENT | covered_by_rule | Lines 107-108 | 03_batch3_main_body+batch3_nested_block:chunk_text_24, 03_batch3_main_body+batch3_nested_block | BEGIN CATCH -- Exception handling: record the failure for operations to investigate |
+| UPDATE | covered_by_rule | Lines 109-111 | 03_batch3_main_body+batch3_nested_block:chunk_text_25, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Interest_Accrual_Calculation' |
+| STATEMENT | covered_by_rule | Lines 112-112 | 03_batch3_main_body+batch3_nested_block:chunk_text_26, 03_batch3_main_body+batch3_nested_block | END CATCH |
+| SET | covered_by_rule | Lines 113-113 | 03_batch3_main_body+batch3_nested_block:chunk_text_27, 03_batch3_main_body+batch3_nested_block | SET NOCOUNT OFF |
+| STATEMENT | covered_by_rule | Lines 16-16 | 03_batch3_main_body+batch3_nested_block:chunk_text_28, 03_batch3_main_body+batch3_nested_block | END |
+| UPDATE | covered_by_rule | Lines 11-23 | 03_batch3_main_body+batch3_nested_block:embedded_01_29, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.DaysSinceLastAccrual = ( CASE WHEN A.LastAccrualDate IS NULL THEN 1 ELSE DATEDIFF(DAY, A.LastAccrualDate, @ProcessDate) END ) FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' -- Rule 2: sequential IF/ELSE - accou... |
+| UPDATE | covered_by_rule | Lines 26-31 | 03_batch3_main_body+batch3_nested_block:embedded_02_30, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.EffectiveInterestRate = A.BaseInterestRate - 0.02 FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' AND A.PromotionalFlag = 'Y' AND A.AccountOpenDate >= @PromoWindowStart |
+| UPDATE | covered_by_rule | Lines 33-38 | 03_batch3_main_body+batch3_nested_block:embedded_03_31, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.EffectiveInterestRate = A.BaseInterestRate FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' AND (A.PromotionalFlag = 'N' OR A.PromotionalFlag IS NULL OR A.AccountOpenDate < @PromoWindowStart) |
+| UPDATE | covered_by_rule | Lines 33-36 | 03_batch3_main_body+batch3_nested_block:embedded_04_32, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.EffectiveInterestRate = A.BaseInterestRate FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' |
+| INSERT | covered_by_rule | Lines 60-74 | 03_batch3_main_body+batch3_nested_block:embedded_05_33, 03_batch3_main_body+batch3_nested_block | INSERT INTO #AccrualStaging (AccountId, AccruedInterestAmount, AccrualTier) SELECT A.AccountId, (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual, CASE WHEN (A.OutstandingBalance * A.EffectiveInterestRate /... |
+| MERGE | covered_by_rule | Lines 75-88 | 03_batch3_main_body+batch3_nested_block:embedded_06_34, 03_batch3_main_body+batch3_nested_block | MERGE PRO.InterestAccrualLedger AS Target USING #AccrualStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.AccruedInterestAmount = Source.AccruedInterestAmount, Target.AccrualTier = Source.Accrua... |
+| UPDATE | covered_by_rule | Lines 89-96 | 03_batch3_main_body+batch3_nested_block:embedded_07_35, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.OutstandingBalance = A.OutstandingBalance + ISNULL(S.AccruedInterestAmount, 0), A.LastAccrualDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN #AccrualStaging S ON S.AccountId = A.AccountId -- Rule 6: log a review c... |
+| INSERT | covered_by_rule | Lines 97-100 | 03_batch3_main_body+batch3_nested_block:embedded_08_36, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollateralReview (AccountId, ReviewDate, ShortfallAmount) SELECT AccountId, @ProcessDate, AccruedInterestAmount FROM #AccrualStaging WHERE AccrualTier = 'LARGE' |
+| UPDATE | covered_by_rule | Lines 102-104 | 03_batch3_main_body+batch3_nested_block:embedded_09_37, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Interest_Accrual_Calculation' |
+| UPDATE | covered_by_rule | Lines 109-111 | 03_batch3_main_body+batch3_nested_block:embedded_10_38, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Interest_Accrual_Calculation' |
+| SET | covered_by_rule | Lines 113-113 | 03_batch3_main_body+batch3_nested_block:embedded_11_39, 03_batch3_main_body+batch3_nested_block | SET NOCOUNT OFF |
+| READ | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:chunk_text_03, 03_batch3_main_body+batch3_nested_block:chunk_text_03, 03_batch3_main_body+batch3_nested_block | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
+| UPDATE | covered_by_rule | samples/14_Interest_Accrual_Calculation.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_05, 03_batch3_main_body+batch3_nested_block:chunk_text_05, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.DaysSinceLastAccrual = ( CASE WHEN A.LastAccrualDate IS NULL THEN 1 ELSE DATEDIFF(DAY, A.LastAccrualDate, @ProcessDate) END ) FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' -- Rule 2: sequential IF/ELSE - accou... |
+| READ | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:chunk_text_06, 03_batch3_main_body+batch3_nested_block:chunk_text_06, 03_batch3_main_body+batch3_nested_block | IF EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE PromotionalFlag = 'Y' AND AccountOpenDate >= @PromoWindowStart) |
+| UPDATE | covered_by_rule | samples/14_Interest_Accrual_Calculation.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_08, 03_batch3_main_body+batch3_nested_block:chunk_text_08, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.EffectiveInterestRate = A.BaseInterestRate - 0.02 FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' AND A.PromotionalFlag = 'Y' AND A.AccountOpenDate >= @PromoWindowStart |
+| UPDATE | covered_by_rule | samples/14_Interest_Accrual_Calculation.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_09, 03_batch3_main_body+batch3_nested_block:chunk_text_09, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.EffectiveInterestRate = A.BaseInterestRate FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' AND (A.PromotionalFlag = 'N' OR A.PromotionalFlag IS NULL OR A.AccountOpenDate < @PromoWindowStart) |
+| UPDATE | covered_by_rule | samples/14_Interest_Accrual_Calculation.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_13, 03_batch3_main_body+batch3_nested_block:chunk_text_13, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.EffectiveInterestRate = A.BaseInterestRate FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' |
+| INSERT_TEMP | technical_only | samples/14_Interest_Accrual_Calculation.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_18, 03_batch3_main_body+batch3_nested_block:chunk_text_18, 03_batch3_main_body+batch3_nested_block | INSERT INTO #AccrualStaging (AccountId, AccruedInterestAmount, AccrualTier) SELECT A.AccountId, (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual, CASE WHEN (A.OutstandingBalance * A.EffectiveInterestRate /... |
+| MERGE | covered_by_rule | samples/14_Interest_Accrual_Calculation.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_19, 03_batch3_main_body+batch3_nested_block:chunk_text_19, 03_batch3_main_body+batch3_nested_block | MERGE PRO.InterestAccrualLedger AS Target USING #AccrualStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.AccruedInterestAmount = Source.AccruedInterestAmount, Target.AccrualTier = Source.Accrua... |
+| UPDATE | covered_by_rule | samples/14_Interest_Accrual_Calculation.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_20, 03_batch3_main_body+batch3_nested_block:chunk_text_20, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.OutstandingBalance = A.OutstandingBalance + ISNULL(S.AccruedInterestAmount, 0), A.LastAccrualDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN #AccrualStaging S ON S.AccountId = A.AccountId -- Rule 6: log a review c... |
+| READ_TEMP | technical_only | samples/14_Interest_Accrual_Calculation.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_20, 03_batch3_main_body+batch3_nested_block:chunk_text_20, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.OutstandingBalance = A.OutstandingBalance + ISNULL(S.AccruedInterestAmount, 0), A.LastAccrualDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN #AccrualStaging S ON S.AccountId = A.AccountId -- Rule 6: log a review c... |
+| INSERT | covered_by_rule | samples/14_Interest_Accrual_Calculation.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_21, 03_batch3_main_body+batch3_nested_block:chunk_text_21, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollateralReview (AccountId, ReviewDate, ShortfallAmount) SELECT AccountId, @ProcessDate, AccruedInterestAmount FROM #AccrualStaging WHERE AccrualTier = 'LARGE' |
+| UPDATE | covered_by_rule | samples/14_Interest_Accrual_Calculation.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_22, 03_batch3_main_body+batch3_nested_block:chunk_text_22, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Interest_Accrual_Calculation' |
+| UPDATE | covered_by_rule | samples/14_Interest_Accrual_Calculation.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_25, 03_batch3_main_body+batch3_nested_block:chunk_text_25, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Interest_Accrual_Calculation' |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_01_29, 03_batch3_main_body+batch3_nested_block:embedded_01_29, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.DaysSinceLastAccrual = ( CASE WHEN A.LastAccrualDate IS NULL THEN 1 ELSE DATEDIFF(DAY, A.LastAccrualDate, @ProcessDate) END ) FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' -- Rule 2: sequential IF/ELSE - accou... |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_02_30, 03_batch3_main_body+batch3_nested_block:embedded_02_30, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.EffectiveInterestRate = A.BaseInterestRate - 0.02 FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' AND A.PromotionalFlag = 'Y' AND A.AccountOpenDate >= @PromoWindowStart |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_03_31, 03_batch3_main_body+batch3_nested_block:embedded_03_31, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.EffectiveInterestRate = A.BaseInterestRate FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' AND (A.PromotionalFlag = 'N' OR A.PromotionalFlag IS NULL OR A.AccountOpenDate < @PromoWindowStart) |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_04_32, 03_batch3_main_body+batch3_nested_block:embedded_04_32, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.EffectiveInterestRate = A.BaseInterestRate FROM PRO.LoanAccountCal A WHERE A.AccountStatus = 'ACTIVE' |
+| READ | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_05_33, 03_batch3_main_body+batch3_nested_block:embedded_05_33, 03_batch3_main_body+batch3_nested_block | INSERT INTO #AccrualStaging (AccountId, AccruedInterestAmount, AccrualTier) SELECT A.AccountId, (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual, CASE WHEN (A.OutstandingBalance * A.EffectiveInterestRate /... |
+| INSERT_TEMP | technical_only | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_05_33, 03_batch3_main_body+batch3_nested_block:embedded_05_33, 03_batch3_main_body+batch3_nested_block | INSERT INTO #AccrualStaging (AccountId, AccruedInterestAmount, AccrualTier) SELECT A.AccountId, (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual, CASE WHEN (A.OutstandingBalance * A.EffectiveInterestRate /... |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_07_35, 03_batch3_main_body+batch3_nested_block:embedded_07_35, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.OutstandingBalance = A.OutstandingBalance + ISNULL(S.AccruedInterestAmount, 0), A.LastAccrualDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN #AccrualStaging S ON S.AccountId = A.AccountId -- Rule 6: log a review c... |
+| READ_TEMP | technical_only | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_08_36, 03_batch3_main_body+batch3_nested_block:embedded_08_36, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollateralReview (AccountId, ReviewDate, ShortfallAmount) SELECT AccountId, @ProcessDate, AccruedInterestAmount FROM #AccrualStaging WHERE AccrualTier = 'LARGE' |
+| INSERT | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_08_36, 03_batch3_main_body+batch3_nested_block:embedded_08_36, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollateralReview (AccountId, ReviewDate, ShortfallAmount) SELECT AccountId, @ProcessDate, AccruedInterestAmount FROM #AccrualStaging WHERE AccrualTier = 'LARGE' |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_09_37, 03_batch3_main_body+batch3_nested_block:embedded_09_37, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Interest_Accrual_Calculation' |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_10_38, 03_batch3_main_body+batch3_nested_block:embedded_10_38, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Interest_Accrual_Calculation' |
+| CASE | covered_by_rule | Lines 31-32 | 03_batch3_main_body+batch3_nested_block:chunk_text_08 | A.LastAccrualDate IS NULL |
+| ELSE | covered_by_rule | Lines 32-33 | 03_batch3_main_body+batch3_nested_block:chunk_text_08 | ELSE |
+| IF_BRANCH | covered_by_rule | Lines 42-56 | 03_batch3_main_body+batch3_nested_block:chunk_text_15 | EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE PromotionalFlag = 'Y' AND AccountOpenDate >= @PromoWindowStart) |
+| ELSE | covered_by_rule | Lines 58-63 | 03_batch3_main_body+batch3_nested_block:chunk_text_17 | ELSE |
+| IF_BRANCH | covered_by_rule | Lines 77-92 | 03_batch3_main_body+batch3_nested_block:chunk_text_18 | (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual > 5000 |
+| IF_BRANCH | covered_by_rule | Lines 77-92 | 03_batch3_main_body+batch3_nested_block:chunk_text_18 | (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual > 1000 |
+| ELSE | covered_by_rule | Lines 77-92 | 03_batch3_main_body+batch3_nested_block:chunk_text_18 | ELSE |
+| IF_BRANCH | covered_by_rule | samples/14_Interest_Accrual_Calculation.sql | full_source | EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE PromotionalFlag = 'Y' AND AccountOpenDate >= @PromoWindowStart) |
+| ELSE | covered_by_rule | samples/14_Interest_Accrual_Calculation.sql | full_source | ELSE |
+| IF_BRANCH | covered_by_rule | samples/14_Interest_Accrual_Calculation.sql | full_source | (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual > 5000 |
+| IF_BRANCH | covered_by_rule | samples/14_Interest_Accrual_Calculation.sql | full_source | (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual > 1000 |
+| ELSE | covered_by_rule | samples/14_Interest_Accrual_Calculation.sql | full_source | ELSE |
+| CASE | covered_by_rule | Lines 30-30 | unavailable | CASE |
+| CASE_BRANCH | covered_by_rule | Lines 31-31 | unavailable | WHEN A.LastAccrualDate IS NULL THEN 1 |
+| ELSE | covered_by_rule | Lines 32-32 | unavailable | ELSE DATEDIFF(DAY, A.LastAccrualDate, @ProcessDate) |
+| IF | covered_by_rule | Lines 41-41 | unavailable | IF EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE PromotionalFlag = AND AccountOpenDate >= @PromoWindowStart) |
+| ELSE | covered_by_rule | Lines 57-57 | unavailable | ELSE |
+| IF | uncovered | Lines 65-65 | unavailable | IF OBJECT_ID( ) IS NOT NULL |
+| CALCULATION | covered_by_rule | Lines 79-79 | unavailable | (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual, |
+| CASE | covered_by_rule | Lines 80-80 | unavailable | CASE |
+| CASE_BRANCH | covered_by_rule | Lines 81-81 | unavailable | WHEN (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual > 5000 THEN |
+| CALCULATION | covered_by_rule | Lines 81-81 | unavailable | WHEN (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual > 5000 THEN |
+| CASE_BRANCH | covered_by_rule | Lines 82-82 | unavailable | WHEN (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual > 1000 THEN |
+| CALCULATION | covered_by_rule | Lines 82-82 | unavailable | WHEN (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual > 1000 THEN |
+| ELSE | covered_by_rule | Lines 83-83 | unavailable | ELSE |
+| CASE_BRANCH | covered_by_rule | Lines 95-95 | unavailable | WHEN MATCHED THEN |
+| CASE_BRANCH | covered_by_rule | Lines 100-100 | unavailable | WHEN NOT MATCHED BY TARGET THEN |
+| CALCULATION | covered_by_rule | Lines 107-107 | unavailable | SET A.OutstandingBalance = A.OutstandingBalance + ISNULL(S.AccruedInterestAmount, 0), |
+| CATCH | uncovered | Lines 124-124 | unavailable | BEGIN CATCH |
+| CATCH | uncovered | Lines 129-129 | unavailable | END CATCH |
+
+## Confirmed Statement Dependencies
+
+The following dependencies are confirmed from exact table/field matches and source order:
+
+| Relationship | From | To | Confidence |
+|---|---|---|---|
+| table_write_to_later_use | 03_batch3_main_body+batch3_nested_block:embedded_01_29 / PRO.LoanAccountCal | 03_batch3_main_body+batch3_nested_block:chunk_text_06 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 03_batch3_main_body+batch3_nested_block:embedded_01_29 / PRO.LoanAccountCal | 03_batch3_main_body+batch3_nested_block:embedded_05_33 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 03_batch3_main_body+batch3_nested_block:embedded_02_30 / PRO.LoanAccountCal | 03_batch3_main_body+batch3_nested_block:embedded_05_33 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 03_batch3_main_body+batch3_nested_block:embedded_03_31 / PRO.LoanAccountCal | 03_batch3_main_body+batch3_nested_block:embedded_05_33 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 03_batch3_main_body+batch3_nested_block:embedded_04_32 / PRO.LoanAccountCal | 03_batch3_main_body+batch3_nested_block:embedded_05_33 / PRO.LoanAccountCal | high |
+| temp_write_to_read | 03_batch3_main_body+batch3_nested_block:embedded_05_33 / #AccrualStaging | 03_batch3_main_body+batch3_nested_block:embedded_08_36 / #AccrualStaging | high |
+
+Unresolved dependency candidates: 48. They were not supplied as confirmed dependencies.
+
+## Rule Provenance Summary
+
+- **Total business rules:** 26
+- **By rule type:** deterministic_decision_table = 2, explicit = 24
+- **By validation status:** unverified = 11, verified = 15
+
+_This count reflects every individually traceable rule (one per source statement/field, for full auditability). The business report may show a smaller number, because closely related rules that apply the same pattern to several fields (e.g. "reset each of these six DPD fields to zero if negative") are presented there as one combined rule for readability. Every rule counted here is still individually traceable in the Source Traceability table below - none are dropped, only grouped for display._
+
+_Rules marked **unverified** could not be matched back to the technical extraction or source code - this specific claim remains unresolved and should not yet be treated as a confirmed business rule._
+
+## Reconciliation Summary
+
+- **Matched facts:** 23
+- **Deterministic-only facts:** 0
+- **LLM-only claims:** 6
+- **Conflicts:** 7
+- **Unresolved items:** 0
+- **Review required:** Yes
+
+### Review Items
+
+- `CONFLICT` tables_written (`recon_e662f244045d`): full_source
+- `CONFLICT` tables_written (`recon_e662f244045d`): full_source
+- `CONFLICT` rule (`recon_31803446f7a8`): rule__1, 03_batch3_main_body+batch3_nested_block, 03_batch3_main_body+batch3_nested_block:chunk_text_05;03_batch3_main_body+batch3_nested_block:embedded_01_29 - Deterministic evidence conflicts with the synthesized claim.
+- `CONFLICT` rule (`recon_4a74bbebfe99`): rule__2, 03_batch3_main_body+batch3_nested_block;03_batch3_main_body+batch3_nested_block;03_batch3_main_body+batch3_nested_block, 03_batch3_main_body+batch3_nested_block:chunk_text_08;03_batch3_main_body+batch3_nested_block:chunk_text_09;03_batch3_main_body+batch3_nested_block:chunk_text_13;03_batch3_main_body+batch3_nested_block:embedded_02_30;03_batch3_main_body+batch3_nested_block:embedded_03_31;03_batch3_main_body+batch3_nested_block:embedded_04_32 - Deterministic evidence conflicts with the synthesized claim.
+- `CONFLICT` rule (`recon_c8c12e2fadaa`): rule__3, 03_batch3_main_body+batch3_nested_block, 03_batch3_main_body+batch3_nested_block:chunk_text_18;03_batch3_main_body+batch3_nested_block:chunk_text_19;03_batch3_main_body+batch3_nested_block:chunk_text_20;03_batch3_main_body+batch3_nested_block:embedded_05_33;03_batch3_main_body+batch3_nested_block:embedded_08_36 - Deterministic evidence conflicts with the synthesized claim.
+
+## Quality Summary
+
+- **Overall status:** REVIEW_REQUIRED
+- **Quality score:** 75.6787330316742/100
+- **Statement coverage:** 26 / 44 (59.1%)
+- **Rule grounding coverage:** 18 / 26 (69.2%)
+- **Decision-chain coverage:** 7 / 7 branches (100.0%)
+- **Conflicts:** 7
+- **Contradictions:** 8
+- **Review required items:** 21
+- **Review required:** Yes
+
+Statement parse success is below the preferred threshold.; Rule grounding coverage is below the preferred threshold.
+
+### Contradictions
+
+- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+- `HIGH` Condition Conflict on `rule__1`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Condition Conflict on `rule__2`: Synthesized condition conflicts with deterministic predicate evidence.
+
+_Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._
+
+## Pipeline Diagnostics
+
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: (A.DaysSinceLastAccrual)
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: (A.EffectiveInterestRate)
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: CASE WHEN (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual > 5000 THEN 'LARGE' WHEN (A.OutstandingBalance * A.EffectiveInterestRate / 365) * A.DaysSinceLastAccrual > 1000 THEN 'MEDIUM' ELSE 'SMALL' END
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: AccountId, AccruedInterestAmount, AccrualTier
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: MERGE INTO PRO.InterestAccrualLedger TARGET USING (SELECT AccountId, AccruedInterestAmount, AccrualTier FROM #AccrualStaging) SOURCE ON TARGET.AccountId = SOURCE.AccountId WHEN MATCHED THEN UPDATE SET TARGET.AccruedInterestAmount = SOURCE.AccruedInterestAmount, TARGET.AccrualTier = SOURCE.AccrualTier WHEN NOT MATCHED BY TARGET THEN INSERT (AccountId, AccruedInterestAmount, AccrualTier) VALUES (SOURCE.AccountId, SOURCE.AccruedInterestAmount, SOURCE.AccrualTier)
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: MERGE PRO.InterestAccrualLedger AS Target USING #AccrualStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.AccruedInterestAmount = Source.AccruedInterestAmount, Target.AccrualTier = Source.AccrualTier WHEN NOT MATCHED BY TARGET THEN INSERT (AccountId, AccruedInterestAmount, AccrualTier) VALUES (Source.AccountId, Source.AccruedInterestAmount, Source.AccrualTier)
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: MERGE INTO PRO.InterestAccrualLedger USING #AccrualStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.AccruedInterestAmount = Source.AccruedInterestAmount, Target.AccrualTier = Source.AccrualTier, Target.LastAccrualDate = @ProcessDate WHEN NOT MATCHED BY TARGET THEN INSERT (AccountId, AccruedInterestAmount, AccrualTier, FirstAccrualDate, LastAccrualDate) VALUES (Source.AccountId, Source.AccruedInterestAmount, Source.AccrualTier, @ProcessDate, @ProcessDate)
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: MERGE INTO PRO.InterestAccrualLedger AS Target USING (SELECT AccountId, AccruedInterestAmount, AccrualTier FROM #AccrualStaging) AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.AccruedInterestAmount = Source.AccruedInterestAmount, Target.AccrualTier = Source.AccrualTier WHEN NOT MATCHED BY TARGET THEN INSERT (AccountId, AccruedInterestAmount, AccrualTier) VALUES (Source.AccountId, Source.AccruedInterestAmount, Source.AccrualTier)
+- Synthesized in 5 section(s) aligned to extraction chunk boundaries because the object exceeded the single-call output-token ceiling; sections were merged into this report.

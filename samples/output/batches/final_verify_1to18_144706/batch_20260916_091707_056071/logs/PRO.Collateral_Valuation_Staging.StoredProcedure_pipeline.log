@@ -1,0 +1,330 @@
+2026-09-16 14:55:07,377 | INFO | src.batch.batch_runner | Batch item started: 11_Collateral_Valuation_Staging.sql
+2026-09-16 14:55:07,377 | INFO | logic_rules_extractor.pipeline | Stage 1/6: Running input guardrails
+2026-09-16 14:55:07,378 | INFO | logic_rules_extractor.pipeline | Stage 1/6 completed in 0.00s (input guardrails)
+2026-09-16 14:55:07,378 | INFO | logic_rules_extractor.pipeline | Stage 2/6: Detecting dialect
+2026-09-16 14:55:07,380 | INFO | logic_rules_extractor.pipeline | Detected TSQL dialect (confidence: high)
+2026-09-16 14:55:07,380 | INFO | logic_rules_extractor.pipeline | Stage 2/6 completed in 0.00s (dialect detection)
+2026-09-16 14:55:07,380 | INFO | logic_rules_extractor.pipeline | Stage 3/6: Preprocessing, parsing, and chunking samples/11_Collateral_Valuation_Staging.sql
+2026-09-16 14:55:07,410 | INFO | logic_rules_extractor.pipeline | Detected TSQL PROCEDURE 'Collateral_Valuation_Staging' with 5 chunk(s)
+2026-09-16 14:55:07,410 | INFO | logic_rules_extractor.pipeline | Stage 3/6 completed in 0.03s (preprocessing/parsing/chunking)
+2026-09-16 14:55:07,410 | INFO | logic_rules_extractor.pipeline | Stage 4/6: Retrieving dependencies / pattern context and extracting logic per chunk (model: amazon.nova-lite-v1:0)
+2026-09-16 14:55:07,410 | INFO | logic_rules_extractor.pipeline | Persistent knowledge base ready in 0.00s
+2026-09-16 14:55:07,412 | INFO | logic_rules_extractor.pipeline | Stage 4 extraction selection: estimated_tokens=5572 budget=297000 path=single-pass extraction_calls=1 merge_ran=False
+2026-09-16 14:55:15,849 | INFO | logic_rules_extractor.pipeline | Stage 4/6 completed in 8.44s total (kb_ready=0.00s, retrieval/KB sum=0.00s, LLM extraction sum=8.44s, workers=8, chunks=1)
+2026-09-16 14:55:15,851 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
+2026-09-16 14:55:15,902 | INFO | logic_rules_extractor.pipeline | Synthesis: 'Collateral_Valuation_Staging' exceeds the single-call output-token budget; running 7 section(s) aligned to extraction chunk boundaries instead of one call.
+2026-09-16 14:55:33,610 | INFO | src.validation.coverage_check | Coverage block lines=26-26 overlap_ratio=0.151 matched_rule=0 uncovered=True
+2026-09-16 14:55:33,612 | INFO | src.validation.coverage_check | Coverage block lines=40-40 overlap_ratio=0.812 matched_rule=23 uncovered=False
+2026-09-16 14:55:33,613 | INFO | src.validation.coverage_check | Coverage block lines=53-54 overlap_ratio=1.000 matched_rule=3 uncovered=False
+2026-09-16 14:55:33,613 | INFO | src.validation.coverage_check | Coverage block lines=59-60 overlap_ratio=1.000 matched_rule=0 uncovered=False
+2026-09-16 14:55:33,613 | INFO | src.validation.coverage_check | Coverage block lines=67-75 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-16 14:55:33,613 | INFO | src.validation.coverage_check | Coverage block lines=83-87 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-16 14:55:33,613 | INFO | src.validation.coverage_check | Coverage block lines=96-96 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-16 14:55:33,613 | INFO | src.validation.coverage_check | Coverage block lines=99-106 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-16 14:55:33,613 | INFO | src.validation.coverage_check | Coverage block lines=111-111 overlap_ratio=0.443 matched_rule=23 uncovered=True
+2026-09-16 14:55:33,614 | INFO | src.validation.coverage_check | Coverage block lines=119-120 overlap_ratio=1.000 matched_rule=9 uncovered=False
+2026-09-16 14:55:33,614 | INFO | src.validation.coverage_check | Coverage block lines=129-130 skipped (operational status bookkeeping, not business logic)
+2026-09-16 14:55:33,614 | INFO | src.validation.coverage_check | Coverage block lines=136-137 skipped (operational status bookkeeping, not business logic)
+2026-09-16 14:55:33,614 | INFO | logic_rules_extractor.pipeline | Coverage check found 2 unreviewed decision point(s); asking the model to review (attempt 1)
+2026-09-16 14:55:54,021 | INFO | logic_rules_extractor.pipeline | Stage 5/6 completed in 38.17s (business reasoning)
+2026-09-16 14:55:54,021 | INFO | logic_rules_extractor.pipeline | Stage 6/6: Reconciling deterministic evidence against synthesized output
+2026-09-16 14:55:54,118 | INFO | logic_rules_extractor.pipeline | Stage 6/6 completed in 0.10s (deterministic reconciliation)
+2026-09-16 14:55:54,118 | INFO | logic_rules_extractor.pipeline | Stage 7/7: Applying output guardrails and formatting final report
+2026-09-16 14:55:54,153 | INFO | logic_rules_extractor.pipeline | Verification/traceability diagnostics for PRO.Collateral_Valuation_Staging.StoredProcedure_report.md:
+# Collateral Valuation Staging — Verification & Traceability
+
+> Companion artifact to `PRO.Collateral_Valuation_Staging.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
+
+| Item | Value |
+|---|---|
+| Object ID | `obj_adfa3b566339` |
+| Raw technical object name (from source) | `Collateral_Valuation_Staging` |
+
+## Run Metadata
+
+| Item | Value |
+|---|---|
+| Pipeline Version | `2026-08-26-phase1` |
+| Prompt Version | `3fde9e2078dcda12` |
+| Knowledge Base Version | `2e6fc62902751973` |
+| Model | `amazon.nova-lite-v1:0` |
+| Provider | `bedrock` |
+| Dialect | `T-SQL` |
+| Dialect Confidence | `High` |
+| Source Hash | `80f40768b5fc248e327e3b0ed8376965f7017303d5b9660a3cb2d288ade4b1a5` |
+| Configuration Version | `ddb60c677229031b` |
+| Run Timestamp | `2026-09-16T09:25:07.410852+00:00` |
+| Object ID | `obj_adfa3b566339` |
+
+## LLM Telemetry
+
+| Item | Value |
+|---|---|
+| Run ID | `telemetry_7d01ff2e2ba8` |
+| Total LLM Calls | `9` |
+| Successful Calls | `9` |
+| Failed Calls | `0` |
+| Prompt Tokens | `95202` |
+| Completion Tokens | `16043` |
+| Total Tokens | `111245` |
+| Telemetry Availability | `available` |
+
+| Stage | Calls | Success | Failure | Tokens | Availability |
+|---|---:|---:|---:|---:|---|
+| extraction | 1 | 1 | 0 | 6739 | available |
+| synthesis | 7 | 7 | 0 | 77707 | available |
+| synthesis_revision | 1 | 1 | 0 | 26799 | available |
+
+## Business Rule Summary
+
+| Priority | Rule | Output | Business Purpose |
+|---|---|---|---|
+| 🟢 1 | Update shortfall amount [MATCHED] (`rule__2`) | `ShortfallAmount` | Update the ShortfallAmount in the #CollateralStaging table based on certain conditions. |
+| 🟢 2 | Update review priority [MATCHED] (`rule__3`) | `ReviewPriority` | Update the ReviewPriority in the #CollateralStaging table based on certain conditions. |
+| 🟢 3 | Read data for processing [MATCHED] (`rule__4`) | `AccountId, @ProcessDate, ShortfallAmount` | Read data from the #CollateralStaging table for further processing. |
+| 🟢 4 | Calculate shortfall amount [MATCHED] (`rule__1`) | `ShortfallAmount` | Determine the shortfall amount for accounts with an outstanding balance greater than the collateral value. |
+| 🟢 5 | Set shortfall amount to zero [MATCHED] (`rule__2__5`) | `ShortfallAmount` | Set the shortfall amount to zero for accounts with an outstanding balance less than or equal to the collateral value. |
+| 🔴 6 | Update review priority for positive shortfall [CONFLICT] (`rule__3__6`) | `ReviewPriority` | Update the review priority for accounts with a positive shortfall amount. |
+| 🔴 7 | Update review priority for zero shortfall [CONFLICT] (`rule__4__7`) | `ReviewPriority` | Update the review priority for accounts with a zero shortfall amount. |
+| 🔴 8 | Update review priority [CONFLICT] (`rule__2__9`) | `ReviewPriority` | Assign a review priority to each account based on the shortfall amount. |
+| 🟢 9 | Mark collateral as stale [MATCHED] (`rule__3__10`) | `CollateralStale` | Mark collateral as stale if no recent valuation exists for the account. |
+| 🔴 10 | Set review priority [CONFLICT] (`rule__2__12`) | `ReviewPriority` | Assign a review priority based on the shortfall amount. |
+| 🟢 11 | Update collateral stale status [MATCHED] (`rule__4__14`) | `CollateralStale` | Mark collateral as stale if there is no recent valuation. |
+| 🔴 12 | Update review priority [CONFLICT] (`rule__3__17`) | `ReviewPriority` | Update the review priority for accounts in #CollateralStaging based on specific conditions. |
+| 🟢 13 | Read shortfall and account details [MATCHED] (`rule__6`) | `AccountId, @ProcessDate, ShortfallAmount` | Read shortfall amounts and account IDs from the #CollateralStaging table for further processing. |
+| 🟢 14 | Merge collateral position summaries [MATCHED] (`rule__10`) | `Target.AccountId, Source.AccountId, Target.CollateralValue, Source.CollateralValue, Target.ShortfallAmount, Source.ShortfallAmount, Target.ReviewPriority, Source.ReviewPriority, Target.LastUpdatedDate, AccountId, CollateralValue, ShortfallAmount, ReviewPriority, FirstSeenDate, LastUpdatedDate` | Merge collateral position summaries. |
+| 🟠 15 | Determine ReviewPriority [MATCHED] (`deterministic_case_0071_0077_2673_reviewpriority`) | `ReviewPriority` | First matching row wins; ELSE includes false or NULL predicates. |
+| 🟠 16 | Determine ReviewPriority [MATCHED] (`deterministic_case_0085_0089_3183_reviewpriority`) | `ReviewPriority` | First matching row wins; ELSE includes false or NULL predicates. |
+
+## Source Traceability
+
+<details>
+<summary><strong>Show rule-to-source mapping</strong></summary>
+
+| # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |
+|---|---|---|---|---|---|---|
+| 1 | Update shortfall amount (rule__2) | UPDATE #CollateralStaging SET S.ShortfallAmount =... WHERE... | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_02_25; 03_batch3_main_body+batch3_nested_block:embedded_03_26 | dependency_0006; dependency_0007; dependency_0008 | Verified |
+| 2 | Update review priority (rule__3) | UPDATE #CollateralStaging SET S.ReviewPriority =... WHERE... | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_04_27; 03_batch3_main_body+batch3_nested_block:embedded_05_28 | dependency_0009; dependency_0010 | Verified |
+| 3 | Read data for processing (rule__4) | SELECT AccountId, @ProcessDate, ShortfallAmount FROM #CollateralStaging | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_07_30 | dependency_0005; dependency_0006; dependency_0007; dependency_0008; dependency_0009; dependency_0010 | Verified |
+| 4 | Calculate shortfall amount (rule__1) | UPDATE S SET S.ShortfallAmount = S.OutstandingBalance - S.CollateralValue FROM #CollateralStaging S WHERE S.OutstandingBalance > S.CollateralValue | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_01_24 | dependency_0001; dependency_0002 | Verified |
+| 5 | Set shortfall amount to zero (rule__2__5) | UPDATE S SET S.ShortfallAmount = 0 FROM #CollateralStaging S WHERE S.OutstandingBalance <= S.CollateralValue | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_02_25 | dependency_0003; dependency_0004 | Verified |
+| 6 | Update review priority for positive shortfall (rule__3__6) | UPDATE S SET S.ReviewPriority = 'HIGH' FROM #CollateralStaging S WHERE S.ShortfallAmount > 0 | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_03_26 | dependency_0005 | Needs Review |
+| 7 | Update review priority for zero shortfall (rule__4__7) | UPDATE S SET S.ReviewPriority = 'LOW' FROM #CollateralStaging S WHERE S.ShortfallAmount = 0 | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_04_27 | dependency_0006 | Needs Review |
+| 8 | Update review priority (rule__2__9) | UPDATE S SET S.ReviewPriority = (CASE WHEN S.ShortfallAmount IS NULL THEN 'NONE' WHEN S.ShortfallAmount > 500000 THEN 'URGENT' WHEN S.ShortfallAmount > 100000 THEN 'HIGH' WHEN S.ShortfallAmount > 0 THEN 'STANDARD' END) FROM #CollateralStaging S WHERE S.Outsta… | Not cited | 03_batch3_main_body+batch3_nested_block | 03_batch3_main_body+batch3_nested_block | Needs Review |
+| 9 | Mark collateral as stale (rule__3__10) | UPDATE PRO.LoanAccountCal SET A.CollateralStale = 'Y' WHERE A.SecuredFlag = 'Y' AND NOT EXISTS(SELECT 1 FROM PRO.CollateralValuation AS V WHERE V.AccountId = A.AccountId AND V.ValuationDate >= @StaleValuationCutoff) | Not cited | 03_batch3_main_body+batch3_nested_block | 03_batch3_main_body+batch3_nested_block | Verified |
+| 10 | Set review priority (rule__2__12) | UPDATE S SET S.ReviewPriority = 'HIGH' FROM #CollateralStaging S WHERE S.ShortfallAmount > 500000 | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_04_27 | 03_batch3_main_body+batch3_nested_block:embedded_04_27 | Needs Review |
+| 11 | Update collateral stale status (rule__4__14) | UPDATE A SET A.CollateralStale = 'Y' FROM PRO.LoanAccountCal A WHERE A.SecuredFlag = 'Y' AND NOT EXISTS(SELECT 1 FROM PRO.CollateralValuation AS V WHERE V.AccountId = A.AccountId AND V.ValuationDate >= @StaleValuationCutoff) | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_08_29 | 03_batch3_main_body+batch3_nested_block:embedded_08_29 | Verified |
+| 12 | Update review priority (rule__3__17) | UPDATE S SET S.ReviewPriority = 'HIGH' FROM #CollateralStaging S WHERE S.OutstandingBalance > S.CollateralValue | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_04_27 | 03_batch3_main_body+batch3_nested_block:embedded_04_27 | Needs Review |
+| 13 | Read shortfall and account details (rule__6) | SELECT AccountId, @ProcessDate, ShortfallAmount FROM #CollateralStaging WHERE ShortfallAmount > 0 | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_07_30 | dependency_0010 | Verified |
+| 14 | Merge collateral position summaries (rule__10) | MERGE INTO PRO.CollateralPositionSummary AS Target USING (SELECT AccountId, CollateralValue, ShortfallAmount, ReviewPriority, @ProcessDate AS LastUpdatedDate FROM #CollateralStaging) AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SE… | Not cited | 03_batch3_main_body+batch3_nested_block:embedded_11_34 | dependency_0008 | Verified |
+| 15 | Determine ReviewPriority (deterministic_case_0071_0077_2673_reviewpriority) | Not cited | source \| Lines 71-77 | Not cited | Not cited | Verified |
+| 16 | Determine ReviewPriority (deterministic_case_0085_0089_3183_reviewpriority) | Not cited | source \| Lines 85-89 | Not cited | Not cited | Verified |
+
+### Decision-Chain Branch Provenance
+
+| Branch | Condition | Source Location |
+|---|---|---|
+| case_0071_0077_2673:branch_001 | S.ShortfallAmount IS NULL | source \| Lines 72-73 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_17 |
+| case_0071_0077_2673:branch_002 | S.ShortfallAmount > 500000 | source \| Lines 73-74 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_17 |
+| case_0071_0077_2673:branch_003 | S.ShortfallAmount > 100000 | source \| Lines 74-75 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_17 |
+| case_0071_0077_2673:branch_004 | S.ShortfallAmount > 0 | source \| Lines 75-76 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_18 |
+| case_0071_0077_2673:branch_005 | ELSE | source \| Lines 76-77 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_18 |
+| case_0085_0089_3183:branch_001 | S.ShortfallAmount > 500000 | source \| Lines 86-87 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_19 |
+| case_0085_0089_3183:branch_002 | S.ShortfallAmount > 0 | source \| Lines 87-88 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_19 |
+| case_0085_0089_3183:branch_003 | ELSE | source \| Lines 88-89 \| Statement 03_batch3_main_body+batch3_nested_block:chunk_text_19 |
+| decision_chain_003:branch_001 | S.ShortfallAmount IS NULL THEN 'NONE' WHEN S.ShortfallAmount > 500000 THEN 'URGENT' WHEN S.ShortfallAmount > 100000 THEN 'HIGH' WHEN S.ShortfallAmount > 0 THEN 'STANDARD' ELSE 'NONE' | source |
+| decision_chain_003:branch_002 | S.ShortfallAmount > 500000 THEN 'HIGH' WHEN S.ShortfallAmount > 0 THEN 'STANDARD' ELSE 'NONE' | source |
+
+_Source evidence is the literal technical text carried through the pipeline; Source Location is derived deterministically from chunk and statement provenance when available; SQL Statements / Chunks and Technical References point back to the extracted chunk ids and statement references used by the guardrails. Technical references that repeat the same table/operation/target-columns are shown once._
+</details>
+
+## Completeness Ledger
+
+- **Executable constructs:** 95
+- **Disposition:** covered_by_rule=65, technical_only=11, uncovered=19
+
+| Construct | Status | Source location | Statement / chunk | Evidence |
+|---|---|---|---|---|
+| STATEMENT | uncovered | Lines 1-1 | 00_batch0_declaration:chunk_text_01, 00_batch0_declaration | USE [DEMO_MISDB] |
+| SET | uncovered | Lines 1-1 | 01_batch1_declaration:chunk_text_01, 01_batch1_declaration | SET ANSI_NULLS ON |
+| SET | uncovered | Lines 1-1 | 01_batch1_declaration:embedded_01_02, 01_batch1_declaration | SET ANSI_NULLS ON |
+| SET | uncovered | Lines 1-1 | 02_batch2_declaration:chunk_text_01, 02_batch2_declaration | SET QUOTED_IDENTIFIER ON |
+| SET | uncovered | Lines 1-1 | 02_batch2_declaration:embedded_01_02, 02_batch2_declaration | SET QUOTED_IDENTIFIER ON |
+| STATEMENT | covered_by_rule | Lines 1-2 | 03_batch3_main_body+batch3_nested_block:chunk_text_01, 03_batch3_main_body+batch3_nested_block | BEGIN SET NOCOUNT ON |
+| STATEMENT | covered_by_rule | Lines 4-4 | 03_batch3_main_body+batch3_nested_block:chunk_text_02, 03_batch3_main_body+batch3_nested_block | BEGIN TRY |
+| SELECT | covered_by_rule | Lines 6-6 | 03_batch3_main_body+batch3_nested_block:chunk_text_03, 03_batch3_main_body+batch3_nested_block | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
+| STATEMENT | covered_by_rule | Lines 7-7 | 03_batch3_main_body+batch3_nested_block:chunk_text_04, 03_batch3_main_body+batch3_nested_block | DECLARE @StaleValuationCutoff DATE = DATEADD(MONTH, -12, @ProcessDate) |
+| STATEMENT | covered_by_rule | Lines 9-9 | 03_batch3_main_body+batch3_nested_block:chunk_text_05, 03_batch3_main_body+batch3_nested_block | IF OBJECT_ID('tempdb..#CollateralStaging') IS NOT NULL |
+| STATEMENT | covered_by_rule | Lines 10-10 | 03_batch3_main_body+batch3_nested_block:chunk_text_06, 03_batch3_main_body+batch3_nested_block | DROP TABLE #CollateralStaging |
+| INSERT | covered_by_rule | Lines 12-22 | 03_batch3_main_body+batch3_nested_block:chunk_text_07, 03_batch3_main_body+batch3_nested_block | CREATE TABLE #CollateralStaging ( AccountId VARCHAR(20), CollateralValue DECIMAL(18,2), OutstandingBalance DECIMAL(18,2), ShortfallAmount DECIMAL(18,2), ReviewPriority VARCHAR(10) ) -- Rule 1: conditional INSERT - stage only secured acco... |
+| INSERT | covered_by_rule | Lines 23-35 | 03_batch3_main_body+batch3_nested_block:chunk_text_08, 03_batch3_main_body+batch3_nested_block | INSERT INTO #CollateralStaging (AccountId, CollateralValue, OutstandingBalance, ShortfallAmount, ReviewPriority) SELECT A.AccountId, V.LatestValuationAmount, A.OutstandingBalance, NULL, NULL FROM PRO.LoanAccountCal A INNER JOIN PRO.Colla... |
+| UPDATE | covered_by_rule | Lines 36-41 | 03_batch3_main_body+batch3_nested_block:chunk_text_09, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.ShortfallAmount = S.OutstandingBalance - S.CollateralValue FROM #CollateralStaging S WHERE S.OutstandingBalance > S.CollateralValue -- Rule 3: rows with adequate collateral have no shortfall |
+| UPDATE | covered_by_rule | Lines 42-49 | 03_batch3_main_body+batch3_nested_block:chunk_text_10, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.ShortfallAmount = 0 FROM #CollateralStaging S WHERE S.OutstandingBalance <= S.CollateralValue -- Rule 4: sequential IF/ELSE, then multi-branch CASE - review -- priority depends on both how close to quarter-end we are and -... |
+| STATEMENT | covered_by_rule | Lines 50-50 | 03_batch3_main_body+batch3_nested_block:chunk_text_11, 03_batch3_main_body+batch3_nested_block | IF DATEPART(MONTH, @ProcessDate) IN (3, 6, 9, 12) |
+| STATEMENT | covered_by_rule | Lines 1-1 | 03_batch3_main_body+batch3_nested_block:chunk_text_12, 03_batch3_main_body+batch3_nested_block | BEGIN |
+| UPDATE | covered_by_rule | Lines 52-62 | 03_batch3_main_body+batch3_nested_block:chunk_text_13, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.ReviewPriority = ( CASE WHEN S.ShortfallAmount IS NULL THEN 'NONE' WHEN S.ShortfallAmount > 500000 THEN 'URGENT' WHEN S.ShortfallAmount > 100000 THEN 'HIGH' WHEN S.ShortfallAmount > 0 THEN 'STANDARD' ELSE 'NONE' END ) FROM... |
+| STATEMENT | covered_by_rule | Lines 60-60 | 03_batch3_main_body+batch3_nested_block:chunk_text_14, 03_batch3_main_body+batch3_nested_block | END |
+| STATEMENT | covered_by_rule | Lines 47-47 | 03_batch3_main_body+batch3_nested_block:chunk_text_15, 03_batch3_main_body+batch3_nested_block | ELSE |
+| STATEMENT | covered_by_rule | Lines 1-1 | 03_batch3_main_body+batch3_nested_block:chunk_text_16, 03_batch3_main_body+batch3_nested_block | BEGIN |
+| UPDATE | covered_by_rule | Lines 66-74 | 03_batch3_main_body+batch3_nested_block:chunk_text_17, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.ReviewPriority = ( CASE WHEN S.ShortfallAmount > 500000 THEN 'HIGH' WHEN S.ShortfallAmount > 0 THEN 'STANDARD' ELSE 'NONE' END ) FROM #CollateralStaging S |
+| STATEMENT | covered_by_rule | Lines 75-78 | 03_batch3_main_body+batch3_nested_block:chunk_text_18, 03_batch3_main_body+batch3_nested_block | END -- Rule 5: upsert the staged position into the collateral summary -- table - refresh accounts already tracked, add new ones |
+| MERGE | covered_by_rule | Lines 79-93 | 03_batch3_main_body+batch3_nested_block:chunk_text_19, 03_batch3_main_body+batch3_nested_block | MERGE PRO.CollateralPositionSummary AS Target USING #CollateralStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.CollateralValue = Source.CollateralValue, Target.ShortfallAmount = Source.Shortfa... |
+| INSERT | covered_by_rule | Lines 94-101 | 03_batch3_main_body+batch3_nested_block:chunk_text_20, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollateralReview (AccountId, ReviewDate, ShortfallAmount) SELECT AccountId, @ProcessDate, ShortfallAmount FROM #CollateralStaging WHERE ShortfallAmount > 0 -- Rule 7: secured accounts with no valuation in the last 12 mont... |
+| UPDATE | covered_by_rule | Lines 102-110 | 03_batch3_main_body+batch3_nested_block:chunk_text_21, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.CollateralStale = 'Y' FROM PRO.LoanAccountCal A WHERE A.SecuredFlag = 'Y' AND NOT EXISTS ( SELECT 1 FROM PRO.CollateralValuation V WHERE V.AccountId = A.AccountId AND V.ValuationDate >= @StaleValuationCutoff ) |
+| UPDATE | covered_by_rule | Lines 112-114 | 03_batch3_main_body+batch3_nested_block:chunk_text_22, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Collateral_Valuation_Staging' |
+| STATEMENT | covered_by_rule | Lines 116-116 | 03_batch3_main_body+batch3_nested_block:chunk_text_23, 03_batch3_main_body+batch3_nested_block | END TRY |
+| INSERT | covered_by_rule | Lines 23-35 | 03_batch3_main_body+batch3_nested_block:embedded_01_24, 03_batch3_main_body+batch3_nested_block | INSERT INTO #CollateralStaging (AccountId, CollateralValue, OutstandingBalance, ShortfallAmount, ReviewPriority) SELECT A.AccountId, V.LatestValuationAmount, A.OutstandingBalance, NULL, NULL FROM PRO.LoanAccountCal A INNER JOIN PRO.Colla... |
+| UPDATE | covered_by_rule | Lines 36-41 | 03_batch3_main_body+batch3_nested_block:embedded_02_25, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.ShortfallAmount = S.OutstandingBalance - S.CollateralValue FROM #CollateralStaging S WHERE S.OutstandingBalance > S.CollateralValue -- Rule 3: rows with adequate collateral have no shortfall |
+| UPDATE | covered_by_rule | Lines 42-49 | 03_batch3_main_body+batch3_nested_block:embedded_03_26, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.ShortfallAmount = 0 FROM #CollateralStaging S WHERE S.OutstandingBalance <= S.CollateralValue -- Rule 4: sequential IF/ELSE, then multi-branch CASE - review -- priority depends on both how close to quarter-end we are and -... |
+| UPDATE | covered_by_rule | Lines 52-62 | 03_batch3_main_body+batch3_nested_block:embedded_04_27, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.ReviewPriority = ( CASE WHEN S.ShortfallAmount IS NULL THEN 'NONE' WHEN S.ShortfallAmount > 500000 THEN 'URGENT' WHEN S.ShortfallAmount > 100000 THEN 'HIGH' WHEN S.ShortfallAmount > 0 THEN 'STANDARD' ELSE 'NONE' END ) FROM... |
+| UPDATE | covered_by_rule | Lines 66-74 | 03_batch3_main_body+batch3_nested_block:embedded_05_28, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.ReviewPriority = ( CASE WHEN S.ShortfallAmount > 500000 THEN 'HIGH' WHEN S.ShortfallAmount > 0 THEN 'STANDARD' ELSE 'NONE' END ) FROM #CollateralStaging S |
+| MERGE | covered_by_rule | Lines 79-93 | 03_batch3_main_body+batch3_nested_block:embedded_06_29, 03_batch3_main_body+batch3_nested_block | MERGE PRO.CollateralPositionSummary AS Target USING #CollateralStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.CollateralValue = Source.CollateralValue, Target.ShortfallAmount = Source.Shortfa... |
+| INSERT | covered_by_rule | Lines 94-101 | 03_batch3_main_body+batch3_nested_block:embedded_07_30, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollateralReview (AccountId, ReviewDate, ShortfallAmount) SELECT AccountId, @ProcessDate, ShortfallAmount FROM #CollateralStaging WHERE ShortfallAmount > 0 -- Rule 7: secured accounts with no valuation in the last 12 mont... |
+| UPDATE | covered_by_rule | Lines 102-110 | 03_batch3_main_body+batch3_nested_block:embedded_08_31, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.CollateralStale = 'Y' FROM PRO.LoanAccountCal A WHERE A.SecuredFlag = 'Y' AND NOT EXISTS ( SELECT 1 FROM PRO.CollateralValuation V WHERE V.AccountId = A.AccountId AND V.ValuationDate >= @StaleValuationCutoff ) |
+| UPDATE | covered_by_rule | Lines 112-114 | 03_batch3_main_body+batch3_nested_block:embedded_09_32, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Collateral_Valuation_Staging' |
+| STATEMENT | uncovered | Lines 1-2 | 04_batch3_exception:chunk_text_01, 04_batch3_exception | BEGIN CATCH -- Exception handling: record the failure for operations to investigate |
+| UPDATE | uncovered | Lines 3-5 | 04_batch3_exception:chunk_text_02, 04_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Collateral_Valuation_Staging' |
+| STATEMENT | uncovered | Lines 6-6 | 04_batch3_exception:chunk_text_03, 04_batch3_exception | END CATCH |
+| SET | uncovered | Lines 7-7 | 04_batch3_exception:chunk_text_04, 04_batch3_exception | SET NOCOUNT OFF |
+| STATEMENT | covered_by_rule | Lines 6-6 | 04_batch3_exception:chunk_text_05, 04_batch3_exception | END |
+| UPDATE | uncovered | Lines 3-5 | 04_batch3_exception:embedded_01_06, 04_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Collateral_Valuation_Staging' |
+| SET | uncovered | Lines 7-7 | 04_batch3_exception:embedded_02_07, 04_batch3_exception | SET NOCOUNT OFF |
+| READ | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:chunk_text_03, 03_batch3_main_body+batch3_nested_block:chunk_text_03, 03_batch3_main_body+batch3_nested_block | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
+| INSERT_TEMP | technical_only | samples/11_Collateral_Valuation_Staging.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_08, 03_batch3_main_body+batch3_nested_block:chunk_text_08, 03_batch3_main_body+batch3_nested_block | INSERT INTO #CollateralStaging (AccountId, CollateralValue, OutstandingBalance, ShortfallAmount, ReviewPriority) SELECT A.AccountId, V.LatestValuationAmount, A.OutstandingBalance, NULL, NULL FROM PRO.LoanAccountCal A INNER JOIN PRO.Colla... |
+| UPDATE_TEMP | technical_only | samples/11_Collateral_Valuation_Staging.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_09, 03_batch3_main_body+batch3_nested_block:chunk_text_09, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.ShortfallAmount = S.OutstandingBalance - S.CollateralValue FROM #CollateralStaging S WHERE S.OutstandingBalance > S.CollateralValue -- Rule 3: rows with adequate collateral have no shortfall |
+| UPDATE_TEMP | technical_only | samples/11_Collateral_Valuation_Staging.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_10, 03_batch3_main_body+batch3_nested_block:chunk_text_10, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.ShortfallAmount = 0 FROM #CollateralStaging S WHERE S.OutstandingBalance <= S.CollateralValue -- Rule 4: sequential IF/ELSE, then multi-branch CASE - review -- priority depends on both how close to quarter-end we are and -... |
+| UPDATE_TEMP | technical_only | samples/11_Collateral_Valuation_Staging.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_13, 03_batch3_main_body+batch3_nested_block:chunk_text_13, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.ReviewPriority = ( CASE WHEN S.ShortfallAmount IS NULL THEN 'NONE' WHEN S.ShortfallAmount > 500000 THEN 'URGENT' WHEN S.ShortfallAmount > 100000 THEN 'HIGH' WHEN S.ShortfallAmount > 0 THEN 'STANDARD' ELSE 'NONE' END ) FROM... |
+| UPDATE_TEMP | technical_only | samples/11_Collateral_Valuation_Staging.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_17, 03_batch3_main_body+batch3_nested_block:chunk_text_17, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.ReviewPriority = ( CASE WHEN S.ShortfallAmount > 500000 THEN 'HIGH' WHEN S.ShortfallAmount > 0 THEN 'STANDARD' ELSE 'NONE' END ) FROM #CollateralStaging S |
+| MERGE | covered_by_rule | samples/11_Collateral_Valuation_Staging.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_19, 03_batch3_main_body+batch3_nested_block:chunk_text_19, 03_batch3_main_body+batch3_nested_block | MERGE PRO.CollateralPositionSummary AS Target USING #CollateralStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.CollateralValue = Source.CollateralValue, Target.ShortfallAmount = Source.Shortfa... |
+| INSERT | covered_by_rule | samples/11_Collateral_Valuation_Staging.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_20, 03_batch3_main_body+batch3_nested_block:chunk_text_20, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollateralReview (AccountId, ReviewDate, ShortfallAmount) SELECT AccountId, @ProcessDate, ShortfallAmount FROM #CollateralStaging WHERE ShortfallAmount > 0 -- Rule 7: secured accounts with no valuation in the last 12 mont... |
+| UPDATE | covered_by_rule | samples/11_Collateral_Valuation_Staging.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_21, 03_batch3_main_body+batch3_nested_block:chunk_text_21, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.CollateralStale = 'Y' FROM PRO.LoanAccountCal A WHERE A.SecuredFlag = 'Y' AND NOT EXISTS ( SELECT 1 FROM PRO.CollateralValuation V WHERE V.AccountId = A.AccountId AND V.ValuationDate >= @StaleValuationCutoff ) |
+| READ | covered_by_rule | samples/11_Collateral_Valuation_Staging.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_21, 03_batch3_main_body+batch3_nested_block:chunk_text_21, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.CollateralStale = 'Y' FROM PRO.LoanAccountCal A WHERE A.SecuredFlag = 'Y' AND NOT EXISTS ( SELECT 1 FROM PRO.CollateralValuation V WHERE V.AccountId = A.AccountId AND V.ValuationDate >= @StaleValuationCutoff ) |
+| UPDATE | covered_by_rule | samples/11_Collateral_Valuation_Staging.sql | 03_batch3_main_body+batch3_nested_block:chunk_text_22, 03_batch3_main_body+batch3_nested_block:chunk_text_22, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Collateral_Valuation_Staging' |
+| READ | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_01_24, 03_batch3_main_body+batch3_nested_block:embedded_01_24, 03_batch3_main_body+batch3_nested_block | INSERT INTO #CollateralStaging (AccountId, CollateralValue, OutstandingBalance, ShortfallAmount, ReviewPriority) SELECT A.AccountId, V.LatestValuationAmount, A.OutstandingBalance, NULL, NULL FROM PRO.LoanAccountCal A INNER JOIN PRO.Colla... |
+| INSERT_TEMP | technical_only | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_01_24, 03_batch3_main_body+batch3_nested_block:embedded_01_24, 03_batch3_main_body+batch3_nested_block | INSERT INTO #CollateralStaging (AccountId, CollateralValue, OutstandingBalance, ShortfallAmount, ReviewPriority) SELECT A.AccountId, V.LatestValuationAmount, A.OutstandingBalance, NULL, NULL FROM PRO.LoanAccountCal A INNER JOIN PRO.Colla... |
+| UPDATE_TEMP | technical_only | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_02_25, 03_batch3_main_body+batch3_nested_block:embedded_02_25, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.ShortfallAmount = S.OutstandingBalance - S.CollateralValue FROM #CollateralStaging S WHERE S.OutstandingBalance > S.CollateralValue -- Rule 3: rows with adequate collateral have no shortfall |
+| UPDATE_TEMP | technical_only | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_03_26, 03_batch3_main_body+batch3_nested_block:embedded_03_26, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.ShortfallAmount = 0 FROM #CollateralStaging S WHERE S.OutstandingBalance <= S.CollateralValue -- Rule 4: sequential IF/ELSE, then multi-branch CASE - review -- priority depends on both how close to quarter-end we are and -... |
+| UPDATE_TEMP | technical_only | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_04_27, 03_batch3_main_body+batch3_nested_block:embedded_04_27, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.ReviewPriority = ( CASE WHEN S.ShortfallAmount IS NULL THEN 'NONE' WHEN S.ShortfallAmount > 500000 THEN 'URGENT' WHEN S.ShortfallAmount > 100000 THEN 'HIGH' WHEN S.ShortfallAmount > 0 THEN 'STANDARD' ELSE 'NONE' END ) FROM... |
+| UPDATE_TEMP | technical_only | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_05_28, 03_batch3_main_body+batch3_nested_block:embedded_05_28, 03_batch3_main_body+batch3_nested_block | UPDATE S SET S.ReviewPriority = ( CASE WHEN S.ShortfallAmount > 500000 THEN 'HIGH' WHEN S.ShortfallAmount > 0 THEN 'STANDARD' ELSE 'NONE' END ) FROM #CollateralStaging S |
+| READ_TEMP | technical_only | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_07_30, 03_batch3_main_body+batch3_nested_block:embedded_07_30, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollateralReview (AccountId, ReviewDate, ShortfallAmount) SELECT AccountId, @ProcessDate, ShortfallAmount FROM #CollateralStaging WHERE ShortfallAmount > 0 -- Rule 7: secured accounts with no valuation in the last 12 mont... |
+| INSERT | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_07_30, 03_batch3_main_body+batch3_nested_block:embedded_07_30, 03_batch3_main_body+batch3_nested_block | INSERT INTO PRO.CollateralReview (AccountId, ReviewDate, ShortfallAmount) SELECT AccountId, @ProcessDate, ShortfallAmount FROM #CollateralStaging WHERE ShortfallAmount > 0 -- Rule 7: secured accounts with no valuation in the last 12 mont... |
+| READ | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_08_31, 03_batch3_main_body+batch3_nested_block:embedded_08_31, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.CollateralStale = 'Y' FROM PRO.LoanAccountCal A WHERE A.SecuredFlag = 'Y' AND NOT EXISTS ( SELECT 1 FROM PRO.CollateralValuation V WHERE V.AccountId = A.AccountId AND V.ValuationDate >= @StaleValuationCutoff ) |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_08_31, 03_batch3_main_body+batch3_nested_block:embedded_08_31, 03_batch3_main_body+batch3_nested_block | UPDATE A SET A.CollateralStale = 'Y' FROM PRO.LoanAccountCal A WHERE A.SecuredFlag = 'Y' AND NOT EXISTS ( SELECT 1 FROM PRO.CollateralValuation V WHERE V.AccountId = A.AccountId AND V.ValuationDate >= @StaleValuationCutoff ) |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body+batch3_nested_block:embedded_09_32, 03_batch3_main_body+batch3_nested_block:embedded_09_32, 03_batch3_main_body+batch3_nested_block | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Collateral_Valuation_Staging' |
+| UPDATE | uncovered | samples/11_Collateral_Valuation_Staging.sql / Lines 134-141 | 04_batch3_exception:chunk_text_02, 04_batch3_exception:chunk_text_02, 04_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Collateral_Valuation_Staging' |
+| UPDATE | uncovered | unavailable | 04_batch3_exception:embedded_01_06, 04_batch3_exception:embedded_01_06, 04_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Collateral_Valuation_Staging' |
+| CASE | covered_by_rule | Lines 72-73 | 03_batch3_main_body+batch3_nested_block:chunk_text_17 | S.ShortfallAmount IS NULL |
+| CASE | covered_by_rule | Lines 73-74 | 03_batch3_main_body+batch3_nested_block:chunk_text_17 | S.ShortfallAmount > 500000 |
+| CASE | covered_by_rule | Lines 74-75 | 03_batch3_main_body+batch3_nested_block:chunk_text_17 | S.ShortfallAmount > 100000 |
+| CASE | covered_by_rule | Lines 75-76 | 03_batch3_main_body+batch3_nested_block:chunk_text_18 | S.ShortfallAmount > 0 |
+| ELSE | covered_by_rule | Lines 76-77 | 03_batch3_main_body+batch3_nested_block:chunk_text_18 | ELSE |
+| CASE | covered_by_rule | Lines 86-87 | 03_batch3_main_body+batch3_nested_block:chunk_text_19 | S.ShortfallAmount > 500000 |
+| CASE | covered_by_rule | Lines 87-88 | 03_batch3_main_body+batch3_nested_block:chunk_text_19 | S.ShortfallAmount > 0 |
+| ELSE | covered_by_rule | Lines 88-89 | 03_batch3_main_body+batch3_nested_block:chunk_text_19 | ELSE |
+| IF_BRANCH | uncovered | samples/11_Collateral_Valuation_Staging.sql | full_source | S.ShortfallAmount IS NULL THEN 'NONE' WHEN S.ShortfallAmount > 500000 THEN 'URGENT' WHEN S.ShortfallAmount > 100000 THEN 'HIGH' WHEN S.ShortfallAmount > 0 THEN 'STANDARD' ELSE 'NONE' |
+| IF_BRANCH | uncovered | samples/11_Collateral_Valuation_Staging.sql | full_source | S.ShortfallAmount > 500000 THEN 'HIGH' WHEN S.ShortfallAmount > 0 THEN 'STANDARD' ELSE 'NONE' |
+| IF | uncovered | Lines 26-26 | unavailable | IF OBJECT_ID( ) IS NOT NULL |
+| IF | uncovered | Lines 67-67 | unavailable | IF DATEPART(MONTH, @ProcessDate) IN (3, 6, 9, 12) |
+| CASE | covered_by_rule | Lines 71-71 | unavailable | CASE |
+| CASE_BRANCH | covered_by_rule | Lines 72-72 | unavailable | WHEN S.ShortfallAmount IS NULL THEN |
+| CASE_BRANCH | covered_by_rule | Lines 73-73 | unavailable | WHEN S.ShortfallAmount > 500000 THEN |
+| CASE_BRANCH | covered_by_rule | Lines 74-74 | unavailable | WHEN S.ShortfallAmount > 100000 THEN |
+| CASE_BRANCH | covered_by_rule | Lines 75-75 | unavailable | WHEN S.ShortfallAmount > 0 THEN |
+| ELSE | covered_by_rule | Lines 76-76 | unavailable | ELSE |
+| ELSE | covered_by_rule | Lines 81-81 | unavailable | ELSE |
+| CASE | covered_by_rule | Lines 85-85 | unavailable | CASE |
+| CASE_BRANCH | covered_by_rule | Lines 86-86 | unavailable | WHEN S.ShortfallAmount > 500000 THEN |
+| CASE_BRANCH | covered_by_rule | Lines 87-87 | unavailable | WHEN S.ShortfallAmount > 0 THEN |
+| ELSE | covered_by_rule | Lines 88-88 | unavailable | ELSE |
+| CASE_BRANCH | covered_by_rule | Lines 99-99 | unavailable | WHEN MATCHED THEN |
+| CASE_BRANCH | covered_by_rule | Lines 105-105 | unavailable | WHEN NOT MATCHED BY TARGET THEN |
+| CATCH | uncovered | Lines 134-134 | unavailable | BEGIN CATCH |
+| CATCH | uncovered | Lines 139-139 | unavailable | END CATCH |
+
+## Confirmed Statement Dependencies
+
+The following dependencies are confirmed from exact table/field matches and source order:
+
+| Relationship | From | To | Confidence |
+|---|---|---|---|
+| table_write_to_later_use | 03_batch3_main_body+batch3_nested_block:embedded_01_24 / #CollateralStaging | 03_batch3_main_body+batch3_nested_block:embedded_02_25 / #CollateralStaging | high |
+| table_write_to_later_use | 03_batch3_main_body+batch3_nested_block:embedded_01_24 / #CollateralStaging | 03_batch3_main_body+batch3_nested_block:embedded_03_26 / #CollateralStaging | high |
+| table_write_to_later_use | 03_batch3_main_body+batch3_nested_block:embedded_01_24 / #CollateralStaging | 03_batch3_main_body+batch3_nested_block:embedded_04_27 / #CollateralStaging | high |
+| table_write_to_later_use | 03_batch3_main_body+batch3_nested_block:embedded_01_24 / #CollateralStaging | 03_batch3_main_body+batch3_nested_block:embedded_05_28 / #CollateralStaging | high |
+| temp_write_to_read | 03_batch3_main_body+batch3_nested_block:embedded_01_24 / #CollateralStaging | 03_batch3_main_body+batch3_nested_block:embedded_07_30 / #CollateralStaging | high |
+| temp_write_to_read | 03_batch3_main_body+batch3_nested_block:embedded_02_25 / #CollateralStaging | 03_batch3_main_body+batch3_nested_block:embedded_07_30 / #CollateralStaging | high |
+| temp_write_to_read | 03_batch3_main_body+batch3_nested_block:embedded_03_26 / #CollateralStaging | 03_batch3_main_body+batch3_nested_block:embedded_07_30 / #CollateralStaging | high |
+| later_update_overrides_field | 03_batch3_main_body+batch3_nested_block:embedded_04_27 / #CollateralStaging | 03_batch3_main_body+batch3_nested_block:embedded_05_28 / #CollateralStaging | high |
+| temp_write_to_read | 03_batch3_main_body+batch3_nested_block:embedded_04_27 / #CollateralStaging | 03_batch3_main_body+batch3_nested_block:embedded_07_30 / #CollateralStaging | high |
+| temp_write_to_read | 03_batch3_main_body+batch3_nested_block:embedded_05_28 / #CollateralStaging | 03_batch3_main_body+batch3_nested_block:embedded_07_30 / #CollateralStaging | high |
+
+Unresolved dependency candidates: 44. They were not supplied as confirmed dependencies.
+
+## Rule Provenance Summary
+
+- **Total business rules:** 16
+- **By rule type:** deterministic_decision_table = 2, explicit = 14
+- **By validation status:** unverified = 5, verified = 11
+
+_This count reflects every individually traceable rule (one per source statement/field, for full auditability). The business report may show a smaller number, because closely related rules that apply the same pattern to several fields (e.g. "reset each of these six DPD fields to zero if negative") are presented there as one combined rule for readability. Every rule counted here is still individually traceable in the Source Traceability table below - none are dropped, only grouped for display._
+
+_Rules marked **unverified** could not be matched back to the technical extraction or source code - this specific claim remains unresolved and should not yet be treated as a confirmed business rule._
+
+## Reconciliation Summary
+
+- **Matched facts:** 22
+- **Deterministic-only facts:** 2
+- **LLM-only claims:** 1
+- **Conflicts:** 11
+- **Unresolved items:** 0
+- **Review required:** Yes
+
+### Review Items
+
+- `CONFLICT` tables_read (`recon_ff6c9c39dd4e`): full_source
+- `CONFLICT` tables_written (`recon_4f59b00a48af`): full_source
+- `CONFLICT` tables_written (`recon_4f59b00a48af`): full_source
+- `CONFLICT` tables_written (`recon_4f59b00a48af`): full_source
+- `CONFLICT` tables_written (`recon_4f59b00a48af`): full_source
+
+## Quality Summary
+
+- **Overall status:** REVIEW_REQUIRED
+- **Quality score:** 85.46938775510205/100
+- **Statement coverage:** 26 / 44 (59.1%)
+- **Rule grounding coverage:** 14 / 16 (87.5%)
+- **Decision-chain coverage:** 8 / 8 branches (100.0%)
+- **Conflicts:** 11
+- **Contradictions:** 11
+- **Review required items:** 23
+- **Review required:** Yes
+
+Statement parse success is below the preferred threshold.
+
+### Contradictions
+
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+
+_Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._
+
+## Pipeline Diagnostics
+
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: UPDATE #CollateralStaging SET S.ShortfallAmount =... WHERE...
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: UPDATE #CollateralStaging SET S.ReviewPriority =... WHERE...
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: SELECT AccountId, @ProcessDate, ShortfallAmount FROM #CollateralStaging
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: UPDATE S SET S.ReviewPriority = 'HIGH' FROM #CollateralStaging S WHERE S.ShortfallAmount > 0
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: UPDATE S SET S.ReviewPriority = 'LOW' FROM #CollateralStaging S WHERE S.ShortfallAmount = 0
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: UPDATE S SET S.ReviewPriority = (CASE WHEN S.ShortfallAmount IS NULL THEN 'NONE' WHEN S.ShortfallAmount > 500000 THEN 'URGENT' WHEN S.ShortfallAmount > 100000 THEN 'HIGH' WHEN S.ShortfallAmount > 0 THEN 'STANDARD' END) FROM #CollateralStaging S WHERE S.OutstandingBalance <= S.CollateralValue
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: UPDATE PRO.LoanAccountCal SET A.CollateralStale = 'Y' WHERE A.SecuredFlag = 'Y' AND NOT EXISTS(SELECT 1 FROM PRO.CollateralValuation AS V WHERE V.AccountId = A.AccountId AND V.ValuationDate >= @StaleValuationCutoff)
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: UPDATE S SET S.ReviewPriority = 'HIGH' FROM #CollateralStaging S WHERE S.ShortfallAmount > 500000
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: UPDATE S SET S.ReviewPriority = 'STANDARD' FROM #CollateralStaging S WHERE S.ShortfallAmount > 0
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: UPDATE A SET A.CollateralStale = 'Y' FROM PRO.LoanAccountCal A WHERE A.SecuredFlag = 'Y' AND NOT EXISTS(SELECT 1 FROM PRO.CollateralValuation AS V WHERE V.AccountId = A.AccountId AND V.ValuationDate >= @StaleValuationCutoff)
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: UPDATE S SET S.ReviewPriority = 'HIGH' FROM #CollateralStaging S WHERE S.OutstandingBalance > S.CollateralValue
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: UPDATE S SET S.ReviewPriority = 'MEDIUM' FROM #CollateralStaging S WHERE S.ShortfallAmount > 0
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: MERGE INTO PRO.CollateralPositionSummary AS Target USING (SELECT AccountId, CollateralValue, ShortfallAmount, ReviewPriority, @ProcessDate AS LastUpdatedDate FROM #CollateralStaging) AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.CollateralValue = Source.CollateralValue, Target.ShortfallAmount = Source.ShortfallAmount, Target.ReviewPriority = Source.ReviewPriority, Target.LastUpdatedDate = Source.LastUpdatedDate WHEN NOT MATCHED BY TARGET THEN INSERT (AccountId, CollateralValue, ShortfallAmount, ReviewPriority, FirstSeenDate, LastUpdatedDate) VALUES (Source.AccountId, Source.CollateralValue, Source.ShortfallAmount, Source.ReviewPriority, @ProcessDate, @ProcessDate)
+- Synthesized in 7 section(s) aligned to extraction chunk boundaries because the object exceeded the single-call output-token ceiling; sections were merged into this report.
+2026-09-16 14:55:54,153 | INFO | logic_rules_extractor.pipeline | Stage 7/7 completed in 0.03s (final report generation)
