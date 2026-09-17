@@ -107,3 +107,44 @@ def test_strip_redundant_qualifiers_preserves_temp_table_hash():
     assert cleaned == "DPD_IntService >= DPD_NoCredit"
     # Must not leave a stray leading hash glued to the column.
     assert "#DPD_IntService" not in cleaned
+
+
+def test_if_ladder_survives_multiline_case_in_a_branch():
+    """A multi-line `CASE ... END` closes with a line that is literally
+    `END`, indistinguishable from a block terminator by line shape. It used
+    to decrement BEGIN/END depth, closing the branch early and
+    desynchronizing the walk, so the WHOLE ladder was dropped - including
+    the sibling branches that parse fine. Modelled on
+    samples/16_Guarantee_Cover_Appropriation.sql.
+    """
+    from src.validation.semantic_validation import extract_tsql_if_elseif_chains
+
+    source = """
+IF @FundRenewalDate IS NOT NULL AND @ProcessDate >= DATEADD(DAY, -7, @FundRenewalDate)
+BEGIN
+    UPDATE A SET A.CoverAppropriatedAmount = 0, A.CoverShortfallFlag = 'Y' FROM PRO.T A
+END
+ELSE IF @AvailableCoverBalance > 0
+BEGIN
+    UPDATE A
+    SET A.CoverAppropriatedAmount =
+        CASE
+            WHEN A.AssetClass IN ('DOUBTFUL', 'LOSS') THEN
+                CASE WHEN A.Req <= @Bal THEN A.Req ELSE @Bal END
+            ELSE 0
+        END
+    FROM PRO.T A
+END
+ELSE
+BEGIN
+    UPDATE A SET A.CoverAppropriatedAmount = 0, A.CoverShortfallFlag = 'Y' FROM PRO.T A
+END
+"""
+    chains = extract_tsql_if_elseif_chains(source)
+    assert len(chains) == 1
+    branches = chains[0]["branches"]
+    assert len(branches) == 3
+    # The blackout branch and the no-balance ELSE must both survive.
+    conditions = " | ".join(str(b.get("branch_condition")) for b in branches)
+    assert "FundRenewalDate" in conditions
+    assert "ELSE" in conditions

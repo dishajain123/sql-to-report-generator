@@ -1,0 +1,333 @@
+2026-09-17 04:20:32,689 | INFO | logic_rules_extractor.pipeline | Stage 1/6: Running input guardrails
+2026-09-17 04:20:32,691 | INFO | logic_rules_extractor.pipeline | Stage 1/6 completed in 0.00s (input guardrails)
+2026-09-17 04:20:32,691 | INFO | logic_rules_extractor.pipeline | Stage 2/6: Detecting dialect
+2026-09-17 04:20:32,691 | INFO | logic_rules_extractor.pipeline | Detected TSQL dialect (confidence: high)
+2026-09-17 04:20:32,691 | INFO | logic_rules_extractor.pipeline | Stage 2/6 completed in 0.00s (dialect detection)
+2026-09-17 04:20:32,691 | INFO | logic_rules_extractor.pipeline | Stage 3/6: Preprocessing, parsing, and chunking samples/09_Provision_Coverage_Merge.sql
+2026-09-17 04:20:32,737 | INFO | logic_rules_extractor.pipeline | Detected TSQL PROCEDURE 'Provision_Coverage_Merge' with 6 chunk(s)
+2026-09-17 04:20:32,737 | INFO | logic_rules_extractor.pipeline | Stage 3/6 completed in 0.05s (preprocessing/parsing/chunking)
+2026-09-17 04:20:32,737 | INFO | logic_rules_extractor.pipeline | Stage 4/6: Retrieving dependencies / pattern context and extracting logic per chunk (model: amazon.nova-lite-v1:0)
+2026-09-17 04:20:32,756 | INFO | logic_rules_extractor.pipeline | Persistent knowledge base ready in 0.02s
+2026-09-17 04:20:32,759 | INFO | logic_rules_extractor.pipeline | Stage 4 extraction selection: estimated_tokens=5563 budget=297000 path=single-pass extraction_calls=1 merge_ran=False
+2026-09-17 04:20:39,216 | INFO | logic_rules_extractor.pipeline | Stage 4/6 completed in 6.48s total (kb_ready=0.02s, retrieval/KB sum=0.00s, LLM extraction sum=6.46s, workers=8, chunks=1)
+2026-09-17 04:20:39,216 | INFO | logic_rules_extractor.pipeline | Stage 5/6: Reasoning over the technical extraction into business rules
+2026-09-17 04:20:39,276 | INFO | logic_rules_extractor.pipeline | Synthesis: 'Provision_Coverage_Merge' exceeds the single-call output-token budget; running 6 section(s) aligned to extraction chunk boundaries instead of one call.
+2026-09-17 04:20:42,144 | INFO | src.synthesis.rule_synthesizer | Synthesis call outcome=ok decision_points=2 requested_max_tokens=5000 finish_reason=stop response_chars=1260 rules=1
+2026-09-17 04:20:42,690 | INFO | src.synthesis.rule_synthesizer | Synthesis call outcome=ok decision_points=2 requested_max_tokens=5000 finish_reason=stop response_chars=2296 rules=1
+2026-09-17 04:20:43,048 | INFO | src.synthesis.rule_synthesizer | Synthesis call outcome=ok decision_points=10 requested_max_tokens=5000 finish_reason=stop response_chars=3169 rules=2
+2026-09-17 04:20:43,233 | INFO | src.synthesis.rule_synthesizer | Synthesis call outcome=ok decision_points=4 requested_max_tokens=5000 finish_reason=stop response_chars=2362 rules=1
+2026-09-17 04:20:45,441 | INFO | src.synthesis.rule_synthesizer | Synthesis call outcome=ok decision_points=9 requested_max_tokens=5000 finish_reason=stop response_chars=3309 rules=3
+2026-09-17 04:20:45,521 | INFO | src.synthesis.rule_synthesizer | Synthesis call outcome=ok decision_points=9 requested_max_tokens=5000 finish_reason=stop response_chars=5883 rules=5
+2026-09-17 04:20:45,531 | INFO | src.validation.coverage_check | Coverage block lines=26-26 overlap_ratio=0.244 matched_rule=0 uncovered=True
+2026-09-17 04:20:45,531 | INFO | src.validation.coverage_check | Coverage block lines=40-40 overlap_ratio=1.000 matched_rule=0 uncovered=False
+2026-09-17 04:20:45,531 | INFO | src.validation.coverage_check | Coverage block lines=44-45 overlap_ratio=1.000 matched_rule=0 uncovered=False
+2026-09-17 04:20:45,531 | INFO | src.validation.coverage_check | Coverage block lines=54-60 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-17 04:20:45,531 | INFO | src.validation.coverage_check | Coverage block lines=68-70 overlap_ratio=1.000 matched_rule=2 uncovered=True
+2026-09-17 04:20:45,531 | INFO | src.validation.coverage_check | Coverage block lines=76-76 overlap_ratio=1.000 matched_rule=0 uncovered=True
+2026-09-17 04:20:45,531 | INFO | src.validation.coverage_check | Coverage block lines=84-84 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-17 04:20:45,532 | INFO | src.validation.coverage_check | Coverage block lines=87-94 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-17 04:20:45,532 | INFO | src.validation.coverage_check | Coverage block lines=99-100 overlap_ratio=1.000 matched_rule=9 uncovered=False
+2026-09-17 04:20:45,532 | INFO | src.validation.coverage_check | Coverage block lines=108-109 overlap_ratio=1.000 matched_rule=9 uncovered=False
+2026-09-17 04:20:45,532 | INFO | src.validation.coverage_check | Coverage block lines=117-119 overlap_ratio=0.831 matched_rule=10 uncovered=False
+2026-09-17 04:20:45,532 | INFO | src.validation.coverage_check | Coverage block lines=124-125 skipped (operational status bookkeeping, not business logic)
+2026-09-17 04:20:45,532 | INFO | src.validation.coverage_check | Coverage block lines=131-132 skipped (operational status bookkeeping, not business logic)
+2026-09-17 04:20:45,532 | INFO | logic_rules_extractor.pipeline | Coverage check found 3 unreviewed decision point(s); asking the model to review (attempt 1)
+2026-09-17 04:20:50,096 | INFO | src.validation.coverage_check | Coverage block lines=26-26 overlap_ratio=0.234 matched_rule=0 uncovered=True
+2026-09-17 04:20:50,097 | INFO | src.validation.coverage_check | Coverage block lines=40-40 overlap_ratio=1.000 matched_rule=0 uncovered=False
+2026-09-17 04:20:50,097 | INFO | src.validation.coverage_check | Coverage block lines=44-45 overlap_ratio=1.000 matched_rule=0 uncovered=False
+2026-09-17 04:20:50,097 | INFO | src.validation.coverage_check | Coverage block lines=54-60 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-17 04:20:50,097 | INFO | src.validation.coverage_check | Coverage block lines=68-70 overlap_ratio=1.000 matched_rule=2 uncovered=True
+2026-09-17 04:20:50,097 | INFO | src.validation.coverage_check | Coverage block lines=76-76 overlap_ratio=1.000 matched_rule=0 uncovered=True
+2026-09-17 04:20:50,097 | INFO | src.validation.coverage_check | Coverage block lines=84-84 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-17 04:20:50,097 | INFO | src.validation.coverage_check | Coverage block lines=87-94 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-17 04:20:50,098 | INFO | src.validation.coverage_check | Coverage block lines=99-100 overlap_ratio=1.000 matched_rule=9 uncovered=False
+2026-09-17 04:20:50,098 | INFO | src.validation.coverage_check | Coverage block lines=108-109 overlap_ratio=1.000 matched_rule=9 uncovered=False
+2026-09-17 04:20:50,098 | INFO | src.validation.coverage_check | Coverage block lines=117-119 overlap_ratio=0.831 matched_rule=10 uncovered=False
+2026-09-17 04:20:50,098 | INFO | src.validation.coverage_check | Coverage block lines=124-125 skipped (operational status bookkeeping, not business logic)
+2026-09-17 04:20:50,098 | INFO | src.validation.coverage_check | Coverage block lines=131-132 skipped (operational status bookkeeping, not business logic)
+2026-09-17 04:20:50,098 | INFO | logic_rules_extractor.pipeline | Coverage check found 3 unreviewed decision point(s); asking the model to review (attempt 2)
+2026-09-17 04:20:57,866 | INFO | src.validation.coverage_check | Coverage block lines=26-26 overlap_ratio=0.218 matched_rule=0 uncovered=True
+2026-09-17 04:20:57,867 | INFO | src.validation.coverage_check | Coverage block lines=40-40 overlap_ratio=1.000 matched_rule=0 uncovered=False
+2026-09-17 04:20:57,867 | INFO | src.validation.coverage_check | Coverage block lines=44-45 overlap_ratio=1.000 matched_rule=0 uncovered=False
+2026-09-17 04:20:57,867 | INFO | src.validation.coverage_check | Coverage block lines=54-60 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-17 04:20:57,867 | INFO | src.validation.coverage_check | Coverage block lines=68-70 overlap_ratio=1.000 matched_rule=2 uncovered=True
+2026-09-17 04:20:57,868 | INFO | src.validation.coverage_check | Coverage block lines=76-76 overlap_ratio=1.000 matched_rule=0 uncovered=True
+2026-09-17 04:20:57,868 | INFO | src.validation.coverage_check | Coverage block lines=84-84 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-17 04:20:57,868 | INFO | src.validation.coverage_check | Coverage block lines=87-94 region_covered=True (matched via blanket region evidence, not per-line scoring) uncovered=False
+2026-09-17 04:20:57,868 | INFO | src.validation.coverage_check | Coverage block lines=99-100 overlap_ratio=1.000 matched_rule=9 uncovered=False
+2026-09-17 04:20:57,868 | INFO | src.validation.coverage_check | Coverage block lines=108-109 overlap_ratio=1.000 matched_rule=9 uncovered=False
+2026-09-17 04:20:57,869 | INFO | src.validation.coverage_check | Coverage block lines=117-119 overlap_ratio=0.830 matched_rule=10 uncovered=False
+2026-09-17 04:20:57,869 | INFO | src.validation.coverage_check | Coverage block lines=124-125 skipped (operational status bookkeeping, not business logic)
+2026-09-17 04:20:57,869 | INFO | src.validation.coverage_check | Coverage block lines=131-132 skipped (operational status bookkeeping, not business logic)
+2026-09-17 04:20:57,896 | INFO | logic_rules_extractor.pipeline | Stage 5/6 completed in 18.68s (business reasoning)
+2026-09-17 04:20:57,896 | INFO | logic_rules_extractor.pipeline | Stage 6/6: Reconciling deterministic evidence against synthesized output
+2026-09-17 04:20:57,946 | INFO | logic_rules_extractor.pipeline | Stage 6/6 completed in 0.05s (deterministic reconciliation)
+2026-09-17 04:20:57,946 | INFO | logic_rules_extractor.pipeline | Stage 7/7: Applying output guardrails and formatting final report
+2026-09-17 04:20:58,025 | INFO | logic_rules_extractor.pipeline | Verification/traceability diagnostics for PRO.Provision_Coverage_Merge.StoredProcedure_report.md:
+# Provision Coverage Merge — Verification & Traceability
+
+> Companion artifact to `PRO.Provision_Coverage_Merge.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
+
+| Item | Value |
+|---|---|
+| Object ID | `obj_8ece2542e210` |
+| Raw technical object name (from source) | `Provision_Coverage_Merge` |
+
+## Run Metadata
+
+| Item | Value |
+|---|---|
+| Pipeline Version | `2026-08-26-phase1` |
+| Prompt Version | `4f519f469b95300a` |
+| Knowledge Base Version | `2e6fc62902751973` |
+| Model | `amazon.nova-lite-v1:0` |
+| Provider | `bedrock` |
+| Dialect | `T-SQL` |
+| Dialect Confidence | `High` |
+| Source Hash | `de5d0b52c31ed4ff02eea4b93e5cc831e8912c3d9887dc8ee759d7563e784b3d` |
+| Configuration Version | `db93bfb59420a471` |
+| Run Timestamp | `2026-09-16T22:50:32.737313+00:00` |
+| Object ID | `obj_8ece2542e210` |
+
+## LLM Telemetry
+
+| Item | Value |
+|---|---|
+| Run ID | `telemetry_79809541fee4` |
+| Total LLM Calls | `9` |
+| Successful Calls | `9` |
+| Failed Calls | `0` |
+| Prompt Tokens | `76746` |
+| Completion Tokens | `7845` |
+| Total Tokens | `84591` |
+| Telemetry Availability | `available` |
+
+| Stage | Calls | Success | Failure | Tokens | Availability |
+|---|---:|---:|---:|---:|---|
+| extraction | 1 | 1 | 0 | 6122 | available |
+| synthesis | 6 | 6 | 0 | 41700 | available |
+| synthesis_revision | 2 | 2 | 0 | 36769 | available |
+
+## Business Rule Summary
+
+| Priority | Rule | Output | Business Purpose |
+|---|---|---|---|
+| 🟢 1 | Insert new records [MATCHED] (`rule__5`) | `AccountId, OutstandingBalance, ProvisionAmount, CoverageRatio, FirstSeenDate, LastUpdatedDate` | Insert new records into the Provision Coverage Summary table for accounts that do not have matching records in the staging table. |
+| 🟠 2 | Determine CoverageRatio [MATCHED] (`deterministic_decision_1348_1980_3_coverageratio`) | `CoverageRatio` | Not specified |
+| 🟠 3 | Determine ReviewReason [MATCHED] (`deterministic_tsql_if_0068_0083_reviewreason`) | `ReviewReason` | Not specified |
+| 🟠 4 | Determine Reason [MATCHED] (`deterministic_decision_4861_5218_2_reason`) | `Reason` | Not specified |
+| 🟢 5 | Insert account details [MATCHED] (`rule__1`) | `AccountId, OutstandingBalance, ProvisionAmount, CoverageRatio, ReviewReason` | Insert account details into the temporary table from the LoanAccountCal table. |
+| 🟢 6 | Determine ReviewReason based on CoverageRatio [MATCHED] (`rule__1__2`) | `ReviewReason` | Set the ReviewReason for accounts based on their CoverageRatio, ensuring accurate provisioning assessments. |
+| 🟠 7 | Append '_QUARTER_END' to ReviewReason [LLM_ONLY] (`rule__2`) | `ReviewReason` | Append '_QUARTER_END' to the ReviewReason for accounts with a CoverageRatio less than 0.6 if the process date is after the quarter start da… |
+| 🟠 8 | Flag below threshold [LLM_ONLY] (`rule__1__10`) | `BelowThresholdFlag` | If the CoverageRatio is below 0.5, set the BelowThresholdFlag to 'Y'. Otherwise, set it to 'N'. |
+| ⚠️ 9 | Update ReviewReason based on CoverageRatio [MATCHED] (`rule__2__14`) | `ReviewReason` | Update the ReviewReason field in the #ProvisionCoverage table based on the CoverageRatio value. |
+
+## Source Traceability
+
+<details>
+<summary><strong>Show rule-to-source mapping</strong></summary>
+
+| # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |
+|---|---|---|---|---|---|---|
+| 1 | Insert new records (rule__5) | INSERT (AccountId, OutstandingBalance, ProvisionAmount, CoverageRatio, FirstSeenDate, LastUpdatedDate) VALUES (#ProvisionCoverage.AccountId, #ProvisionCoverage.OutstandingBalance, #ProvisionCoverage.ProvisionAmount, #ProvisionCoverage.CoverageRatio, @ProcessD… | Not cited | 03_batch3_main_body:chunk_text_01 | dependency_0003; dependency_0006 | Verified |
+| 2 | Determine CoverageRatio (deterministic_decision_1348_1980_3_coverageratio) | Not cited | source \| Lines 40-54 | Not cited | Not cited | Verified |
+| 3 | Determine ReviewReason (deterministic_tsql_if_0068_0083_reviewreason) | Not cited | source \| Lines 68-83 | Not cited | Not cited | Verified |
+| 4 | Determine Reason (deterministic_decision_4861_5218_2_reason) | Not cited | source \| Lines 117-124 | Not cited | Not cited | Verified |
+| 5 | Insert account details (rule__1) | INSERT INTO #ProvisionCoverage (AccountId, OutstandingBalance, ProvisionAmount, CoverageRatio, ReviewReason) SELECT PRO.LoanAccountCal.AccountId, PRO.LoanAccountCal.OutstandingBalance, PRO.LoanAccountCal.ProvisionAmount, CASE WHEN PRO.LoanAccountCal.Outstandi… | Not cited | Not cited | Not cited | Verified |
+| 6 | Determine ReviewReason based on CoverageRatio (rule__1__2) | UPDATE S SET #ProvisionCoverage.ReviewReason = (CASE WHEN #ProvisionCoverage.CoverageRatio IS NULL THEN 'NO_BALANCE' WHEN #ProvisionCoverage.CoverageRatio < 0.25 THEN 'SEVERE_UNDERCOVER' WHEN #ProvisionCoverage.CoverageRatio < 0.5 THEN 'MODERATE_UNDERCOVER' W… | Not cited | Not cited | Not cited | Verified |
+| 7 | Append '_QUARTER_END' to ReviewReason (rule__2) | UPDATE S SET #ProvisionCoverage.ReviewReason = #ProvisionCoverage.ReviewReason + '_QUARTER_END' FROM #ProvisionCoverage S WHERE #ProvisionCoverage.CoverageRatio IS NOT NULL AND #ProvisionCoverage.CoverageRatio < 0.6 | Not cited | Not cited | Not cited | Needs Review |
+| 8 | Flag below threshold (rule__1__10) | NOT PRO.ProvisionCoverageSummary.CoverageRatio IS NULL AND PRO.ProvisionCoverageSummary.CoverageRatio < 0.5 AND PRO.ProvisionCoverageSummary.LastUpdatedDate = @ProcessDate; PRO.ProvisionCoverageSummary.CoverageRatio >= 0.5 AND PRO.ProvisionCoverageSummary.Las… | Not cited | Not cited | Not cited | Needs Review |
+| 9 | Update ReviewReason based on CoverageRatio (rule__2__14) | UPDATE S SET #ProvisionCoverage.ReviewReason = ( CASE WHEN #ProvisionCoverage.CoverageRatio IS NULL THEN 'NO_BALANCE' WHEN #ProvisionCoverage.CoverageRatio < 0.25 THEN 'SEVERE_UNDERCOVER' WHEN #ProvisionCoverage.CoverageRatio < 0.5 THEN 'MODERATE_UNDERCOVER'… | Not cited | Not cited | Not cited | Verified |
+
+### Decision-Chain Branch Provenance
+
+| Branch | Condition | Source Location |
+|---|---|---|
+| decision_1348_1980_3:branch_001 | PRO.LoanAccountCal.OutstandingBalance > 0 | source \| Lines 40-54 \| Statement 00_batch3_main_body:chunk_text_09 |
+| decision_1348_1980_3:branch_002 | ELSE | source \| Lines 40-54 \| Statement 00_batch3_main_body:chunk_text_09 |
+| case_0056_0062_2036:branch_001 | #ProvisionCoverage.CoverageRatio IS NULL | source \| Lines 57-58 |
+| case_0056_0062_2036:branch_002 | #ProvisionCoverage.CoverageRatio < 0.25 | source \| Lines 58-59 |
+| case_0056_0062_2036:branch_003 | #ProvisionCoverage.CoverageRatio < 0.5 | source \| Lines 59-60 |
+| case_0056_0062_2036:branch_004 | #ProvisionCoverage.CoverageRatio >= 0.5 AND #ProvisionCoverage.CoverageRatio < 1 | source \| Lines 60-61 |
+| case_0056_0062_2036:branch_005 | ELSE | source \| Lines 61-62 |
+| tsql_if_0068_0083:branch_001 | @ProcessDate >= DATEADD(MONTH, 1, @QuarterStartDate) | source \| Lines 69-73 |
+| tsql_if_0068_0083:branch_002 | ELSE | samples/09_Provision_Coverage_Merge.sql \| Lines 75-79 \| Chunk 02_batch3_nested_block |
+| decision_4861_5218_2:branch_001 | CoverageRatio < 0.25 | source \| Lines 117-124 |
+| decision_4861_5218_2:branch_002 | ELSE | source \| Lines 117-124 |
+
+_Source evidence is the literal technical text carried through the pipeline; Source Location is derived deterministically from chunk and statement provenance when available; SQL Statements / Chunks and Technical References point back to the extracted chunk ids and statement references used by the guardrails. Technical references that repeat the same table/operation/target-columns are shown once._
+</details>
+
+## Completeness Ledger
+
+- **Executable constructs:** 92
+- **Disposition:** covered_by_rule=30, technical_only=9, uncovered=53
+
+| Construct | Status | Source location | Statement / chunk | Evidence |
+|---|---|---|---|---|
+| STATEMENT | uncovered | Lines 1-5 | 00_batch3_main_body:chunk_text_01, 00_batch3_main_body | USE [DEMO_MISDB] SET ANSI_NULLS ON SET QUOTED_IDENTIFIER ON |
+| STATEMENT | uncovered | Lines 7-8 | 00_batch3_main_body:chunk_text_02, 00_batch3_main_body | BEGIN SET NOCOUNT ON |
+| STATEMENT | uncovered | Lines 11-11 | 00_batch3_main_body:chunk_text_03, 00_batch3_main_body | BEGIN TRY |
+| SELECT | uncovered | Lines 15-15 | 00_batch3_main_body:chunk_text_04, 00_batch3_main_body | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
+| STATEMENT | uncovered | Lines 18-18 | 00_batch3_main_body:chunk_text_05, 00_batch3_main_body | DECLARE @QuarterStartDate DATE = DATEADD(MONTH, -3, @ProcessDate) |
+| STATEMENT | uncovered | Lines 22-22 | 00_batch3_main_body:chunk_text_06, 00_batch3_main_body | IF OBJECT_ID('tempdb..#ProvisionCoverage') IS NOT NULL |
+| STATEMENT | uncovered | Lines 25-25 | 00_batch3_main_body:chunk_text_07, 00_batch3_main_body | DROP TABLE #ProvisionCoverage |
+| INSERT | uncovered | Lines 29-39 | 00_batch3_main_body:chunk_text_08, 00_batch3_main_body | CREATE TABLE #ProvisionCoverage ( AccountId VARCHAR(20), OutstandingBalance DECIMAL(18,2), ProvisionAmount DECIMAL(18,2), CoverageRatio DECIMAL(9,4), ReviewReason VARCHAR(40) ) -- Rule 1: conditional INSERT - coverage ratio is only stage... |
+| INSERT | covered_by_rule | Lines 42-55 | 00_batch3_main_body:chunk_text_09, 00_batch3_main_body | INSERT INTO #ProvisionCoverage (AccountId, OutstandingBalance, ProvisionAmount, CoverageRatio, ReviewReason) SELECT A.AccountId, A.OutstandingBalance, A.ProvisionAmount, CASE WHEN A.OutstandingBalance > 0 THEN A.ProvisionAmount / A.Outst... |
+| INSERT | covered_by_rule | Lines 42-55 | 00_batch3_main_body:embedded_01_10, 00_batch3_main_body | INSERT INTO #ProvisionCoverage (AccountId, OutstandingBalance, ProvisionAmount, CoverageRatio, ReviewReason) SELECT A.AccountId, A.OutstandingBalance, A.ProvisionAmount, CASE WHEN A.OutstandingBalance > 0 THEN A.ProvisionAmount / A.Outst... |
+| UPDATE | uncovered | Lines 1-14 | 01_batch3_main_body+batch3_nested_block:chunk_text_01, 01_batch3_main_body+batch3_nested_block | UPDATE S SET S.ReviewReason = ( CASE WHEN S.CoverageRatio IS NULL THEN 'NO_BALANCE' WHEN S.CoverageRatio < 0.25 THEN 'SEVERE_UNDERCOVER' WHEN S.CoverageRatio < 0.5 THEN 'MODERATE_UNDERCOVER' WHEN S.CoverageRatio >= 0.5 AND S.CoverageRati... |
+| STATEMENT | uncovered | Lines 17-17 | 01_batch3_main_body+batch3_nested_block:chunk_text_02, 01_batch3_main_body+batch3_nested_block | IF @ProcessDate >= DATEADD(MONTH, 1, @QuarterStartDate) |
+| STATEMENT | uncovered | Lines 19-19 | 01_batch3_main_body+batch3_nested_block:chunk_text_03, 01_batch3_main_body+batch3_nested_block | BEGIN |
+| UPDATE | uncovered | Lines 20-22 | 01_batch3_main_body+batch3_nested_block:chunk_text_04, 01_batch3_main_body+batch3_nested_block | UPDATE S SET S.ReviewReason = S.ReviewReason + '_QUARTER_END' FROM #ProvisionCoverage S WHERE S.CoverageRatio IS NOT NULL AND S.CoverageRatio < 0.6 |
+| STATEMENT | covered_by_rule | Lines 9-9 | 01_batch3_main_body+batch3_nested_block:chunk_text_05, 01_batch3_main_body+batch3_nested_block | END |
+| STATEMENT | covered_by_rule | Lines 8-8 | 01_batch3_main_body+batch3_nested_block:chunk_text_06, 01_batch3_main_body+batch3_nested_block | ELSE |
+| UPDATE | uncovered | Lines 1-14 | 01_batch3_main_body+batch3_nested_block:embedded_01_07, 01_batch3_main_body+batch3_nested_block | UPDATE S SET S.ReviewReason = ( CASE WHEN S.CoverageRatio IS NULL THEN 'NO_BALANCE' WHEN S.CoverageRatio < 0.25 THEN 'SEVERE_UNDERCOVER' WHEN S.CoverageRatio < 0.5 THEN 'MODERATE_UNDERCOVER' WHEN S.CoverageRatio >= 0.5 AND S.CoverageRati... |
+| UPDATE | uncovered | Lines 20-22 | 01_batch3_main_body+batch3_nested_block:embedded_02_08, 01_batch3_main_body+batch3_nested_block | UPDATE S SET S.ReviewReason = S.ReviewReason + '_QUARTER_END' FROM #ProvisionCoverage S WHERE S.CoverageRatio IS NOT NULL AND S.CoverageRatio < 0.6 |
+| STATEMENT | uncovered | Lines 1-1 | 02_batch3_nested_block:chunk_text_01, 02_batch3_nested_block | BEGIN |
+| UPDATE | uncovered | Lines 2-4 | 02_batch3_nested_block:chunk_text_02, 02_batch3_nested_block | UPDATE S SET S.ReviewReason = S.ReviewReason FROM #ProvisionCoverage S WHERE S.CoverageRatio IS NOT NULL AND S.CoverageRatio < 0.5 |
+| STATEMENT | covered_by_rule | Lines 5-5 | 02_batch3_nested_block:chunk_text_03, 02_batch3_nested_block | END |
+| UPDATE | uncovered | Lines 2-4 | 02_batch3_nested_block:embedded_01_04, 02_batch3_nested_block | UPDATE S SET S.ReviewReason = S.ReviewReason FROM #ProvisionCoverage S WHERE S.CoverageRatio IS NOT NULL AND S.CoverageRatio < 0.5 |
+| MERGE | covered_by_rule | Lines 1-18 | 03_batch3_main_body:chunk_text_01, 03_batch3_main_body | -- Rule 4: upsert the computed coverage into the summary table - -- update accounts already tracked, insert accounts seen for the -- first time this run MERGE PRO.ProvisionCoverageSummary AS Target USING #ProvisionCoverage AS Source ON T... |
+| UPDATE | uncovered | Lines 1-9 | 04_batch3_main_body:chunk_text_01, 04_batch3_main_body | UPDATE T SET T.BelowThresholdFlag = 'Y' FROM PRO.ProvisionCoverageSummary T WHERE T.CoverageRatio IS NOT NULL AND T.CoverageRatio < 0.5 AND T.LastUpdatedDate = @ProcessDate -- Rule 6: accounts at or above the threshold are cleared of any... |
+| UPDATE | uncovered | Lines 12-20 | 04_batch3_main_body:chunk_text_02, 04_batch3_main_body | UPDATE T SET T.BelowThresholdFlag = 'N' FROM PRO.ProvisionCoverageSummary T WHERE T.CoverageRatio >= 0.5 AND T.LastUpdatedDate = @ProcessDate -- Rule 7: record a review case for every account newly below -- threshold - the escalation que... |
+| INSERT | uncovered | Lines 23-28 | 04_batch3_main_body:chunk_text_03, 04_batch3_main_body | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, CASE WHEN CoverageRatio < 0.25 THEN 'SEVERE_PROVISION_SHORTFALL' ELSE 'MODERATE_PROVISION_SHORTFALL' END FROM #ProvisionCoverage WHERE R... |
+| UPDATE | uncovered | Lines 32-34 | 04_batch3_main_body:chunk_text_04, 04_batch3_main_body | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Provision_Coverage_Merge' |
+| STATEMENT | uncovered | Lines 38-38 | 04_batch3_main_body:chunk_text_05, 04_batch3_main_body | END TRY |
+| UPDATE | uncovered | Lines 1-9 | 04_batch3_main_body:embedded_01_06, 04_batch3_main_body | UPDATE T SET T.BelowThresholdFlag = 'Y' FROM PRO.ProvisionCoverageSummary T WHERE T.CoverageRatio IS NOT NULL AND T.CoverageRatio < 0.5 AND T.LastUpdatedDate = @ProcessDate -- Rule 6: accounts at or above the threshold are cleared of any... |
+| UPDATE | uncovered | Lines 12-20 | 04_batch3_main_body:embedded_02_07, 04_batch3_main_body | UPDATE T SET T.BelowThresholdFlag = 'N' FROM PRO.ProvisionCoverageSummary T WHERE T.CoverageRatio >= 0.5 AND T.LastUpdatedDate = @ProcessDate -- Rule 7: record a review case for every account newly below -- threshold - the escalation que... |
+| INSERT | uncovered | Lines 23-28 | 04_batch3_main_body:embedded_03_08, 04_batch3_main_body | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, CASE WHEN CoverageRatio < 0.25 THEN 'SEVERE_PROVISION_SHORTFALL' ELSE 'MODERATE_PROVISION_SHORTFALL' END FROM #ProvisionCoverage WHERE R... |
+| UPDATE | uncovered | Lines 32-34 | 04_batch3_main_body:embedded_04_09, 04_batch3_main_body | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Provision_Coverage_Merge' |
+| STATEMENT | uncovered | Lines 1-2 | 05_batch3_exception:chunk_text_01, 05_batch3_exception | BEGIN CATCH -- Exception handling: record the failure for operations to investigate |
+| UPDATE | uncovered | Lines 3-5 | 05_batch3_exception:chunk_text_02, 05_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Provision_Coverage_Merge' |
+| STATEMENT | uncovered | Lines 6-6 | 05_batch3_exception:chunk_text_03, 05_batch3_exception | END CATCH |
+| SET | uncovered | Lines 7-7 | 05_batch3_exception:chunk_text_04, 05_batch3_exception | SET NOCOUNT OFF |
+| STATEMENT | covered_by_rule | Lines 6-6 | 05_batch3_exception:chunk_text_05, 05_batch3_exception | END |
+| UPDATE | uncovered | Lines 3-5 | 05_batch3_exception:embedded_01_06, 05_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Provision_Coverage_Merge' |
+| SET | uncovered | Lines 7-7 | 05_batch3_exception:embedded_02_07, 05_batch3_exception | SET NOCOUNT OFF |
+| READ | uncovered | unavailable | 00_batch3_main_body:chunk_text_04, 00_batch3_main_body:chunk_text_04, 00_batch3_main_body | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
+| INSERT_TEMP | technical_only | samples/09_Provision_Coverage_Merge.sql | 00_batch3_main_body:chunk_text_09, 00_batch3_main_body:chunk_text_09, 00_batch3_main_body | INSERT INTO #ProvisionCoverage (AccountId, OutstandingBalance, ProvisionAmount, CoverageRatio, ReviewReason) SELECT A.AccountId, A.OutstandingBalance, A.ProvisionAmount, CASE WHEN A.OutstandingBalance > 0 THEN A.ProvisionAmount / A.Outst... |
+| READ | uncovered | unavailable | 00_batch3_main_body:embedded_01_10, 00_batch3_main_body:embedded_01_10, 00_batch3_main_body | INSERT INTO #ProvisionCoverage (AccountId, OutstandingBalance, ProvisionAmount, CoverageRatio, ReviewReason) SELECT A.AccountId, A.OutstandingBalance, A.ProvisionAmount, CASE WHEN A.OutstandingBalance > 0 THEN A.ProvisionAmount / A.Outst... |
+| INSERT_TEMP | technical_only | unavailable | 00_batch3_main_body:embedded_01_10, 00_batch3_main_body:embedded_01_10, 00_batch3_main_body | INSERT INTO #ProvisionCoverage (AccountId, OutstandingBalance, ProvisionAmount, CoverageRatio, ReviewReason) SELECT A.AccountId, A.OutstandingBalance, A.ProvisionAmount, CASE WHEN A.OutstandingBalance > 0 THEN A.ProvisionAmount / A.Outst... |
+| UPDATE_TEMP | technical_only | samples/09_Provision_Coverage_Merge.sql | 01_batch3_main_body+batch3_nested_block:chunk_text_01, 01_batch3_main_body+batch3_nested_block:chunk_text_01, 01_batch3_main_body+batch3_nested_block | UPDATE S SET S.ReviewReason = ( CASE WHEN S.CoverageRatio IS NULL THEN 'NO_BALANCE' WHEN S.CoverageRatio < 0.25 THEN 'SEVERE_UNDERCOVER' WHEN S.CoverageRatio < 0.5 THEN 'MODERATE_UNDERCOVER' WHEN S.CoverageRatio >= 0.5 AND S.CoverageRati... |
+| UPDATE_TEMP | technical_only | samples/09_Provision_Coverage_Merge.sql | 01_batch3_main_body+batch3_nested_block:chunk_text_04, 01_batch3_main_body+batch3_nested_block:chunk_text_04, 01_batch3_main_body+batch3_nested_block | UPDATE S SET S.ReviewReason = S.ReviewReason + '_QUARTER_END' FROM #ProvisionCoverage S WHERE S.CoverageRatio IS NOT NULL AND S.CoverageRatio < 0.6 |
+| UPDATE_TEMP | technical_only | unavailable | 01_batch3_main_body+batch3_nested_block:embedded_01_07, 01_batch3_main_body+batch3_nested_block:embedded_01_07, 01_batch3_main_body+batch3_nested_block | UPDATE S SET S.ReviewReason = ( CASE WHEN S.CoverageRatio IS NULL THEN 'NO_BALANCE' WHEN S.CoverageRatio < 0.25 THEN 'SEVERE_UNDERCOVER' WHEN S.CoverageRatio < 0.5 THEN 'MODERATE_UNDERCOVER' WHEN S.CoverageRatio >= 0.5 AND S.CoverageRati... |
+| UPDATE_TEMP | technical_only | unavailable | 01_batch3_main_body+batch3_nested_block:embedded_02_08, 01_batch3_main_body+batch3_nested_block:embedded_02_08, 01_batch3_main_body+batch3_nested_block | UPDATE S SET S.ReviewReason = S.ReviewReason + '_QUARTER_END' FROM #ProvisionCoverage S WHERE S.CoverageRatio IS NOT NULL AND S.CoverageRatio < 0.6 |
+| UPDATE_TEMP | technical_only | samples/09_Provision_Coverage_Merge.sql / Lines 75-79 | 02_batch3_nested_block:chunk_text_02, 02_batch3_nested_block:chunk_text_02, 02_batch3_nested_block | UPDATE S SET S.ReviewReason = S.ReviewReason FROM #ProvisionCoverage S WHERE S.CoverageRatio IS NOT NULL AND S.CoverageRatio < 0.5 |
+| UPDATE_TEMP | technical_only | unavailable | 02_batch3_nested_block:embedded_01_04, 02_batch3_nested_block:embedded_01_04, 02_batch3_nested_block | UPDATE S SET S.ReviewReason = S.ReviewReason FROM #ProvisionCoverage S WHERE S.CoverageRatio IS NOT NULL AND S.CoverageRatio < 0.5 |
+| MERGE | covered_by_rule | samples/09_Provision_Coverage_Merge.sql / Lines 81-98 | 03_batch3_main_body:chunk_text_01, 03_batch3_main_body:chunk_text_01, 03_batch3_main_body | -- Rule 4: upsert the computed coverage into the summary table - -- update accounts already tracked, insert accounts seen for the -- first time this run MERGE PRO.ProvisionCoverageSummary AS Target USING #ProvisionCoverage AS Source ON T... |
+| UPDATE | uncovered | samples/09_Provision_Coverage_Merge.sql | 04_batch3_main_body:chunk_text_01, 04_batch3_main_body:chunk_text_01, 04_batch3_main_body | UPDATE T SET T.BelowThresholdFlag = 'Y' FROM PRO.ProvisionCoverageSummary T WHERE T.CoverageRatio IS NOT NULL AND T.CoverageRatio < 0.5 AND T.LastUpdatedDate = @ProcessDate -- Rule 6: accounts at or above the threshold are cleared of any... |
+| UPDATE | uncovered | samples/09_Provision_Coverage_Merge.sql | 04_batch3_main_body:chunk_text_02, 04_batch3_main_body:chunk_text_02, 04_batch3_main_body | UPDATE T SET T.BelowThresholdFlag = 'N' FROM PRO.ProvisionCoverageSummary T WHERE T.CoverageRatio >= 0.5 AND T.LastUpdatedDate = @ProcessDate -- Rule 7: record a review case for every account newly below -- threshold - the escalation que... |
+| INSERT | uncovered | samples/09_Provision_Coverage_Merge.sql | 04_batch3_main_body:chunk_text_03, 04_batch3_main_body:chunk_text_03, 04_batch3_main_body | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, CASE WHEN CoverageRatio < 0.25 THEN 'SEVERE_PROVISION_SHORTFALL' ELSE 'MODERATE_PROVISION_SHORTFALL' END FROM #ProvisionCoverage WHERE R... |
+| UPDATE | uncovered | samples/09_Provision_Coverage_Merge.sql | 04_batch3_main_body:chunk_text_04, 04_batch3_main_body:chunk_text_04, 04_batch3_main_body | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Provision_Coverage_Merge' |
+| UPDATE | uncovered | unavailable | 04_batch3_main_body:embedded_01_06, 04_batch3_main_body:embedded_01_06, 04_batch3_main_body | UPDATE T SET T.BelowThresholdFlag = 'Y' FROM PRO.ProvisionCoverageSummary T WHERE T.CoverageRatio IS NOT NULL AND T.CoverageRatio < 0.5 AND T.LastUpdatedDate = @ProcessDate -- Rule 6: accounts at or above the threshold are cleared of any... |
+| UPDATE | uncovered | unavailable | 04_batch3_main_body:embedded_02_07, 04_batch3_main_body:embedded_02_07, 04_batch3_main_body | UPDATE T SET T.BelowThresholdFlag = 'N' FROM PRO.ProvisionCoverageSummary T WHERE T.CoverageRatio >= 0.5 AND T.LastUpdatedDate = @ProcessDate -- Rule 7: record a review case for every account newly below -- threshold - the escalation que... |
+| READ_TEMP | technical_only | unavailable | 04_batch3_main_body:embedded_03_08, 04_batch3_main_body:embedded_03_08, 04_batch3_main_body | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, CASE WHEN CoverageRatio < 0.25 THEN 'SEVERE_PROVISION_SHORTFALL' ELSE 'MODERATE_PROVISION_SHORTFALL' END FROM #ProvisionCoverage WHERE R... |
+| INSERT | uncovered | unavailable | 04_batch3_main_body:embedded_03_08, 04_batch3_main_body:embedded_03_08, 04_batch3_main_body | INSERT INTO PRO.CollectionsQueue (AccountId, EscalationDate, Reason) SELECT AccountId, @ProcessDate, CASE WHEN CoverageRatio < 0.25 THEN 'SEVERE_PROVISION_SHORTFALL' ELSE 'MODERATE_PROVISION_SHORTFALL' END FROM #ProvisionCoverage WHERE R... |
+| UPDATE | uncovered | unavailable | 04_batch3_main_body:embedded_04_09, 04_batch3_main_body:embedded_04_09, 04_batch3_main_body | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Provision_Coverage_Merge' |
+| UPDATE | uncovered | samples/09_Provision_Coverage_Merge.sql / Lines 129-136 | 05_batch3_exception:chunk_text_02, 05_batch3_exception:chunk_text_02, 05_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Provision_Coverage_Merge' |
+| UPDATE | uncovered | unavailable | 05_batch3_exception:embedded_01_06, 05_batch3_exception:embedded_01_06, 05_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Provision_Coverage_Merge' |
+| IF_BRANCH | covered_by_rule | Lines 40-54 | 00_batch3_main_body:chunk_text_09 | PRO.LoanAccountCal.OutstandingBalance > 0 |
+| ELSE | covered_by_rule | Lines 40-54 | 00_batch3_main_body:chunk_text_09 | ELSE |
+| CASE | covered_by_rule | Lines 57-58 | unavailable | #ProvisionCoverage.CoverageRatio IS NULL |
+| CASE | covered_by_rule | Lines 58-59 | unavailable | #ProvisionCoverage.CoverageRatio < 0.25 |
+| CASE | covered_by_rule | Lines 59-60 | unavailable | #ProvisionCoverage.CoverageRatio < 0.5 |
+| CASE | covered_by_rule | Lines 60-61 | unavailable | #ProvisionCoverage.CoverageRatio >= 0.5 AND #ProvisionCoverage.CoverageRatio < 1 |
+| ELSE | covered_by_rule | Lines 61-62 | unavailable | ELSE |
+| IF_BRANCH | covered_by_rule | Lines 69-73 | unavailable | @ProcessDate >= DATEADD(MONTH, 1, @QuarterStartDate) |
+| ELSE | covered_by_rule | samples/09_Provision_Coverage_Merge.sql / Lines 75-79 | 02_batch3_nested_block | ELSE |
+| IF_BRANCH | covered_by_rule | Lines 117-124 | unavailable | CoverageRatio < 0.25 |
+| ELSE | covered_by_rule | Lines 117-124 | unavailable | ELSE |
+| IF | uncovered | Lines 26-26 | unavailable | IF OBJECT_ID( ) IS NOT NULL |
+| CASE | covered_by_rule | Lines 44-44 | unavailable | CASE |
+| CASE_BRANCH | covered_by_rule | Lines 45-45 | unavailable | WHEN A.OutstandingBalance > 0 THEN A.ProvisionAmount / A.OutstandingBalance |
+| CALCULATION | covered_by_rule | Lines 45-45 | unavailable | WHEN A.OutstandingBalance > 0 THEN A.ProvisionAmount / A.OutstandingBalance |
+| ELSE | covered_by_rule | Lines 46-46 | unavailable | ELSE NULL |
+| CASE | covered_by_rule | Lines 56-56 | unavailable | CASE |
+| CASE_BRANCH | uncovered | Lines 57-57 | unavailable | WHEN S.CoverageRatio IS NULL THEN |
+| CASE_BRANCH | uncovered | Lines 58-58 | unavailable | WHEN S.CoverageRatio < 0.25 THEN |
+| CASE_BRANCH | uncovered | Lines 59-59 | unavailable | WHEN S.CoverageRatio < 0.5 THEN |
+| CASE_BRANCH | uncovered | Lines 60-60 | unavailable | WHEN S.CoverageRatio >= 0.5 AND S.CoverageRatio < 1 THEN |
+| ELSE | covered_by_rule | Lines 61-61 | unavailable | ELSE |
+| IF | covered_by_rule | Lines 68-68 | unavailable | IF @ProcessDate >= DATEADD(MONTH, 1, @QuarterStartDate) |
+| ELSE | covered_by_rule | Lines 74-74 | unavailable | ELSE |
+| CASE_BRANCH | uncovered | Lines 87-87 | unavailable | WHEN MATCHED THEN |
+| CASE_BRANCH | uncovered | Lines 93-93 | unavailable | WHEN NOT MATCHED BY TARGET THEN |
+| CASE | covered_by_rule | Lines 119-119 | unavailable | CASE WHEN CoverageRatio < 0.25 THEN ELSE END |
+| CASE_BRANCH | covered_by_rule | Lines 119-119 | unavailable | CASE WHEN CoverageRatio < 0.25 THEN ELSE END |
+| ELSE | covered_by_rule | Lines 119-119 | unavailable | CASE WHEN CoverageRatio < 0.25 THEN ELSE END |
+| CATCH | uncovered | Lines 129-129 | unavailable | BEGIN CATCH |
+| CATCH | uncovered | Lines 134-134 | unavailable | END CATCH |
+
+## Confirmed Statement Dependencies
+
+The following dependencies are confirmed from exact table/field matches and source order:
+
+| Relationship | From | To | Confidence |
+|---|---|---|---|
+| temp_write_to_read | 01_batch3_main_body+batch3_nested_block:embedded_01_07 / #ProvisionCoverage | 04_batch3_main_body:embedded_03_08 / #ProvisionCoverage | high |
+| table_write_to_later_use | 01_batch3_main_body+batch3_nested_block:embedded_01_07 / #ProvisionCoverage | 00_batch3_main_body:embedded_01_10 / #ProvisionCoverage | high |
+| staging_write_to_merge | 04_batch3_main_body:embedded_01_06 / PRO.ProvisionCoverageSummary | 03_batch3_main_body:chunk_text_01 / PRO.ProvisionCoverageSummary | high |
+| temp_write_to_read | 02_batch3_nested_block:embedded_01_04 / #ProvisionCoverage | 04_batch3_main_body:embedded_03_08 / #ProvisionCoverage | high |
+| table_write_to_later_use | 02_batch3_nested_block:embedded_01_04 / #ProvisionCoverage | 00_batch3_main_body:embedded_01_10 / #ProvisionCoverage | high |
+| staging_write_to_merge | 04_batch3_main_body:embedded_02_07 / PRO.ProvisionCoverageSummary | 03_batch3_main_body:chunk_text_01 / PRO.ProvisionCoverageSummary | high |
+| temp_write_to_read | 01_batch3_main_body+batch3_nested_block:embedded_02_08 / #ProvisionCoverage | 04_batch3_main_body:embedded_03_08 / #ProvisionCoverage | high |
+| table_write_to_later_use | 01_batch3_main_body+batch3_nested_block:embedded_02_08 / #ProvisionCoverage | 00_batch3_main_body:embedded_01_10 / #ProvisionCoverage | high |
+| table_write_to_later_use | 00_batch3_main_body:embedded_01_10 / #ProvisionCoverage | 02_batch3_nested_block:chunk_text_02 / #ProvisionCoverage | high |
+
+Unresolved dependency candidates: 39. They were not supplied as confirmed dependencies.
+
+## Rule Provenance Summary
+
+- **Total business rules:** 9
+- **By rule type:** deterministic_decision_table = 3, explicit = 6
+- **By validation status:** unverified = 2, verified = 7
+
+_This count reflects every individually traceable rule (one per source statement/field, for full auditability). The business report may show a smaller number, because closely related rules that apply the same pattern to several fields (e.g. "reset each of these six DPD fields to zero if negative") are presented there as one combined rule for readability. Every rule counted here is still individually traceable in the Source Traceability table below - none are dropped, only grouped for display._
+
+_Rules marked **unverified** could not be matched back to the technical extraction or source code - this specific claim remains unresolved and should not yet be treated as a confirmed business rule._
+
+## Reconciliation Summary
+
+- **Matched facts:** 16
+- **Deterministic-only facts:** 18
+- **LLM-only claims:** 3
+- **Conflicts:** 11
+- **Unresolved items:** 0
+- **Review required:** Yes
+
+### Review Items
+
+- `CONFLICT` tables_read (`recon_b049fa6622e9`): full_source
+- `CONFLICT` tables_read (`recon_b049fa6622e9`): full_source
+- `CONFLICT` tables_written (`recon_7008b0d0ee1b`): full_source
+- `CONFLICT` tables_written (`recon_7008b0d0ee1b`): full_source
+- `CONFLICT` tables_written (`recon_7008b0d0ee1b`): full_source
+
+## Quality Summary
+
+- **Overall status:** REVIEW_REQUIRED
+- **Quality score:** 74.54166666666667/100
+- **Statement coverage:** 21 / 39 (53.8%)
+- **Rule grounding coverage:** 9 / 14 (64.3%)
+- **Decision-chain coverage:** 11 / 11 branches (100.0%)
+- **Conflicts:** 11
+- **Contradictions:** 12
+- **Review required items:** 26
+- **Review required:** Yes
+
+Statement parse success is below the preferred threshold.; Rule grounding coverage is below the preferred threshold.
+
+### Contradictions
+
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Operation Conflict on `source`: Synthesized table operation conflicts with deterministic SQL/AST evidence.
+- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+- `HIGH` Operation Conflict on `source`: Synthesized table operation conflicts with deterministic SQL/AST evidence.
+
+_Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._
+
+## Pipeline Diagnostics
+
+- Synthesized in 6 section(s) aligned to extraction chunk boundaries because the object exceeded the single-call output-token ceiling; sections were merged into this report.
+2026-09-17 04:20:58,025 | INFO | logic_rules_extractor.pipeline | Stage 7/7 completed in 0.08s (final report generation)

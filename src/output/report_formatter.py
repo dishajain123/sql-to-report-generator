@@ -231,6 +231,7 @@ class ReportFormatterAgent:
                 self._what_this_does(synthesis, business_rules_for_display, resolved_merged_extraction),
                 self._end_to_end_flow(synthesis, business_rules_for_display, resolved_merged_extraction),
                 self.render_called_procedures_section(ingestion),
+                self._process_gates_section(resolved_merged_extraction),
                 self._business_rule_overview_table(business_rules_for_display),
                 self._business_rules_section(
                     business_rules_for_display,
@@ -947,6 +948,65 @@ class ReportFormatterAgent:
         )
 
     @staticmethod
+    def _process_gates_section(merged_extraction: Optional[Dict[str, Any]]) -> str:
+        """Render the checkpoint/run contract for orchestrator objects.
+
+        Complements `render_called_procedures_section`: that section says
+        *what* runs and in what order, this one says *under what
+        conditions* each step runs and what happens when a step has not
+        completed. Sourced entirely from the deterministic
+        `src.parsing.process_gates` extractor, so nothing here depends on
+        the model having noticed the pattern. Returns "" (section omitted)
+        for any object with no gates, which is the overwhelming majority.
+        """
+        gates = list((merged_extraction or {}).get("process_gates") or [])
+        if not gates:
+            return ""
+        summary = (merged_extraction or {}).get("process_gate_summary") or {}
+
+        lines = ["## Process Sequence and Run Conditions", ""]
+        step_count = summary.get("step_count") or 0
+        intro = (
+            f"This process runs {step_count} step(s) in a fixed order. "
+            "Each step is guarded by a recorded completion status, so the "
+            "process can be re-run safely: steps already marked complete are "
+            "skipped rather than repeated."
+        )
+        if not summary.get("resumable"):
+            intro = (
+                f"This process runs {step_count} step(s) in a fixed order, "
+                "each guarded by a recorded completion status."
+            )
+        lines += [intro, ""]
+
+        aborting = summary.get("aborting_gates") or 0
+        if aborting:
+            lines += [
+                f"If a step has not completed, the run stops at that point "
+                f"rather than continuing ({aborting} such checkpoint(s)).",
+                "",
+            ]
+
+        rows = ["| Order | Step | Runs when | Calls |", "|---|---|---|---|"]
+        order = 0
+        for gate in gates:
+            if gate.get("gate_type") != "run_step":
+                continue
+            order += 1
+            step = str(gate.get("step_name") or "Not specified")
+            when = str(gate.get("precondition_text") or "Not specified")
+            calls = ", ".join(f"`{c}`" for c in (gate.get("executed_procedures") or []))
+            rows.append(f"| {order} | {step} | {when} | {calls or '_none_'} |")
+        if order:
+            lines += rows
+
+        tables = summary.get("status_tables") or []
+        if tables:
+            joined = ", ".join(f"`{t}`" for t in tables)
+            lines += ["", f"Completion status is read from {joined}."]
+        return "\n".join(lines).strip()
+
+    @staticmethod
     def _hardcoded_values_section(ingestion: IngestionResult) -> str:
         """List live hardcoded date literals found in the source.
 
@@ -1138,7 +1198,10 @@ class ReportFormatterAgent:
         )
         structurally_repaired = self._strip_concatenated_chain_decision_rows(merge_collapsed)
         outcome_repaired = self._strip_blank_outcome_decision_rows(structurally_repaired)
-        return self._suppress_contentless_single_field_duplicates(outcome_repaired, merged_extraction)
+        contentless = self._suppress_contentless_single_field_duplicates(
+            outcome_repaired, merged_extraction
+        )
+        return self._suppress_wasteful_duplicate_rules(contentless, merged_extraction)
 
     @staticmethod
     def _find_decision_chain(
@@ -1424,9 +1487,20 @@ class ReportFormatterAgent:
                     outcomes.append(str(frag.get("action") or "").strip())
             primary["fields_affected"] = union_fields
             primary["output_field"] = ", ".join(union_fields)
+            # Deduplicate outcomes that appear once per overlapping column
+            # floor (LLM upsert + deterministic per-column floors often
+            # restated the same Source.Field assignment).
+            seen_outcomes: "set[str]" = set()
+            unique_outcomes: List[str] = []
+            for outcome in outcomes:
+                key = outcome.casefold()
+                if not outcome or key in seen_outcomes:
+                    continue
+                seen_outcomes.add(key)
+                unique_outcomes.append(outcome)
             primary["decision_logic_rows"] = [{
                 "condition": "WHEN MATCHED",
-                "outcome": "; ".join(o for o in outcomes if o) or "update existing row from source",
+                "outcome": "; ".join(unique_outcomes) or "update existing row from source",
             }]
             primary["rule_name"] = (
                 str(primary.get("rule_name") or "").strip()
@@ -1435,7 +1509,52 @@ class ReportFormatterAgent:
             )
             return primary
 
-        # Pass 1: collapse per-column MATCHED fragments that share a target.
+        def _combine_unmatched_fragments(
+            fragments: List[Dict[str, Any]],
+        ) -> Dict[str, Any]:
+            """Mirror of `_combine_matched_fragments` for WHEN NOT MATCHED
+            per-column floors (sample 07's DpdBucketHistory MERGE emits one
+            deterministic rule per INSERT column after alias rewrite).
+            """
+            primary = dict(fragments[0])
+            union_fields: List[str] = []
+            outcomes: List[str] = []
+            for frag in fragments:
+                for field in list(frag.get("fields_affected") or []) + str(
+                    frag.get("output_field") or ""
+                ).split(","):
+                    token = str(field).strip()
+                    if token and token not in union_fields:
+                        union_fields.append(token)
+                rows = self._decision_logic_rows(frag)
+                if rows:
+                    outcomes.append(str(rows[0].get("outcome") or "").strip())
+                elif str(frag.get("action") or "").strip():
+                    outcomes.append(str(frag.get("action") or "").strip())
+            primary["fields_affected"] = union_fields
+            primary["output_field"] = ", ".join(union_fields)
+            seen_outcomes: "set[str]" = set()
+            unique_outcomes: List[str] = []
+            for outcome in outcomes:
+                key = outcome.casefold()
+                if not outcome or key in seen_outcomes:
+                    continue
+                seen_outcomes.add(key)
+                unique_outcomes.append(outcome)
+            primary["decision_logic_rows"] = [{
+                "condition": "WHEN NOT MATCHED BY TARGET",
+                "outcome": "; ".join(unique_outcomes) or "insert new row from source",
+            }]
+            primary["rule_name"] = (
+                str(primary.get("rule_name") or "").strip()
+                if len(fragments) == 1
+                else "Insert unmatched records"
+            )
+            return primary
+
+        # Pass 1: collapse per-column MATCHED / NOT MATCHED fragments that
+        # share a target (sectioned synthesis and deterministic MERGE
+        # floors both emit one rule per column).
         classified: List[Tuple[int, Dict[str, Any], str, bool, bool]] = []
         for index, rule in enumerate(displayed):
             blob = _blob(rule)
@@ -1452,11 +1571,13 @@ class ReportFormatterAgent:
 
         from collections import defaultdict
         matched_groups: Dict[str, List[Tuple[int, Dict[str, Any]]]] = defaultdict(list)
-        for index, rule, blob_i, is_matched, _is_unmatched in classified:
-            if not is_matched:
-                continue
+        unmatched_groups: Dict[str, List[Tuple[int, Dict[str, Any]]]] = defaultdict(list)
+        for index, rule, blob_i, is_matched, is_unmatched in classified:
             key = _table_key(rule, blob_i) or f"fields:{','.join(sorted(self._field_token_set(rule, merged_extraction)))}"
-            matched_groups[key].append((index, rule))
+            if is_matched:
+                matched_groups[key].append((index, rule))
+            elif is_unmatched:
+                unmatched_groups[key].append((index, rule))
 
         working = list(displayed)
         drop_indices: "set[int]" = set()
@@ -1466,6 +1587,14 @@ class ReportFormatterAgent:
             indices = [idx for idx, _ in group]
             keep_idx = min(indices)
             combined = _combine_matched_fragments([rule for _, rule in group])
+            working[keep_idx] = combined
+            drop_indices.update(idx for idx in indices if idx != keep_idx)
+        for group in unmatched_groups.values():
+            if len(group) < 2:
+                continue
+            indices = [idx for idx, _ in group]
+            keep_idx = min(indices)
+            combined = _combine_unmatched_fragments([rule for _, rule in group])
             working[keep_idx] = combined
             drop_indices.update(idx for idx in indices if idx != keep_idx)
 
@@ -1814,6 +1943,439 @@ class ReportFormatterAgent:
             result.append(rule)
         return result
 
+    def _suppress_wasteful_duplicate_rules(
+        self,
+        displayed: List[Dict[str, Any]],
+        merged_extraction: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Drop or fold rules that restated the same structural decision.
+
+        Targets waste observed across samples 08–16 after the core ladders
+        were already correct:
+
+        1. DECLARE / setup assignments (`@QuarterStartDate`, dispute-grace
+           cutoffs) presented as business rules with no decision table.
+        2. A MERGE MATCHED-only or NOT-MATCHED-only half left beside a
+           collapsed `Upsert …` rule for the same target table.
+        3. Two INSERT rules into the same staging/target table with the
+           same column set (LLM insert + deterministic floor).
+        4. Near-identical decision ladders on the same single field
+           (condition Jaccard ≥ 0.65) — keep the fuller / grounded one.
+        5. Several one-row UPDATE floors that share the exact same
+           eligibility condition and target table (one SQL UPDATE that
+           sets multiple columns) — fold into one multi-field rule.
+
+        Never merges two TSQL_IF / CASE ladders that merely share a field
+        name (e.g. scheme-open IF vs nested eligibility CASE on
+        `RestructureEligible`) — those are different decisions.
+        """
+        if not displayed:
+            return displayed
+
+        known_tables = self._known_table_names(merged_extraction)
+        working = list(displayed)
+        drop: "set[int]" = set()
+
+        def _bare_fields(rule: Dict[str, Any]) -> "frozenset[str]":
+            return frozenset(self._field_token_set(rule, merged_extraction))
+
+        def _table(rule: Dict[str, Any]) -> str:
+            return self._resolve_rule_table(rule, known_tables) or ""
+
+        def _name(rule: Dict[str, Any]) -> str:
+            return str(rule.get("rule_name") or "").strip()
+
+        def _blob(rule: Dict[str, Any]) -> str:
+            parts = [
+                _name(rule),
+                str(rule.get("business_meaning") or ""),
+                str(rule.get("action") or ""),
+                " ".join(self._rule_text_lines(rule.get("summary"))),
+                " ".join(str(x) for x in (rule.get("eligibility") or [])),
+                " ".join(str(x) for x in (rule.get("decision_context") or [])),
+                " ".join(str(x) for x in (rule.get("source_evidence") or [])),
+            ]
+            for row in self._decision_logic_rows(rule):
+                parts.append(str(row.get("condition") or ""))
+                parts.append(str(row.get("outcome") or ""))
+            return " ".join(parts).casefold()
+
+        def _is_setup_declare(rule: Dict[str, Any]) -> bool:
+            name = _name(rule).casefold()
+            field = str(rule.get("output_field") or "").casefold()
+            rows = self._decision_logic_rows(rule)
+            setup_named = bool(
+                re.search(r"\b(calculate|compute|derive)\b", name)
+                and re.search(
+                    r"(cutoff|start date|end date|process date|grace)",
+                    name + " " + field,
+                )
+            ) or ("grace cutoff" in field or field.endswith("startdate") or field.endswith("cutoff"))
+            if not setup_named:
+                return False
+            # Pure narrative DECLARE (no rows) — always drop.
+            if not rows:
+                if rule.get("decision_block_id") or rule.get("decision_rows_grounded"):
+                    return False
+                return True
+            # Live floors sometimes attach a one-row placeholder
+            # ("ProcessDate is set" → field name) to a DECLARE. Still not a
+            # business decision.
+            if len(rows) == 1 and not rule.get("decision_rows_grounded"):
+                outcome = self._normalize_condition_text(
+                    rows[0].get("outcome", ""), bare_fields=True
+                )
+                bare_field = field.split(".")[-1].strip()
+                if not outcome or outcome == bare_field or "dateadd" in _blob(rule):
+                    return True
+            return False
+
+        def _is_nested_case_pointer(rule: Dict[str, Any]) -> bool:
+            """IF/ELSE shell whose outcomes only say 'see nested CASE'."""
+            rows = self._decision_logic_rows(rule)
+            if len(rows) < 2:
+                return False
+            return all(
+                re.search(
+                    r"nested case|see separate decision",
+                    str(row.get("outcome") or ""),
+                    re.I,
+                )
+                for row in rows
+            )
+
+        def _is_upsert(rule: Dict[str, Any]) -> bool:
+            if _name(rule).casefold().startswith("upsert"):
+                return True
+            # Some LLM / shaped rules keep both MERGE branches but title the
+            # rule "Update … Ledger" instead of "Upsert …".
+            rows = self._decision_logic_rows(rule)
+            if len(rows) < 2:
+                return False
+            conds = [str(row.get("condition") or "").casefold() for row in rows]
+            has_matched = any(
+                "when matched" in c and "not matched" not in c for c in conds
+            )
+            has_unmatched = any("when not matched" in c for c in conds)
+            return has_matched and has_unmatched
+
+        def _is_merge_half(rule: Dict[str, Any]) -> bool:
+            if _is_upsert(rule):
+                return False
+            blob = _blob(rule)
+            from src.parsing import alias_resolution as ar
+
+            if not ar.merge_branch_text_looks_like_merge(blob):
+                return False
+            matched = ar.merge_branch_text_is_matched(blob)
+            unmatched = ar.merge_branch_text_is_unmatched(blob)
+            return matched != unmatched
+
+        def _is_insert_like(rule: Dict[str, Any]) -> bool:
+            name = _name(rule).casefold()
+            if name.startswith("upsert"):
+                return False
+            if re.search(r"\binsert\b", name):
+                return True
+            blob = _blob(rule)
+            return bool(re.search(r"\binsert into\b", blob)) and not re.search(
+                r"\bwhen matched\b", blob
+            )
+
+        def _rank(rule: Dict[str, Any]) -> tuple:
+            rows = self._decision_logic_rows(rule)
+            filled = sum(1 for row in rows if str(row.get("outcome") or "").strip())
+            grounded = 1 if self._is_canonical_decision_rule(rule) else 0
+            meaning = 1 if str(rule.get("business_meaning") or "").strip() else 0
+            return (grounded, filled, len(rows), meaning, len(_name(rule)))
+
+        def _looks_like_control_flow_ladder(rule: Dict[str, Any]) -> bool:
+            sig = self._decision_table_condition_signature(rule) or ()
+            joined = " | ".join(sig)
+            return bool(
+                re.search(
+                    r"\bexists\s*\(|\bday\s*\(|\bdatepart\s*\(|\bif\s+@|"
+                    r"\bdateadd\s*\(|@\w+\s*(?:>=|<=|<>|!=|=|<|>)|"
+                    r"nested case|when matched|when not matched",
+                    joined,
+                    re.I,
+                )
+            )
+
+        def _outcome_value_set(rule: Dict[str, Any]) -> "set[str]":
+            values: "set[str]" = set()
+            for row in self._decision_logic_rows(rule):
+                raw = self._normalize_condition_text(
+                    row.get("outcome", ""), bare_fields=True
+                )
+                if not raw:
+                    continue
+                for part in re.split(r"\s*;\s*", raw):
+                    part = part.strip()
+                    if ":=" in part:
+                        part = part.split(":=", 1)[-1].strip()
+                    if part:
+                        values.add(part)
+            return values
+
+        # 1. Setup / DECLARE junk.
+        for index, rule in enumerate(working):
+            if _is_setup_declare(rule):
+                drop.add(index)
+
+        # 1b. IF shells that only point at a separate nested CASE table —
+        # keep the real CASE, drop the pointer shell (sample 11 DATEPART IF).
+        for index, rule in enumerate(working):
+            if index in drop or not _is_nested_case_pointer(rule):
+                continue
+            fields = _bare_fields(rule)
+            if len(fields) != 1:
+                continue
+            field = next(iter(fields))
+            has_real_case = any(
+                i != index
+                and i not in drop
+                and _bare_fields(working[i]) == fields
+                and self._decision_logic_rows(working[i])
+                and not _is_nested_case_pointer(working[i])
+                and not _looks_like_control_flow_ladder(working[i])
+                for i in range(len(working))
+            )
+            if has_real_case:
+                drop.add(index)
+
+        # 2. MERGE half beside an Upsert for the same table.
+        upsert_tables = {
+            _table(rule) for index, rule in enumerate(working)
+            if index not in drop and _is_upsert(rule) and _table(rule)
+        }
+        upsert_fields_by_table: Dict[str, "frozenset[str]"] = {}
+        for index, rule in enumerate(working):
+            if index in drop or not _is_upsert(rule):
+                continue
+            table = _table(rule)
+            if not table:
+                continue
+            fields = _bare_fields(rule)
+            if not fields:
+                continue
+            prior = upsert_fields_by_table.get(table, frozenset())
+            upsert_fields_by_table[table] = frozenset(prior | fields)
+        for index, rule in enumerate(working):
+            if index in drop or not _is_merge_half(rule):
+                continue
+            table = _table(rule)
+            if table and table in upsert_tables:
+                drop.add(index)
+        # LLM often restates individual MATCHED SET columns as separate
+        # one-row UPDATEs ("Update collateral values") beside the collapsed
+        # Upsert without carrying WHEN MATCHED text. Drop only when every
+        # field is already on that table's Upsert and the rule is a shallow
+        # single-row assignment (not a multi-branch CASE/IF ladder).
+        for index, rule in enumerate(working):
+            if index in drop or _is_upsert(rule) or _is_insert_like(rule):
+                continue
+            fields = _bare_fields(rule)
+            if not fields:
+                continue
+            rows = self._decision_logic_rows(rule)
+            if len(rows) > 1:
+                continue
+            table = _table(rule)
+            covered_by: Optional["frozenset[str]"] = None
+            if table and table in upsert_fields_by_table:
+                covered_by = upsert_fields_by_table[table]
+            elif not table:
+                # Only when the write table could not be resolved: fall back
+                # to a unique Upsert whose column set covers this rule.
+                # Never use this fallback when the rule already resolves to a
+                # *different* table (e.g. staging ShortfallAmount UPDATE must
+                # not be dropped because the summary Upsert also lists that
+                # column).
+                covers = [
+                    uf for uf in upsert_fields_by_table.values() if fields <= uf
+                ]
+                if len(covers) == 1:
+                    covered_by = covers[0]
+            if covered_by is not None and fields <= covered_by:
+                drop.add(index)
+
+        # 3. Duplicate INSERT into the same table + same columns (or a
+        # field-subset / empty-field restatement of a fuller INSERT).
+        insert_by_table: Dict[str, List[int]] = {}
+        for index, rule in enumerate(working):
+            if index in drop or not _is_insert_like(rule):
+                continue
+            # Ignore INSERT that is really a MERGE NOT MATCHED half already
+            # handled above / by upsert collapse.
+            if _is_merge_half(rule):
+                continue
+            table = _table(rule)
+            if not table:
+                continue
+            insert_by_table.setdefault(table, []).append(index)
+        for indices in insert_by_table.values():
+            if len(indices) < 2:
+                continue
+            # Exact same column set → keep best rank.
+            by_fields: Dict[frozenset, List[int]] = {}
+            for idx in indices:
+                by_fields.setdefault(_bare_fields(working[idx]), []).append(idx)
+            for field_indices in by_fields.values():
+                if len(field_indices) < 2:
+                    continue
+                winner = max(field_indices, key=lambda i: _rank(working[i]))
+                drop.update(i for i in field_indices if i != winner)
+            # Field-subset / empty-field narrative beside a fuller INSERT.
+            remaining = [i for i in indices if i not in drop]
+            if len(remaining) < 2:
+                continue
+            remaining_sorted = sorted(
+                remaining, key=lambda i: (len(_bare_fields(working[i])), _rank(working[i])), reverse=True
+            )
+            kept = remaining_sorted[0]
+            kept_fields = _bare_fields(working[kept])
+            for idx in remaining_sorted[1:]:
+                other_fields = _bare_fields(working[idx])
+                if not other_fields or other_fields <= kept_fields:
+                    drop.add(idx)
+
+        # 4. Near-identical decision ladders on the same single field.
+        # Skip TSQL_IF-shaped rules (EXISTS / DAY(@ProcessDate) / DATEPART /
+        # @var DATEADD gates) so scheme-open IF vs nested CASE stay distinct.
+        single_field_indices: Dict[str, List[int]] = {}
+        for index, rule in enumerate(working):
+            if index in drop:
+                continue
+            fields = _bare_fields(rule)
+            if len(fields) != 1:
+                continue
+            if not self._decision_logic_rows(rule):
+                continue
+            if _looks_like_control_flow_ladder(rule):
+                continue
+            single_field_indices.setdefault(next(iter(fields)), []).append(index)
+
+        for indices in single_field_indices.values():
+            if len(indices) < 2:
+                continue
+            # Pairwise near-duplicate collapse.
+            survivors = list(indices)
+            changed = True
+            while changed and len(survivors) > 1:
+                changed = False
+                for i in range(len(survivors)):
+                    for j in range(i + 1, len(survivors)):
+                        a, b = survivors[i], survivors[j]
+                        sig_a = set(self._decision_table_condition_signature(working[a]) or ())
+                        sig_b = set(self._decision_table_condition_signature(working[b]) or ())
+                        out_a = _outcome_value_set(working[a])
+                        out_b = _outcome_value_set(working[b])
+                        if not sig_a or not sig_b:
+                            continue
+                        overlap = len(sig_a & sig_b) / max(1, len(sig_a | sig_b))
+                        # Also treat strict subset of conditions as duplicate
+                        # (incomplete LLM restatement of a fuller ladder).
+                        subset = sig_a <= sig_b or sig_b <= sig_a
+                        # ELSE vs explicit catch-all (`CoverageRatio >= 1`)
+                        # yields Jaccard just under / around threshold once
+                        # temp-table `#` noise is stripped; outcome-set
+                        # overlap catches the same CASE restated with a
+                        # named final branch.
+                        out_overlap = (
+                            len(out_a & out_b) / max(1, len(out_a | out_b))
+                            if out_a and out_b else 0.0
+                        )
+                        if overlap < 0.65 and not subset and out_overlap < 0.8:
+                            continue
+                        winner = a if _rank(working[a]) >= _rank(working[b]) else b
+                        loser = b if winner == a else a
+                        if loser in survivors:
+                            survivors.remove(loser)
+                            drop.add(loser)
+                            changed = True
+                            break
+                    if changed:
+                        break
+
+        # 5. Fold same-eligibility one-row UPDATE floors into one rule.
+        eligibility_groups: Dict[Tuple[str, str], List[int]] = {}
+        for index, rule in enumerate(working):
+            if index in drop:
+                continue
+            rows = self._decision_logic_rows(rule)
+            if len(rows) != 1:
+                continue
+            if _is_upsert(rule) or _is_merge_half(rule) or _is_insert_like(rule):
+                continue
+            if _looks_like_control_flow_ladder(rule):
+                continue
+            fields = _bare_fields(rule)
+            if len(fields) != 1:
+                continue
+            table = _table(rule)
+            if not table:
+                continue
+            condition = self._normalize_condition_text(
+                rows[0].get("condition", ""), bare_fields=True
+            )
+            if not condition:
+                continue
+            eligibility_groups.setdefault((table, condition), []).append(index)
+
+        replacements: Dict[int, Dict[str, Any]] = {}
+        for indices in eligibility_groups.values():
+            if len(indices) < 2:
+                continue
+            keep_idx = min(indices)
+            primary = dict(working[keep_idx])
+            union_fields: List[str] = []
+            outcomes: List[str] = []
+            for idx in indices:
+                rule = working[idx]
+                display_fields: List[str] = []
+                for token in list(rule.get("fields_affected") or []) + str(
+                    rule.get("output_field") or ""
+                ).split(","):
+                    bare = str(token).strip()
+                    if bare and bare not in union_fields:
+                        union_fields.append(bare)
+                    if bare:
+                        display_fields.append(bare)
+                row = self._decision_logic_rows(rule)[0]
+                field = display_fields[-1] if display_fields else ""
+                # Prefer the trailing segment for readability but keep
+                # original casing from the rule (not the casefolded token set).
+                if "." in field:
+                    field = field.split(".")[-1]
+                outcome = str(row.get("outcome") or "").strip()
+                if field and outcome and ":=" not in outcome:
+                    outcomes.append(f"{field} := {outcome}")
+                elif outcome:
+                    outcomes.append(outcome)
+                if idx != keep_idx:
+                    drop.add(idx)
+            primary["fields_affected"] = union_fields
+            primary["output_field"] = ", ".join(union_fields)
+            primary["rule_name"] = (
+                f"Update {', '.join(union_fields)}"
+                if len(union_fields) > 1
+                else _name(primary)
+            )
+            cond = self._decision_logic_rows(working[keep_idx])[0].get("condition")
+            primary["decision_logic_rows"] = [{
+                "condition": cond,
+                "outcome": "; ".join(dict.fromkeys(o for o in outcomes if o)),
+            }]
+            replacements[keep_idx] = primary
+
+        result: List[Dict[str, Any]] = []
+        for index, rule in enumerate(working):
+            if index in drop:
+                continue
+            result.append(replacements.get(index, rule))
+        return result
+
     def _suppress_contentless_single_field_duplicates(
         self,
         displayed: List[Dict[str, Any]],
@@ -2026,7 +2588,9 @@ class ReportFormatterAgent:
         cls, rule: Dict[str, Any], known_tables: "set[str]"
     ) -> Optional[str]:
         """Best-effort bare table name a rule is about: the structured
-        `Target:` context for a decision-table/block rule, or - for a
+        `Target:` context for a decision-table/block rule, a schema-
+        qualified `fields_affected` / `output_field` token
+        (`PRO.LoanAccountCal.AccountStatus` → `loanaccountcal`), or - for a
         plain narrative rule with no such structure - whichever single
         known table name is named in its own rule_name/summary text.
         Returns None (never guesses) when zero or more than one known
@@ -2038,13 +2602,49 @@ class ReportFormatterAgent:
             bare = cls._bare_table_token(target)
             if bare:
                 return bare
+        # Live LLM floors often omit `Target:` but still qualify the write
+        # column as schema.table.column (sample 08 apply-term UPDATEs). The
+        # second-to-last dotted segment is the table.
+        field_tables: "set[str]" = set()
+        field_values: List[Any] = []
+        raw_fields = rule.get("fields_affected") or []
+        if isinstance(raw_fields, str):
+            field_values.append(raw_fields)
+        else:
+            field_values.extend(list(raw_fields))
+        if rule.get("output_field"):
+            field_values.append(rule.get("output_field"))
+        for value in field_values:
+            for token in str(value or "").split(","):
+                token = token.strip()
+                if "." not in token:
+                    continue
+                parts = [p for p in token.split(".") if p]
+                if len(parts) < 2:
+                    continue
+                bare = cls._bare_table_token(parts[-2])
+                if not bare:
+                    continue
+                if known_tables and bare not in known_tables:
+                    continue
+                field_tables.add(bare)
+        if len(field_tables) == 1:
+            return next(iter(field_tables))
+        # Also mine condition/outcome text for a single known table
+        # (`PRO.CollateralPositionSummary.AccountId = ...`) when Target and
+        # fields_affected carry no schema qualification.
+        row_text = " ".join(
+            f"{row.get('condition', '')} {row.get('outcome', '')}"
+            for row in cls._decision_logic_rows(rule)
+        )
         text = " ".join(
             [str(rule.get("rule_name") or "")]
             + cls._rule_text_lines(rule.get("summary"))
+            + [row_text]
         )
         matches = {
             table for table in known_tables
-            if table and re.search(r"(?<![A-Za-z0-9_])" + re.escape(table) + r"(?![A-Za-z0-9_])", text, re.IGNORECASE)
+            if table and re.search(r"(?<![A-Za-z0-9_#])" + re.escape(table) + r"(?![A-Za-z0-9_])", text, re.IGNORECASE)
         }
         if len(matches) == 1:
             return next(iter(matches))
@@ -2066,6 +2666,10 @@ class ReportFormatterAgent:
             for value in values
             for token in str(value or "").split(",")
             if token.strip()
+        }
+        tokens = {
+            token for token in tokens
+            if token and token not in {"not specified", "n/a", "none", "null", "-"}
         }
         # A model-authored rule occasionally names its own TARGET TABLE
         # (not a column) in fields_affected/output_field - e.g.
@@ -2157,9 +2761,10 @@ class ReportFormatterAgent:
     @staticmethod
     def _dedup_field_bare_name(text: Any) -> str:
         """Reduce every dotted field reference in `text` down to its bare
-        trailing segment - `PRO.LoanAccountCal.DpdDays`, `A.DpdDays`, and a
-        bare `DpdDays` all become `DpdDays`. Used only to detect when two
-        decision tables describe the same underlying predicate/column for
+        trailing segment - `PRO.LoanAccountCal.DpdDays`, `A.DpdDays`,
+        `#ProvisionCoverage.CoverageRatio`, and a bare `DpdDays` all become
+        `DpdDays` / `CoverageRatio`. Used only to detect when two decision
+        tables describe the same underlying predicate/column for
         duplicate-suppression purposes; never for display, where the fuller
         alias-resolved form (schema/table context) is wanted. This is a
         strictly stronger version of the 1-3-letter-alias-only stripping
@@ -2171,9 +2776,16 @@ class ReportFormatterAgent:
         section almost always restates the same column bare (`DpdDays`) -
         so without reducing both to the same bare form, an otherwise
         identical duplicate decision table survives detection entirely.
+
+        Temp-table paths must include the leading ``#`` in the match:
+        otherwise ``#ProvisionCoverage.CoverageRatio`` only rewrites the
+        ``ProvisionCoverage.CoverageRatio`` span and leaves a stray ``#``
+        glued to the bare column (``#coverageratio``), which never equals
+        the model paraphrase ``coverageratio`` and defeats Jaccard
+        near-duplicate collapse (observed live on sample 09 ReviewReason).
         """
         dotted_path = re.compile(
-            r"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*\.)+[A-Za-z_][A-Za-z0-9_]*"
+            r"(?<![A-Za-z0-9_])#?(?:[A-Za-z_][A-Za-z0-9_]*\.)+[A-Za-z_][A-Za-z0-9_]*"
         )
         return dotted_path.sub(lambda match: match.group(0).split(".")[-1], str(text or ""))
 

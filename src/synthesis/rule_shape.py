@@ -37,6 +37,7 @@ def shape_structural_business_rules(
     shaped = list(rules or [])
     shaped = agent._suppress_decision_ladder_branch_fragments(shaped, merged_extraction)
     shaped = agent._collapse_merge_upsert_halves(shaped, merged_extraction)
+    shaped = agent._suppress_wasteful_duplicate_rules(shaped, merged_extraction)
     return shaped
 
 

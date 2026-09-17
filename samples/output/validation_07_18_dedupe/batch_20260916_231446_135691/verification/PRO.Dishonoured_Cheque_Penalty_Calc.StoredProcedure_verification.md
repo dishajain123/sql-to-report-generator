@@ -1,0 +1,261 @@
+# Dishonoured Cheque Penalty Calc — Verification & Traceability
+
+> Companion artifact to `PRO.Dishonoured_Cheque_Penalty_Calc.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
+
+| Item | Value |
+|---|---|
+| Object ID | `obj_4c8f8a44b029` |
+| Raw technical object name (from source) | `Dishonoured_Cheque_Penalty_Calc` |
+
+## Run Metadata
+
+| Item | Value |
+|---|---|
+| Pipeline Version | `2026-08-26-phase1` |
+| Prompt Version | `4f519f469b95300a` |
+| Knowledge Base Version | `2e6fc62902751973` |
+| Model | `amazon.nova-lite-v1:0` |
+| Provider | `bedrock` |
+| Dialect | `T-SQL` |
+| Dialect Confidence | `High` |
+| Source Hash | `d449240b166222b5c18aaa2aaa825720e537d8fefd960737c15f5a7e2f4da7e2` |
+| Configuration Version | `db93bfb59420a471` |
+| Run Timestamp | `2026-09-16T23:17:47.893865+00:00` |
+| Object ID | `obj_4c8f8a44b029` |
+
+## LLM Telemetry
+
+| Item | Value |
+|---|---|
+| Run ID | `telemetry_5e83c094fc18` |
+| Total LLM Calls | `7` |
+| Successful Calls | `7` |
+| Failed Calls | `0` |
+| Prompt Tokens | `61851` |
+| Completion Tokens | `6624` |
+| Total Tokens | `68475` |
+| Telemetry Availability | `available` |
+
+| Stage | Calls | Success | Failure | Tokens | Availability |
+|---|---:|---:|---:|---:|---|
+| extraction | 1 | 1 | 0 | 7166 | available |
+| synthesis | 4 | 4 | 0 | 29241 | available |
+| synthesis_revision | 2 | 2 | 0 | 32068 | available |
+
+## Business Rule Summary
+
+| Priority | Rule | Output | Business Purpose |
+|---|---|---|---|
+| 🟠 1 | Calculate penalty amount [MATCHED] (`rule__1`) | `PRO.DishonouredCheque.PenaltyAmount` | Determine the penalty amount for dishonoured cheques based on the repeat count and dishonour reason. |
+| 🟢 2 | Stage penalty information [MATCHED] (`rule__3`) | `AccountId, PenaltyAmount, DishonourCount` | Insert records into a temporary staging table with account ID, penalty amount, and dishonour count for dishonoured cheques on the processin… |
+| 🟠 3 | Insert into #NewSuspensions [MATCHED] (`deterministic_statement_02_batch3_main_body:chunk_text_04_accountid`) | `AccountId` | Not specified |
+| 🟠 4 | Determine HoldForReview [MATCHED] (`deterministic_statement_00_batch3_main_body:chunk_text_07_holdforreview`) | `HoldForReview` | Not specified |
+| 🟠 5 | Insert into #PenaltyStaging [MATCHED] (`deterministic_statement_01_batch3_main_body:chunk_text_06_accountid`) | `AccountId, PenaltyAmount, DishonourCount` | Not specified |
+| 🟠 6 | Determine ChequeBookSuspended [MATCHED] (`deterministic_statement_03_batch3_main_body:chunk_text_01_chequebooksuspended`) | `ChequeBookSuspended` | Not specified |
+| 🟠 7 | Upsert chequepenaltyledger [LLM_ONLY] (`rule__1__6+upsert`) | `PRO.ChequePenaltyLedger.PenaltyAmount, PenaltyAmount, DishonourCount, LastPenaltyDate, AccountId, FirstPenaltyDate` | Increase the penalty amount for accounts with dishonoured cheques by the amount specified in the staging table. |
+
+## Source Traceability
+
+<details>
+<summary><strong>Show rule-to-source mapping</strong></summary>
+
+| # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |
+|---|---|---|---|---|---|---|
+| 1 | Calculate penalty amount (rule__1) | PRO.DishonouredCheque.PenaltyAmount = (CASE WHEN PRO.DishonouredCheque.DishonourReason IS NULL THEN NULL WHEN PRO.DishonouredCheque.RepeatCount IS NULL OR PRO.DishonouredCheque.RepeatCount = 0 THEN 350.00 WHEN PRO.DishonouredCheque.RepeatCount = 1 THEN 750.00… | Not cited | 00_batch3_main_body:embedded_01_08 | dependency_0004 | Needs Review |
+| 2 | Stage penalty information (rule__3) | INSERT INTO #PenaltyStaging (AccountId, PenaltyAmount, DishonourCount) SELECT PRO.DishonouredCheque.AccountId, PRO.DishonouredCheque.PenaltyAmount, (SELECT COUNT(*) FROM #NewSuspensions.DishonouredCheque D2 WHERE PRO.DishonouredCheque.AccountId = PRO.Dishonou… | Not cited | 01_batch3_main_body:chunk_text_06 | 01_batch3_main_body:chunk_text_06 | Verified |
+| 3 | Insert into #NewSuspensions (deterministic_statement_02_batch3_main_body:chunk_text_04_accountid) | Not cited | source | 02_batch3_main_body | Not cited | Verified |
+| 4 | Determine HoldForReview (deterministic_statement_00_batch3_main_body:chunk_text_07_holdforreview) | Not cited | source | 00_batch3_main_body | Not cited | Verified |
+| 5 | Insert into #PenaltyStaging (deterministic_statement_01_batch3_main_body:chunk_text_06_accountid) | Not cited | source | 01_batch3_main_body | Not cited | Verified |
+| 6 | Determine ChequeBookSuspended (deterministic_statement_03_batch3_main_body:chunk_text_01_chequebooksuspended) | Not cited | source | 03_batch3_main_body | Not cited | Verified |
+| 7 | Upsert chequepenaltyledger (rule__1__6+upsert) | MERGE #NewSuspensions.ChequePenaltyLedger AS Target USING #PenaltyStaging AS Source ON PRO.ChequePenaltyLedger.AccountId = #PenaltyStaging.AccountId WHEN MATCHED THEN UPDATE SET PRO.ChequePenaltyLedger.PenaltyAmount = PRO.ChequePenaltyLedger.PenaltyAmount + #… | Not cited | Not cited | Not cited | Needs Review |
+
+### Decision-Chain Branch Provenance
+
+| Branch | Condition | Source Location |
+|---|---|---|
+| case_0031_0036_1087:branch_001 | PRO.DishonouredCheque.DishonourReason IS NULL | source \| Lines 32-33 \| Statement 00_batch3_main_body:chunk_text_06 |
+| case_0031_0036_1087:branch_002 | PRO.DishonouredCheque.RepeatCount IS NULL OR PRO.DishonouredCheque.RepeatCount = 0 | source \| Lines 33-34 \| Statement 00_batch3_main_body:chunk_text_06 |
+| case_0031_0036_1087:branch_003 | PRO.DishonouredCheque.RepeatCount = 1 | source \| Lines 34-35 \| Statement 00_batch3_main_body:chunk_text_06 |
+| case_0031_0036_1087:branch_004 | ELSE | source \| Lines 35-36 \| Statement 00_batch3_main_body:chunk_text_06 |
+| tsql_if_0132_0142:branch_001 | EXISTS (SELECT 1 FROM #NewSuspensions.ACLRUNNINGPROCESSSTATUS WHERE RUNNINGPROCESSNAME = 'Dishonoured_Cheque_Penalty_Calc') | samples/17_Dishonoured_Cheque_Penalty_Calc.sql \| Lines 133-137 \| Chunk 04_batch3_exception |
+| tsql_if_0132_0142:branch_002 | ELSE | samples/17_Dishonoured_Cheque_Penalty_Calc.sql \| Lines 139-142 \| Chunk 04_batch3_exception |
+
+_Source evidence is the literal technical text carried through the pipeline; Source Location is derived deterministically from chunk and statement provenance when available; SQL Statements / Chunks and Technical References point back to the extracted chunk ids and statement references used by the guardrails. Technical references that repeat the same table/operation/target-columns are shown once._
+</details>
+
+## Completeness Ledger
+
+- **Executable constructs:** 98
+- **Disposition:** covered_by_rule=63, technical_only=8, uncovered=27
+
+| Construct | Status | Source location | Statement / chunk | Evidence |
+|---|---|---|---|---|
+| STATEMENT | covered_by_rule | Lines 1-5 | 00_batch3_main_body:chunk_text_01, 00_batch3_main_body | USE [DEMO_MISDB] SET ANSI_NULLS ON SET QUOTED_IDENTIFIER ON |
+| STATEMENT | covered_by_rule | Lines 7-8 | 00_batch3_main_body:chunk_text_02, 00_batch3_main_body | BEGIN SET NOCOUNT ON |
+| STATEMENT | covered_by_rule | Lines 11-11 | 00_batch3_main_body:chunk_text_03, 00_batch3_main_body | BEGIN TRY |
+| SELECT | covered_by_rule | Lines 15-15 | 00_batch3_main_body:chunk_text_04, 00_batch3_main_body | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
+| STATEMENT | covered_by_rule | Lines 18-21 | 00_batch3_main_body:chunk_text_05, 00_batch3_main_body | DECLARE @LookbackWindowStart DATE = DATEADD(MONTH, -6, @ProcessDate) -- Rule 1: multi-branch CASE - penalty scales with how many times -- the account has already been dishonoured |
+| UPDATE | covered_by_rule | Lines 24-38 | 00_batch3_main_body:chunk_text_06, 00_batch3_main_body | UPDATE D SET D.PenaltyAmount = ( CASE WHEN D.DishonourReason IS NULL THEN NULL WHEN D.RepeatCount IS NULL OR D.RepeatCount = 0 THEN 350.00 WHEN D.RepeatCount = 1 THEN 750.00 ELSE 1500.00 END ) FROM PRO.DishonouredCheque D WHERE D.Dishono... |
+| UPDATE | covered_by_rule | Lines 41-48 | 00_batch3_main_body:chunk_text_07, 00_batch3_main_body | UPDATE D SET D.HoldForReview = 'Y' FROM PRO.DishonouredCheque D WHERE D.DishonourDate = @ProcessDate AND D.DishonourReason IS NULL -- Rule 3: apply the computed penalty to the account balance and -- mark the cheque as processed |
+| UPDATE | covered_by_rule | Lines 24-38 | 00_batch3_main_body:embedded_01_08, 00_batch3_main_body | UPDATE D SET D.PenaltyAmount = ( CASE WHEN D.DishonourReason IS NULL THEN NULL WHEN D.RepeatCount IS NULL OR D.RepeatCount = 0 THEN 350.00 WHEN D.RepeatCount = 1 THEN 750.00 ELSE 1500.00 END ) FROM PRO.DishonouredCheque D WHERE D.Dishono... |
+| UPDATE | covered_by_rule | Lines 41-48 | 00_batch3_main_body:embedded_02_09, 00_batch3_main_body | UPDATE D SET D.HoldForReview = 'Y' FROM PRO.DishonouredCheque D WHERE D.DishonourDate = @ProcessDate AND D.DishonourReason IS NULL -- Rule 3: apply the computed penalty to the account balance and -- mark the cheque as processed |
+| UPDATE | covered_by_rule | Lines 1-6 | 01_batch3_main_body:chunk_text_01, 01_batch3_main_body | UPDATE A SET A.OutstandingBalance = ISNULL(A.OutstandingBalance, 0) + D.PenaltyAmount FROM PRO.LoanAccountCal A INNER JOIN PRO.DishonouredCheque D ON D.AccountId = A.AccountId WHERE D.DishonourDate = @ProcessDate AND D.PenaltyAmount IS N... |
+| UPDATE | covered_by_rule | Lines 10-14 | 01_batch3_main_body:chunk_text_02, 01_batch3_main_body | UPDATE D SET D.PenaltyApplied = 'Y' FROM PRO.DishonouredCheque D WHERE D.DishonourDate = @ProcessDate AND D.PenaltyAmount IS NOT NULL |
+| STATEMENT | covered_by_rule | Lines 18-18 | 01_batch3_main_body:chunk_text_03, 01_batch3_main_body | IF OBJECT_ID('tempdb..#PenaltyStaging') IS NOT NULL |
+| STATEMENT | covered_by_rule | Lines 21-21 | 01_batch3_main_body:chunk_text_04, 01_batch3_main_body | DROP TABLE #PenaltyStaging |
+| INSERT | covered_by_rule | Lines 25-33 | 01_batch3_main_body:chunk_text_05, 01_batch3_main_body | CREATE TABLE #PenaltyStaging ( AccountId VARCHAR(20), PenaltyAmount DECIMAL(18,2), DishonourCount INT ) -- Rule 4: conditional INSERT - stage only accounts penalised -- today, together with their trailing dishonour count |
+| INSERT | covered_by_rule | Lines 36-46 | 01_batch3_main_body:chunk_text_06, 01_batch3_main_body | INSERT INTO #PenaltyStaging (AccountId, PenaltyAmount, DishonourCount) SELECT D.AccountId, D.PenaltyAmount, (SELECT COUNT(*) FROM PRO.DishonouredCheque D2 WHERE D2.AccountId = D.AccountId AND D2.DishonourDate >= @LookbackWindowStart) FRO... |
+| UPDATE | covered_by_rule | Lines 1-6 | 01_batch3_main_body:embedded_01_07, 01_batch3_main_body | UPDATE A SET A.OutstandingBalance = ISNULL(A.OutstandingBalance, 0) + D.PenaltyAmount FROM PRO.LoanAccountCal A INNER JOIN PRO.DishonouredCheque D ON D.AccountId = A.AccountId WHERE D.DishonourDate = @ProcessDate AND D.PenaltyAmount IS N... |
+| UPDATE | covered_by_rule | Lines 10-14 | 01_batch3_main_body:embedded_02_08, 01_batch3_main_body | UPDATE D SET D.PenaltyApplied = 'Y' FROM PRO.DishonouredCheque D WHERE D.DishonourDate = @ProcessDate AND D.PenaltyAmount IS NOT NULL |
+| INSERT | covered_by_rule | Lines 36-46 | 01_batch3_main_body:embedded_03_09, 01_batch3_main_body | INSERT INTO #PenaltyStaging (AccountId, PenaltyAmount, DishonourCount) SELECT D.AccountId, D.PenaltyAmount, (SELECT COUNT(*) FROM PRO.DishonouredCheque D2 WHERE D2.AccountId = D.AccountId AND D2.DishonourDate >= @LookbackWindowStart) FRO... |
+| MERGE | covered_by_rule | Lines 1-15 | 02_batch3_main_body:chunk_text_01, 02_batch3_main_body | MERGE PRO.ChequePenaltyLedger AS Target USING #PenaltyStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.PenaltyAmount = Target.PenaltyAmount + Source.PenaltyAmount, Target.DishonourCount = Sourc... |
+| STATEMENT | covered_by_rule | Lines 18-18 | 02_batch3_main_body:chunk_text_02, 02_batch3_main_body | IF OBJECT_ID('tempdb..#NewSuspensions') IS NOT NULL |
+| STATEMENT | covered_by_rule | Lines 21-21 | 02_batch3_main_body:chunk_text_03, 02_batch3_main_body | DROP TABLE #NewSuspensions |
+| SELECT | covered_by_rule | Lines 25-33 | 02_batch3_main_body:chunk_text_04, 02_batch3_main_body | SELECT P.AccountId INTO #NewSuspensions FROM #PenaltyStaging P INNER JOIN PRO.LoanAccountCal A ON A.AccountId = P.AccountId WHERE P.DishonourCount >= 3 AND (A.ChequeBookSuspended <> 'Y' OR A.ChequeBookSuspended IS NULL) -- Rule 7: suspen... |
+| MERGE | covered_by_rule | Lines 1-15 | 02_batch3_main_body:embedded_01_05, 02_batch3_main_body | MERGE PRO.ChequePenaltyLedger AS Target USING #PenaltyStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.PenaltyAmount = Target.PenaltyAmount + Source.PenaltyAmount, Target.DishonourCount = Sourc... |
+| SELECT | covered_by_rule | Lines 25-33 | 02_batch3_main_body:embedded_02_06, 02_batch3_main_body | SELECT P.AccountId INTO #NewSuspensions FROM #PenaltyStaging P INNER JOIN PRO.LoanAccountCal A ON A.AccountId = P.AccountId WHERE P.DishonourCount >= 3 AND (A.ChequeBookSuspended <> 'Y' OR A.ChequeBookSuspended IS NULL) -- Rule 7: suspen... |
+| UPDATE | covered_by_rule | Lines 1-3 | 03_batch3_main_body:chunk_text_01, 03_batch3_main_body | UPDATE PRO.LoanAccountCal SET ChequeBookSuspended = 'Y' WHERE AccountId IN (SELECT AccountId FROM #NewSuspensions) |
+| INSERT | covered_by_rule | Lines 7-9 | 03_batch3_main_body:chunk_text_02, 03_batch3_main_body | INSERT INTO PRO.AccountStatusAuditLog (AccountId, TransitionDate, NewStatus, Reason) SELECT AccountId, @ProcessDate, 'CHEQUE_BOOK_SUSPENDED', 'REPEAT_DISHONOUR_THRESHOLD' FROM #NewSuspensions |
+| UPDATE | covered_by_rule | Lines 13-15 | 03_batch3_main_body:chunk_text_03, 03_batch3_main_body | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Dishonoured_Cheque_Penalty_Calc' |
+| STATEMENT | covered_by_rule | Lines 19-19 | 03_batch3_main_body:chunk_text_04, 03_batch3_main_body | END TRY |
+| UPDATE | covered_by_rule | Lines 1-3 | 03_batch3_main_body:embedded_01_05, 03_batch3_main_body | UPDATE PRO.LoanAccountCal SET ChequeBookSuspended = 'Y' WHERE AccountId IN (SELECT AccountId FROM #NewSuspensions) |
+| INSERT | covered_by_rule | Lines 7-9 | 03_batch3_main_body:embedded_02_06, 03_batch3_main_body | INSERT INTO PRO.AccountStatusAuditLog (AccountId, TransitionDate, NewStatus, Reason) SELECT AccountId, @ProcessDate, 'CHEQUE_BOOK_SUSPENDED', 'REPEAT_DISHONOUR_THRESHOLD' FROM #NewSuspensions |
+| UPDATE | covered_by_rule | Lines 13-15 | 03_batch3_main_body:embedded_03_07, 03_batch3_main_body | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Dishonoured_Cheque_Penalty_Calc' |
+| INSERT | uncovered | Lines 1-4 | 04_batch3_exception:chunk_text_01, 04_batch3_exception | BEGIN CATCH -- Exception handling: record the failure for operations to -- investigate, including a fallback insert if the status row -- itself is missing |
+| SELECT | uncovered | Lines 5-5 | 04_batch3_exception:chunk_text_02, 04_batch3_exception | IF EXISTS (SELECT 1 FROM PRO.ACLRUNNINGPROCESSSTATUS WHERE RUNNINGPROCESSNAME = 'Dishonoured_Cheque_Penalty_Calc') |
+| STATEMENT | uncovered | Lines 1-1 | 04_batch3_exception:chunk_text_03, 04_batch3_exception | BEGIN |
+| UPDATE | uncovered | Lines 7-9 | 04_batch3_exception:chunk_text_04, 04_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Dishonoured_Cheque_Penalty_Calc' |
+| STATEMENT | covered_by_rule | Lines 10-10 | 04_batch3_exception:chunk_text_05, 04_batch3_exception | END |
+| STATEMENT | covered_by_rule | Lines 11-11 | 04_batch3_exception:chunk_text_06, 04_batch3_exception | ELSE |
+| STATEMENT | uncovered | Lines 1-1 | 04_batch3_exception:chunk_text_07, 04_batch3_exception | BEGIN |
+| INSERT | uncovered | Lines 13-14 | 04_batch3_exception:chunk_text_08, 04_batch3_exception | INSERT INTO PRO.ACLRUNNINGPROCESSSTATUS (RUNNINGPROCESSNAME, COMPLETED, ERRORDATE, ERRORDESCRIPTION, COUNT) VALUES ('Dishonoured_Cheque_Penalty_Calc', 'N', GETDATE(), ERROR_MESSAGE(), 1) |
+| STATEMENT | covered_by_rule | Lines 10-10 | 04_batch3_exception:chunk_text_09, 04_batch3_exception | END |
+| STATEMENT | uncovered | Lines 16-16 | 04_batch3_exception:chunk_text_10, 04_batch3_exception | END CATCH |
+| SET | uncovered | Lines 17-17 | 04_batch3_exception:chunk_text_11, 04_batch3_exception | SET NOCOUNT OFF |
+| STATEMENT | covered_by_rule | Lines 10-10 | 04_batch3_exception:chunk_text_12, 04_batch3_exception | END |
+| UPDATE | uncovered | Lines 7-9 | 04_batch3_exception:embedded_01_13, 04_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Dishonoured_Cheque_Penalty_Calc' |
+| INSERT | uncovered | Lines 13-14 | 04_batch3_exception:embedded_02_14, 04_batch3_exception | INSERT INTO PRO.ACLRUNNINGPROCESSSTATUS (RUNNINGPROCESSNAME, COMPLETED, ERRORDATE, ERRORDESCRIPTION, COUNT) VALUES ('Dishonoured_Cheque_Penalty_Calc', 'N', GETDATE(), ERROR_MESSAGE(), 1) |
+| SET | uncovered | Lines 17-17 | 04_batch3_exception:embedded_03_15, 04_batch3_exception | SET NOCOUNT OFF |
+| READ | covered_by_rule | unavailable | 00_batch3_main_body:chunk_text_04, 00_batch3_main_body:chunk_text_04, 00_batch3_main_body | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
+| UPDATE | covered_by_rule | samples/17_Dishonoured_Cheque_Penalty_Calc.sql | 00_batch3_main_body:chunk_text_06, 00_batch3_main_body:chunk_text_06, 00_batch3_main_body | UPDATE D SET D.PenaltyAmount = ( CASE WHEN D.DishonourReason IS NULL THEN NULL WHEN D.RepeatCount IS NULL OR D.RepeatCount = 0 THEN 350.00 WHEN D.RepeatCount = 1 THEN 750.00 ELSE 1500.00 END ) FROM PRO.DishonouredCheque D WHERE D.Dishono... |
+| UPDATE | covered_by_rule | samples/17_Dishonoured_Cheque_Penalty_Calc.sql | 00_batch3_main_body:chunk_text_07, 00_batch3_main_body:chunk_text_07, 00_batch3_main_body | UPDATE D SET D.HoldForReview = 'Y' FROM PRO.DishonouredCheque D WHERE D.DishonourDate = @ProcessDate AND D.DishonourReason IS NULL -- Rule 3: apply the computed penalty to the account balance and -- mark the cheque as processed |
+| UPDATE | covered_by_rule | unavailable | 00_batch3_main_body:embedded_01_08, 00_batch3_main_body:embedded_01_08, 00_batch3_main_body | UPDATE D SET D.PenaltyAmount = ( CASE WHEN D.DishonourReason IS NULL THEN NULL WHEN D.RepeatCount IS NULL OR D.RepeatCount = 0 THEN 350.00 WHEN D.RepeatCount = 1 THEN 750.00 ELSE 1500.00 END ) FROM PRO.DishonouredCheque D WHERE D.Dishono... |
+| UPDATE | covered_by_rule | unavailable | 00_batch3_main_body:embedded_02_09, 00_batch3_main_body:embedded_02_09, 00_batch3_main_body | UPDATE D SET D.HoldForReview = 'Y' FROM PRO.DishonouredCheque D WHERE D.DishonourDate = @ProcessDate AND D.DishonourReason IS NULL -- Rule 3: apply the computed penalty to the account balance and -- mark the cheque as processed |
+| UPDATE | covered_by_rule | samples/17_Dishonoured_Cheque_Penalty_Calc.sql | 01_batch3_main_body:chunk_text_01, 01_batch3_main_body:chunk_text_01, 01_batch3_main_body | UPDATE A SET A.OutstandingBalance = ISNULL(A.OutstandingBalance, 0) + D.PenaltyAmount FROM PRO.LoanAccountCal A INNER JOIN PRO.DishonouredCheque D ON D.AccountId = A.AccountId WHERE D.DishonourDate = @ProcessDate AND D.PenaltyAmount IS N... |
+| READ | covered_by_rule | samples/17_Dishonoured_Cheque_Penalty_Calc.sql | 01_batch3_main_body:chunk_text_01, 01_batch3_main_body:chunk_text_01, 01_batch3_main_body | UPDATE A SET A.OutstandingBalance = ISNULL(A.OutstandingBalance, 0) + D.PenaltyAmount FROM PRO.LoanAccountCal A INNER JOIN PRO.DishonouredCheque D ON D.AccountId = A.AccountId WHERE D.DishonourDate = @ProcessDate AND D.PenaltyAmount IS N... |
+| UPDATE | covered_by_rule | samples/17_Dishonoured_Cheque_Penalty_Calc.sql | 01_batch3_main_body:chunk_text_02, 01_batch3_main_body:chunk_text_02, 01_batch3_main_body | UPDATE D SET D.PenaltyApplied = 'Y' FROM PRO.DishonouredCheque D WHERE D.DishonourDate = @ProcessDate AND D.PenaltyAmount IS NOT NULL |
+| INSERT_TEMP | technical_only | samples/17_Dishonoured_Cheque_Penalty_Calc.sql | 01_batch3_main_body:chunk_text_06, 01_batch3_main_body:chunk_text_06, 01_batch3_main_body | INSERT INTO #PenaltyStaging (AccountId, PenaltyAmount, DishonourCount) SELECT D.AccountId, D.PenaltyAmount, (SELECT COUNT(*) FROM PRO.DishonouredCheque D2 WHERE D2.AccountId = D.AccountId AND D2.DishonourDate >= @LookbackWindowStart) FRO... |
+| UPDATE | covered_by_rule | unavailable | 01_batch3_main_body:embedded_01_07, 01_batch3_main_body:embedded_01_07, 01_batch3_main_body | UPDATE A SET A.OutstandingBalance = ISNULL(A.OutstandingBalance, 0) + D.PenaltyAmount FROM PRO.LoanAccountCal A INNER JOIN PRO.DishonouredCheque D ON D.AccountId = A.AccountId WHERE D.DishonourDate = @ProcessDate AND D.PenaltyAmount IS N... |
+| UPDATE | covered_by_rule | unavailable | 01_batch3_main_body:embedded_02_08, 01_batch3_main_body:embedded_02_08, 01_batch3_main_body | UPDATE D SET D.PenaltyApplied = 'Y' FROM PRO.DishonouredCheque D WHERE D.DishonourDate = @ProcessDate AND D.PenaltyAmount IS NOT NULL |
+| READ | covered_by_rule | unavailable | 01_batch3_main_body:embedded_03_09, 01_batch3_main_body:embedded_03_09, 01_batch3_main_body | INSERT INTO #PenaltyStaging (AccountId, PenaltyAmount, DishonourCount) SELECT D.AccountId, D.PenaltyAmount, (SELECT COUNT(*) FROM PRO.DishonouredCheque D2 WHERE D2.AccountId = D.AccountId AND D2.DishonourDate >= @LookbackWindowStart) FRO... |
+| INSERT_TEMP | technical_only | unavailable | 01_batch3_main_body:embedded_03_09, 01_batch3_main_body:embedded_03_09, 01_batch3_main_body | INSERT INTO #PenaltyStaging (AccountId, PenaltyAmount, DishonourCount) SELECT D.AccountId, D.PenaltyAmount, (SELECT COUNT(*) FROM PRO.DishonouredCheque D2 WHERE D2.AccountId = D.AccountId AND D2.DishonourDate >= @LookbackWindowStart) FRO... |
+| MERGE | covered_by_rule | samples/17_Dishonoured_Cheque_Penalty_Calc.sql | 02_batch3_main_body:chunk_text_01, 02_batch3_main_body:chunk_text_01, 02_batch3_main_body | MERGE PRO.ChequePenaltyLedger AS Target USING #PenaltyStaging AS Source ON Target.AccountId = Source.AccountId WHEN MATCHED THEN UPDATE SET Target.PenaltyAmount = Target.PenaltyAmount + Source.PenaltyAmount, Target.DishonourCount = Sourc... |
+| READ_TEMP | technical_only | samples/17_Dishonoured_Cheque_Penalty_Calc.sql | 02_batch3_main_body:chunk_text_04, 02_batch3_main_body:chunk_text_04, 02_batch3_main_body | SELECT P.AccountId INTO #NewSuspensions FROM #PenaltyStaging P INNER JOIN PRO.LoanAccountCal A ON A.AccountId = P.AccountId WHERE P.DishonourCount >= 3 AND (A.ChequeBookSuspended <> 'Y' OR A.ChequeBookSuspended IS NULL) -- Rule 7: suspen... |
+| READ | covered_by_rule | samples/17_Dishonoured_Cheque_Penalty_Calc.sql | 02_batch3_main_body:chunk_text_04, 02_batch3_main_body:chunk_text_04, 02_batch3_main_body | SELECT P.AccountId INTO #NewSuspensions FROM #PenaltyStaging P INNER JOIN PRO.LoanAccountCal A ON A.AccountId = P.AccountId WHERE P.DishonourCount >= 3 AND (A.ChequeBookSuspended <> 'Y' OR A.ChequeBookSuspended IS NULL) -- Rule 7: suspen... |
+| INSERT_TEMP | technical_only | samples/17_Dishonoured_Cheque_Penalty_Calc.sql | 02_batch3_main_body:chunk_text_04, 02_batch3_main_body:chunk_text_04, 02_batch3_main_body | SELECT P.AccountId INTO #NewSuspensions FROM #PenaltyStaging P INNER JOIN PRO.LoanAccountCal A ON A.AccountId = P.AccountId WHERE P.DishonourCount >= 3 AND (A.ChequeBookSuspended <> 'Y' OR A.ChequeBookSuspended IS NULL) -- Rule 7: suspen... |
+| READ_TEMP | technical_only | unavailable | 02_batch3_main_body:embedded_02_06, 02_batch3_main_body:embedded_02_06, 02_batch3_main_body | SELECT P.AccountId INTO #NewSuspensions FROM #PenaltyStaging P INNER JOIN PRO.LoanAccountCal A ON A.AccountId = P.AccountId WHERE P.DishonourCount >= 3 AND (A.ChequeBookSuspended <> 'Y' OR A.ChequeBookSuspended IS NULL) -- Rule 7: suspen... |
+| UPDATE | covered_by_rule | samples/17_Dishonoured_Cheque_Penalty_Calc.sql | 03_batch3_main_body:chunk_text_01, 03_batch3_main_body:chunk_text_01, 03_batch3_main_body | UPDATE PRO.LoanAccountCal SET ChequeBookSuspended = 'Y' WHERE AccountId IN (SELECT AccountId FROM #NewSuspensions) |
+| READ_TEMP | technical_only | samples/17_Dishonoured_Cheque_Penalty_Calc.sql | 03_batch3_main_body:chunk_text_01, 03_batch3_main_body:chunk_text_01, 03_batch3_main_body | UPDATE PRO.LoanAccountCal SET ChequeBookSuspended = 'Y' WHERE AccountId IN (SELECT AccountId FROM #NewSuspensions) |
+| INSERT | covered_by_rule | samples/17_Dishonoured_Cheque_Penalty_Calc.sql | 03_batch3_main_body:chunk_text_02, 03_batch3_main_body:chunk_text_02, 03_batch3_main_body | INSERT INTO PRO.AccountStatusAuditLog (AccountId, TransitionDate, NewStatus, Reason) SELECT AccountId, @ProcessDate, 'CHEQUE_BOOK_SUSPENDED', 'REPEAT_DISHONOUR_THRESHOLD' FROM #NewSuspensions |
+| UPDATE | covered_by_rule | samples/17_Dishonoured_Cheque_Penalty_Calc.sql | 03_batch3_main_body:chunk_text_03, 03_batch3_main_body:chunk_text_03, 03_batch3_main_body | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Dishonoured_Cheque_Penalty_Calc' |
+| READ_TEMP | technical_only | unavailable | 03_batch3_main_body:embedded_01_05, 03_batch3_main_body:embedded_01_05, 03_batch3_main_body | UPDATE PRO.LoanAccountCal SET ChequeBookSuspended = 'Y' WHERE AccountId IN (SELECT AccountId FROM #NewSuspensions) |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body:embedded_01_05, 03_batch3_main_body:embedded_01_05, 03_batch3_main_body | UPDATE PRO.LoanAccountCal SET ChequeBookSuspended = 'Y' WHERE AccountId IN (SELECT AccountId FROM #NewSuspensions) |
+| READ_TEMP | technical_only | unavailable | 03_batch3_main_body:embedded_02_06, 03_batch3_main_body:embedded_02_06, 03_batch3_main_body | INSERT INTO PRO.AccountStatusAuditLog (AccountId, TransitionDate, NewStatus, Reason) SELECT AccountId, @ProcessDate, 'CHEQUE_BOOK_SUSPENDED', 'REPEAT_DISHONOUR_THRESHOLD' FROM #NewSuspensions |
+| INSERT | covered_by_rule | unavailable | 03_batch3_main_body:embedded_02_06, 03_batch3_main_body:embedded_02_06, 03_batch3_main_body | INSERT INTO PRO.AccountStatusAuditLog (AccountId, TransitionDate, NewStatus, Reason) SELECT AccountId, @ProcessDate, 'CHEQUE_BOOK_SUSPENDED', 'REPEAT_DISHONOUR_THRESHOLD' FROM #NewSuspensions |
+| UPDATE | covered_by_rule | unavailable | 03_batch3_main_body:embedded_03_07, 03_batch3_main_body:embedded_03_07, 03_batch3_main_body | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Dishonoured_Cheque_Penalty_Calc' |
+| READ | uncovered | unavailable | 04_batch3_exception:chunk_text_02, 04_batch3_exception:chunk_text_02, 04_batch3_exception | IF EXISTS (SELECT 1 FROM PRO.ACLRUNNINGPROCESSSTATUS WHERE RUNNINGPROCESSNAME = 'Dishonoured_Cheque_Penalty_Calc') |
+| UPDATE | uncovered | samples/17_Dishonoured_Cheque_Penalty_Calc.sql / Lines 128-145 | 04_batch3_exception:chunk_text_04, 04_batch3_exception:chunk_text_04, 04_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Dishonoured_Cheque_Penalty_Calc' |
+| INSERT | uncovered | samples/17_Dishonoured_Cheque_Penalty_Calc.sql / Lines 128-145 | 04_batch3_exception:chunk_text_08, 04_batch3_exception:chunk_text_08, 04_batch3_exception | INSERT INTO PRO.ACLRUNNINGPROCESSSTATUS (RUNNINGPROCESSNAME, COMPLETED, ERRORDATE, ERRORDESCRIPTION, COUNT) VALUES ('Dishonoured_Cheque_Penalty_Calc', 'N', GETDATE(), ERROR_MESSAGE(), 1) |
+| UPDATE | uncovered | unavailable | 04_batch3_exception:embedded_01_13, 04_batch3_exception:embedded_01_13, 04_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'Dishonoured_Cheque_Penalty_Calc' |
+| CASE | covered_by_rule | Lines 32-33 | 00_batch3_main_body:chunk_text_06 | PRO.DishonouredCheque.DishonourReason IS NULL |
+| CASE | covered_by_rule | Lines 33-34 | 00_batch3_main_body:chunk_text_06 | PRO.DishonouredCheque.RepeatCount IS NULL OR PRO.DishonouredCheque.RepeatCount = 0 |
+| CASE | covered_by_rule | Lines 34-35 | 00_batch3_main_body:chunk_text_06 | PRO.DishonouredCheque.RepeatCount = 1 |
+| ELSE | covered_by_rule | Lines 35-36 | 00_batch3_main_body:chunk_text_06 | ELSE |
+| IF_BRANCH | uncovered | samples/17_Dishonoured_Cheque_Penalty_Calc.sql / Lines 133-137 | 04_batch3_exception | EXISTS (SELECT 1 FROM #NewSuspensions.ACLRUNNINGPROCESSSTATUS WHERE RUNNINGPROCESSNAME = 'Dishonoured_Cheque_Penalty_Calc') |
+| ELSE | covered_by_rule | samples/17_Dishonoured_Cheque_Penalty_Calc.sql / Lines 139-142 | 04_batch3_exception | ELSE |
+| CASE | covered_by_rule | Lines 31-31 | unavailable | CASE |
+| CASE_BRANCH | uncovered | Lines 32-32 | unavailable | WHEN D.DishonourReason IS NULL THEN NULL |
+| CASE_BRANCH | uncovered | Lines 33-33 | unavailable | WHEN D.RepeatCount IS NULL OR D.RepeatCount = 0 THEN 350.00 |
+| CASE_BRANCH | uncovered | Lines 34-34 | unavailable | WHEN D.RepeatCount = 1 THEN 750.00 |
+| ELSE | covered_by_rule | Lines 35-35 | unavailable | ELSE 1500.00 |
+| IF | uncovered | Lines 65-65 | unavailable | IF OBJECT_ID( ) IS NOT NULL |
+| CALCULATION | uncovered | Lines 79-79 | unavailable | (SELECT COUNT(*) FROM PRO.DishonouredCheque D2 |
+| CASE_BRANCH | covered_by_rule | Lines 91-91 | unavailable | WHEN MATCHED THEN |
+| CALCULATION | uncovered | Lines 93-93 | unavailable | Target.PenaltyAmount = Target.PenaltyAmount + Source.PenaltyAmount, |
+| CASE_BRANCH | uncovered | Lines 96-96 | unavailable | WHEN NOT MATCHED BY TARGET THEN |
+| IF | uncovered | Lines 103-103 | unavailable | IF OBJECT_ID( ) IS NOT NULL |
+| CATCH | uncovered | Lines 128-128 | unavailable | BEGIN CATCH |
+| IF | uncovered | Lines 132-132 | unavailable | IF EXISTS (SELECT 1 FROM PRO.ACLRUNNINGPROCESSSTATUS WHERE RUNNINGPROCESSNAME = ) |
+| ELSE | covered_by_rule | Lines 138-138 | unavailable | ELSE |
+| CATCH | uncovered | Lines 143-143 | unavailable | END CATCH |
+
+## Confirmed Statement Dependencies
+
+The following dependencies are confirmed from exact table/field matches and source order:
+
+| Relationship | From | To | Confidence |
+|---|---|---|---|
+| table_write_to_later_use | 01_batch3_main_body:embedded_02_08 / PRO.DishonouredCheque | 01_batch3_main_body:embedded_03_09 / PRO.DishonouredCheque | high |
+| table_write_to_later_use | 04_batch3_exception:embedded_01_13 / PRO.ACLRUNNINGPROCESSSTATUS | 04_batch3_exception:chunk_text_08 / PRO.ACLRUNNINGPROCESSSTATUS | high |
+| table_write_to_later_use | 03_batch3_main_body:embedded_03_07 / PRO.ACLRUNNINGPROCESSSTATUS | 04_batch3_exception:chunk_text_08 / PRO.ACLRUNNINGPROCESSSTATUS | high |
+| table_write_to_later_use | 00_batch3_main_body:embedded_01_08 / PRO.DishonouredCheque | 01_batch3_main_body:embedded_03_09 / PRO.DishonouredCheque | high |
+| temp_write_to_read | 01_batch3_main_body:embedded_03_09 / #PenaltyStaging | 02_batch3_main_body:embedded_02_06 / #PenaltyStaging | high |
+| table_write_to_later_use | 04_batch3_exception:chunk_text_04 / PRO.ACLRUNNINGPROCESSSTATUS | 04_batch3_exception:chunk_text_08 / PRO.ACLRUNNINGPROCESSSTATUS | high |
+
+Unresolved dependency candidates: 37. They were not supplied as confirmed dependencies.
+
+## Rule Provenance Summary
+
+- **Total business rules:** 7
+- **By rule type:** deterministic_decision_table = 4, explicit = 3
+- **By validation status:** MATCHED = 1, unverified = 1, verified = 5
+
+_This count reflects every individually traceable rule (one per source statement/field, for full auditability). The business report may show a smaller number, because closely related rules that apply the same pattern to several fields (e.g. "reset each of these six DPD fields to zero if negative") are presented there as one combined rule for readability. Every rule counted here is still individually traceable in the Source Traceability table below - none are dropped, only grouped for display._
+
+_Rules marked **unverified** could not be matched back to the technical extraction or source code - this specific claim remains unresolved and should not yet be treated as a confirmed business rule._
+
+## Reconciliation Summary
+
+- **Matched facts:** 17
+- **Deterministic-only facts:** 3
+- **LLM-only claims:** 2
+- **Conflicts:** 9
+- **Unresolved items:** 0
+- **Review required:** Yes
+
+### Review Items
+
+- `CONFLICT` tables_read (`recon_a8e91f317680`): full_source
+- `CONFLICT` tables_read (`recon_a8e91f317680`): full_source
+- `CONFLICT` tables_written (`recon_1c4a385129d7`): full_source
+- `CONFLICT` tables_written (`recon_1c4a385129d7`): full_source
+- `CONFLICT` tables_written (`recon_1c4a385129d7`): full_source
+
+## Quality Summary
+
+- **Overall status:** REVIEW_REQUIRED
+- **Quality score:** 73.1787606837607/100
+- **Statement coverage:** 26 / 46 (56.5%)
+- **Rule grounding coverage:** 4 / 9 (44.4%)
+- **Decision-chain coverage:** 5 / 6 branches (83.3%)
+- **Decision-chain coverage gaps:** 1 branch(es) require review (`EXISTS (SELECT 1 FROM #NewSuspensions.ACLRUNNINGPROCESSSTATUS WHERE RUNNINGPROCESSNAME = 'Dishonoured_Cheque_Penalty_Calc')`)
+- **Conflicts:** 9
+- **Contradictions:** 11
+- **Review required items:** 22
+- **Review required:** Yes
+
+Deterministic decision-chain coverage is incomplete (83.3%).; Statement parse success is below the preferred threshold.; Rule grounding coverage is below the preferred threshold.
+
+### Contradictions
+
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+
+_Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._
+
+## Pipeline Diagnostics
+
+- Synthesized in 4 section(s) aligned to extraction chunk boundaries because the object exceeded the single-call output-token ceiling; sections were merged into this report.

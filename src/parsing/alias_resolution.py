@@ -206,9 +206,14 @@ def merge_branch_text_looks_like_merge(blob: str) -> bool:
     agree - a rule phrased one way must not look MATCHED to one caller
     and ambiguous to the other.
     """
+    # `when matched` / `when not matched` must count even after alias
+    # rewrite strips `Source.`/`Target.` markers from outcome text - the
+    # deterministic MERGE floors keep those branch prefixes in the
+    # condition cell, and collapse must still classify them as MERGE.
     return bool(
         re.search(
             r"\bmerge\b|target\.|source\.|"
+            r"\bwhen matched\b|\bwhen not matched\b|"
             r"first(?:flagged|seen|evaluated|reconciled|watched)?date|"
             r"matched records?|unmatched records?|record exists in\b|"
             r"record does not exist",

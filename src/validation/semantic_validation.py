@@ -391,6 +391,9 @@ _TSQL_ELSEIF_RE = re.compile(r"^\s*ELSE\s+IF\s+(.+\S)\s*$", re.IGNORECASE)
 _TSQL_ELSE_RE = re.compile(r"^\s*ELSE\s*$", re.IGNORECASE)
 _TSQL_BEGIN_RE = re.compile(r"^\s*BEGIN\s*$", re.IGNORECASE)
 _TSQL_END_RE = re.compile(r"^\s*END\s*;?\s*$", re.IGNORECASE)
+# CASE / END keywords, in order, for CASE-aware block-depth counting
+# in `extract_tsql_if_elseif_chains._skip_block`.
+_CASE_OR_END_TOKEN_RE = re.compile(r"(?i)\b(CASE|END)\b")
 _TSQL_SET_VAR_RE = re.compile(
     r"^\s*SET\s+(?P<field>@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>.+?)\s*;?\s*$", re.IGNORECASE
 )
@@ -490,10 +493,14 @@ def _extract_tsql_branch_row_filter(branch_text: str) -> str:
 def _extract_tsql_branch_assignments(branch_text: str) -> List[Dict[str, str]]:
     """Pull `(field, value)` pairs out of one T-SQL IF-branch's body:
     `SET @var = value` variable assignments, and every column assigned by
-    an `UPDATE ... SET col = value, ...` statement in the branch. A value
-    that itself contains a `CASE` expression is skipped - that expression
-    is `extract_case_assignment_decision_chains`'s evidence to own, not a
-    single per-branch literal this ladder-level extractor should claim.
+    an `UPDATE ... SET col = value, ...` statement in the branch.
+
+    A value that itself contains a `CASE` expression still attributes the
+    field to this branch (with a pointer value), but does not claim the
+    CASE body - that expression is `extract_case_assignment_decision_chains`'s
+    evidence to own. Attributing the field is required so an IF/ELSE whose
+    THEN arm is a CASE and whose ELSE arm is a literal still qualifies as
+    a ladder (both branches assign the same field).
 
     If the branch itself contains a nested `IF`, this returns no
     assignments at all rather than risk misattributing the nested IF's own
@@ -504,9 +511,8 @@ def _extract_tsql_branch_assignments(branch_text: str) -> List[Dict[str, str]]:
     the outer condition AND some nested condition both hold", and
     asserting the former when the truth is the latter is a hallucinated
     condition, not a captured one. The nested IF's own ladder (if it
-    qualifies on its own) is a separate concern this extractor does not
-    currently discover as its own chain - see the module comment for this
-    known limitation.
+    qualifies on its own) is recovered by the recursive call in
+    `extract_tsql_if_elseif_chains`.
     """
     if any(_TSQL_IF_RE.match(line) for line in branch_text.splitlines()):
         return []
@@ -525,7 +531,21 @@ def _extract_tsql_branch_assignments(branch_text: str) -> List[Dict[str, str]]:
             field, _, value = piece.partition("=")
             field = field.strip().split(".")[-1].strip()
             value = value.strip().rstrip(";").strip()
-            if not field or not value or re.search(r"(?i)\bCASE\b", value):
+            if not field or not value:
+                continue
+            if re.search(r"(?i)\bCASE\b", value):
+                # Still attribute the field to this IF branch. Skipping CASE
+                # values entirely made IF/ELSE ladders invisible whenever
+                # the THEN arm was a CASE and the ELSE arm was a literal
+                # (sample 08: nested eligibility CASE vs 'SCHEME_CLOSED') -
+                # the field only appeared in one branch, so the ladder
+                # failed the 2-branch-per-field bar and was dropped. The
+                # CASE body remains owned by extract_case_assignment_
+                # decision_chains; record a pointer, not the CASE body.
+                assignments.append({
+                    "field": field,
+                    "value": "(nested CASE — see separate decision table)",
+                })
                 continue
             assignments.append({"field": field, "value": value})
     assignments.extend(_extract_tsql_insert_assignments(branch_text))
@@ -642,11 +662,30 @@ def extract_tsql_if_elseif_chains(source: str) -> List[Dict[str, Any]]:
         if pos < len(lines) and _TSQL_BEGIN_RE.match(lines[pos]):
             depth = 1
             pos += 1
+            # A multi-line `CASE ... END` closes with a line that is
+            # literally `END`, which `_TSQL_END_RE` cannot tell apart from
+            # a block terminator. Counting it as one silently closed the
+            # branch early and desynchronized the rest of the ladder walk,
+            # so an IF/ELSE IF/ELSE whose branch held a multi-line CASE
+            # lost the *entire* ladder - including the sibling branches
+            # that parse perfectly well. Track CASE nesting alongside
+            # block nesting and let an `END` close the innermost construct
+            # that is actually open. Inline `CASE ... END` nets to zero on
+            # its own line, so it is unaffected.
+            case_depth = 0
             while pos < len(lines) and depth > 0:
-                if _TSQL_BEGIN_RE.match(lines[pos]):
+                line = lines[pos]
+                if case_depth == 0 and _TSQL_BEGIN_RE.match(line):
                     depth += 1
-                elif _TSQL_END_RE.match(lines[pos]):
-                    depth -= 1
+                    pos += 1
+                    continue
+                for token in _CASE_OR_END_TOKEN_RE.findall(line):
+                    if token.upper() == "CASE":
+                        case_depth += 1
+                    elif case_depth > 0:
+                        case_depth -= 1
+                    else:
+                        depth -= 1
                 pos += 1
             return pos
         # Single-statement branch (no BEGIN/END): consume lines until one
@@ -744,6 +783,18 @@ def extract_tsql_if_elseif_chains(source: str) -> List[Dict[str, Any]]:
             continue
 
         last_line_index = min(max(index - 1, chain_start), len(records) - 1)
+        # Prefer the last branch body's real END over `index - 1` after
+        # blank/comment skipping - otherwise the span can swallow the next
+        # statement's comment preamble (sample 09: IF ends at 79, but
+        # blank-skip pushed index past the MERGE comment so source_line_end
+        # became 83 and the MERGE looked IF-owned).
+        branch_end_indices = [
+            int(branch["_end_index"])
+            for branch in branches
+            if isinstance(branch.get("_end_index"), int)
+        ]
+        if branch_end_indices:
+            last_line_index = min(max(branch_end_indices), len(records) - 1)
         chain_id = (
             f"tsql_if_{records[chain_start]['line_number']:04d}_"
             f"{records[last_line_index]['line_number']:04d}"

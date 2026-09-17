@@ -294,6 +294,12 @@ def test_qualified_chain_condition_is_recognized_as_covered_by_bare_model_rule()
     exactly what produced two numbered rules for one decision in a real
     generated report). The synthetic rule must now be skipped - only the
     model's original (bare) rule survives.
+
+    The surviving cover must also be promoted to grounded
+    (`decision_rows_grounded` + `source_chain_id`) so a later claim-level
+    CONFLICT exclusion cannot erase the only representation of the ladder
+    (observed: DpdBucket CASE missing from sample 07 after the covering
+    model rule was CONFLICT-dropped with no deterministic twin).
     """
     chain = {
         'chain_id': 'c1',
@@ -312,6 +318,41 @@ def test_qualified_chain_condition_is_recognized_as_covered_by_bare_model_rule()
     result = RuleSynthesizerAgent.ensure_decision_chain_coverage([bare_model_rule], [chain])
     assert len(result) == 1
     assert result[0]['rule_id'] == 'r1'
+    assert result[0].get('decision_rows_grounded') is True
+    assert result[0].get('source_chain_id') == 'c1'
+
+
+def test_grounded_exact_cover_survives_conflict_exclusion():
+    """Exact-match LLM cover promoted during ensure must not be dropped by
+    `_exclude_conflicting_rules` even when reconciliation left CONFLICT.
+    """
+    chain = {
+        'chain_id': 'case_0043_0050_1482',
+        'branches': [
+            {'branch_condition': 'DpdDays IS NULL', 'assignments': [{'field': 'DpdBucket', 'value': "'NOT_APPLICABLE'"}]},
+            {'branch_condition': 'DpdDays = 0', 'assignments': [{'field': 'DpdBucket', 'value': "'CURRENT'"}]},
+            {'branch_condition': 'DpdDays BETWEEN 1 AND 30', 'assignments': [{'field': 'DpdBucket', 'value': "'BUCKET_1_30'"}]},
+        ],
+    }
+    llm_cover = {
+        'rule_id': 'llm_dpd',
+        'output_field': 'DpdBucket',
+        'rule_name': 'Classify DPD bucket',
+        'reconciliation_status': 'CONFLICT',
+        'decision_logic_rows': [
+            {'condition': 'DpdDays IS NULL', 'outcome': "'NOT_APPLICABLE'"},
+            {'condition': 'DpdDays = 0', 'outcome': "'CURRENT'"},
+            {'condition': 'DpdDays BETWEEN 1 AND 30', 'outcome': "'BUCKET_1_30'"},
+        ],
+    }
+    covered = RuleSynthesizerAgent.ensure_decision_chain_coverage([llm_cover], [chain])
+    kept, dropped = ReportFormatterAgent._exclude_conflicting_rules(covered)
+    assert dropped == 0
+    assert len(kept) == 1
+    assert kept[0]['rule_id'] == 'llm_dpd'
+    assert [row['outcome'] for row in kept[0]['decision_logic_rows']] == [
+        "'NOT_APPLICABLE'", "'CURRENT'", "'BUCKET_1_30'",
+    ]
 
 
 def test_duplicate_rule_names_on_different_fields_are_disambiguated():
@@ -826,6 +867,364 @@ def test_collapse_per_column_matched_merge_fragments_with_insert():
     assert [row['condition'] for row in kept[0]['decision_logic_rows']] == [
         'WHEN MATCHED', 'WHEN NOT MATCHED BY TARGET',
     ]
+
+
+def test_suppress_wasteful_duplicate_rules_keeps_distinct_ladders_and_folds_rest():
+    """Samples 08–16 produced wasteful extras: DECLARE junk, MERGE halves
+    beside Upsert, duplicate INSERTs, near-identical CASE restatements, and
+    one-row UPDATE floors for each column of the same statement. Distinct
+    IF vs CASE ladders on the same field must survive.
+    """
+    from src.output.report_formatter import ReportFormatterAgent
+
+    fmt = ReportFormatterAgent()
+    rules = [
+        {
+            "rule_id": "case",
+            "rule_name": "Determine ReviewReason",
+            "output_field": "ReviewReason",
+            "fields_affected": ["ReviewReason"],
+            "decision_context": ["Target: #ProvisionCoverage"],
+            "rule_type": "deterministic_decision_table",
+            "decision_rows_grounded": True,
+            "decision_logic_rows": [
+                # Live floors qualify temp-table columns; bare-name LLM
+                # paraphrases must still collapse after `#Temp.Col` strip.
+                {"condition": "#ProvisionCoverage.CoverageRatio IS NULL", "outcome": "'NO_BALANCE'"},
+                {"condition": "#ProvisionCoverage.CoverageRatio < 0.25", "outcome": "'SEVERE_UNDERCOVER'"},
+                {"condition": "#ProvisionCoverage.CoverageRatio < 0.5", "outcome": "'MODERATE_UNDERCOVER'"},
+                {"condition": "#ProvisionCoverage.CoverageRatio >= 0.5 AND #ProvisionCoverage.CoverageRatio < 1", "outcome": "'ADEQUATE'"},
+                {"condition": "ELSE", "outcome": "'FULLY_COVERED'"},
+            ],
+        },
+        {
+            "rule_id": "llm",
+            "rule_name": "Determine ReviewReason based on CoverageRatio",
+            "output_field": "ReviewReason",
+            "fields_affected": ["ReviewReason"],
+            "decision_context": ["Target: #ProvisionCoverage"],
+            "decision_logic_rows": [
+                {"condition": "CoverageRatio IS NULL", "outcome": "'NO_BALANCE'"},
+                {"condition": "CoverageRatio < 0.25", "outcome": "'SEVERE_UNDERCOVER'"},
+                {"condition": "CoverageRatio < 0.5", "outcome": "'MODERATE_UNDERCOVER'"},
+                {"condition": "CoverageRatio >= 0.5 AND CoverageRatio < 1", "outcome": "'ADEQUATE'"},
+                {"condition": "CoverageRatio >= 1", "outcome": "'FULLY_COVERED'"},
+            ],
+        },
+        {
+            "rule_id": "iff",
+            "rule_name": "Determine ReviewReason (quarter)",
+            "output_field": "ReviewReason",
+            "fields_affected": ["ReviewReason"],
+            "decision_context": ["Target: #ProvisionCoverage"],
+            "rule_type": "deterministic_decision_table",
+            "decision_logic_rows": [
+                {"condition": "@ProcessDate >= DATEADD(MONTH, 1, @QuarterStartDate)",
+                 "outcome": "ReviewReason + '_QUARTER_END'"},
+                {"condition": "ELSE", "outcome": "ReviewReason"},
+            ],
+        },
+        {
+            "rule_id": "decl",
+            "rule_name": "Calculate quarter start date",
+            "output_field": "QuarterStartDate",
+            "fields_affected": ["QuarterStartDate"],
+            "decision_logic_rows": [],
+        },
+        {
+            "rule_id": "up",
+            "rule_name": "Upsert provisioncoveragesummary",
+            "output_field": "OutstandingBalance, CoverageRatio",
+            "fields_affected": ["OutstandingBalance", "CoverageRatio"],
+            "decision_context": ["Target: PRO.ProvisionCoverageSummary"],
+            "decision_logic_rows": [
+                {"condition": "WHEN MATCHED", "outcome": "Source.OutstandingBalance"},
+                {"condition": "WHEN NOT MATCHED BY TARGET", "outcome": "Source.AccountId"},
+            ],
+        },
+        {
+            "rule_id": "half",
+            "rule_name": "Insert new records",
+            "output_field": "AccountId, OutstandingBalance",
+            "fields_affected": ["AccountId", "OutstandingBalance"],
+            "decision_context": ["Target: PRO.ProvisionCoverageSummary"],
+            "decision_logic_rows": [
+                {"condition": "WHEN NOT MATCHED BY TARGET", "outcome": "Source.AccountId"},
+            ],
+            "source_evidence": ["WHEN NOT MATCHED BY TARGET THEN INSERT"],
+        },
+        {
+            "rule_id": "matched_restatement",
+            "rule_name": "Update coverage ratio",
+            "output_field": "CoverageRatio",
+            "fields_affected": ["CoverageRatio"],
+            "decision_context": ["Target: PRO.ProvisionCoverageSummary"],
+            "decision_logic_rows": [
+                {"condition": "record matched", "outcome": "Source.CoverageRatio"},
+            ],
+        },
+        {
+            "rule_id": "s1",
+            "rule_name": "Update account status",
+            # Live sample 08 omits Target: and only qualifies the column.
+            "output_field": "PRO.LoanAccountCal.AccountStatus",
+            "fields_affected": ["PRO.LoanAccountCal.AccountStatus"],
+            "decision_logic_rows": [
+                {"condition": "#RestructureDecisions.EligibleFlag = 'Y'", "outcome": "'RESTRUCTURED'"}
+            ],
+        },
+        {
+            "rule_id": "s2",
+            "rule_name": "Update last payment due date",
+            "output_field": "PRO.LoanAccountCal.LastPaymentDueDate",
+            "fields_affected": ["PRO.LoanAccountCal.LastPaymentDueDate"],
+            "decision_logic_rows": [
+                {"condition": "#RestructureDecisions.EligibleFlag = 'Y'", "outcome": "DATEADD(MONTH, 1, @ProcessDate)"}
+            ],
+        },
+        {
+            "rule_id": "audit_full",
+            "rule_name": "Insert into RestructureAuditLog",
+            "output_field": "AccountId, DecisionDate, EligibleFlag",
+            "fields_affected": ["AccountId", "DecisionDate", "EligibleFlag"],
+            "decision_context": ["Target: PRO.RestructureAuditLog"],
+            "decision_logic_rows": [
+                {"condition": "EligibleFlag = 'Y'", "outcome": "insert"},
+            ],
+        },
+        {
+            "rule_id": "audit_dup",
+            "rule_name": "Insert into audit log",
+            "output_field": "Not specified",
+            "fields_affected": [],
+            "decision_context": ["Target: PRO.RestructureAuditLog"],
+            "decision_logic_rows": [],
+            "summary": ["Insert records into the RestructureAuditLog table"],
+        },
+    ]
+    merged = {
+        "tables_written": [
+            {"table": "#ProvisionCoverage"},
+            {"table": "PRO.ProvisionCoverageSummary"},
+            {"table": "PRO.LoanAccountCal"},
+            {"table": "PRO.RestructureAuditLog"},
+            {"table": "#RestructureDecisions"},
+        ]
+    }
+    out = fmt._suppress_wasteful_duplicate_rules(rules, merged)
+    names = [r["rule_name"] for r in out]
+    assert "Calculate quarter start date" not in names
+    assert "Insert new records" not in names
+    assert "Determine ReviewReason based on CoverageRatio" not in names
+    assert "Update coverage ratio" not in names
+    assert "Insert into audit log" not in names
+    assert "Determine ReviewReason" in names
+    assert "Determine ReviewReason (quarter)" in names
+    assert "Upsert provisioncoveragesummary" in names
+    assert "Insert into RestructureAuditLog" in names
+    combined = next(r for r in out if str(r.get("rule_name") or "").startswith("Update "))
+    assert "AccountStatus" in combined["output_field"]
+    assert "LastPaymentDueDate" in combined["output_field"]
+    assert "AccountStatus :=" in combined["decision_logic_rows"][0]["outcome"]
+
+
+def test_suppress_nested_case_pointer_and_declare_with_placeholder_row():
+    from src.output.report_formatter import ReportFormatterAgent
+
+    fmt = ReportFormatterAgent()
+    rules = [
+        {
+            "rule_id": "ptr",
+            "rule_name": "Determine ReviewPriority",
+            "output_field": "ReviewPriority",
+            "fields_affected": ["ReviewPriority"],
+            "decision_logic_rows": [
+                {
+                    "condition": "DATEPART(MONTH, @ProcessDate) IN (3, 6, 9, 12)",
+                    "outcome": "(nested CASE — see separate decision table)",
+                },
+                {
+                    "condition": "ELSE",
+                    "outcome": "(nested CASE — see separate decision table)",
+                },
+            ],
+        },
+        {
+            "rule_id": "case",
+            "rule_name": "Determine ReviewPriority (#CollateralStaging)",
+            "output_field": "ReviewPriority",
+            "fields_affected": ["ReviewPriority"],
+            "decision_context": ["Target: #CollateralStaging"],
+            "rule_type": "deterministic_decision_table",
+            "decision_logic_rows": [
+                {"condition": "ShortfallAmount IS NULL", "outcome": "'NONE'"},
+                {"condition": "ShortfallAmount > 500000", "outcome": "'URGENT'"},
+                {"condition": "ELSE", "outcome": "'NONE'"},
+            ],
+        },
+        {
+            "rule_id": "decl",
+            "rule_name": "Calculate dispute grace cutoff",
+            "output_field": "DisputeGraceCutoff",
+            "fields_affected": ["DisputeGraceCutoff"],
+            "decision_logic_rows": [
+                {"condition": "ProcessDate is set", "outcome": "DisputeGraceCutoff"},
+            ],
+            "summary": [
+                "Determine the dispute grace cutoff date by subtracting 30 days from the process date."
+            ],
+        },
+    ]
+    out = fmt._suppress_wasteful_duplicate_rules(
+        rules, {"tables_written": [{"table": "#CollateralStaging"}]}
+    )
+    names = [r["rule_name"] for r in out]
+    assert names == ["Determine ReviewPriority (#CollateralStaging)"]
+
+
+def test_dedup_field_bare_name_strips_temp_table_hash_prefix():
+    from src.output.report_formatter import ReportFormatterAgent
+
+    assert (
+        ReportFormatterAgent._dedup_field_bare_name(
+            "#ProvisionCoverage.CoverageRatio IS NULL"
+        )
+        == "CoverageRatio IS NULL"
+    )
+    assert (
+        ReportFormatterAgent._normalize_condition_text(
+            "#RestructureDecisions.EligibleFlag = 'Y'", bare_fields=True
+        )
+        == "eligibleflag = y"
+    )
+
+
+def test_dpd_sample_has_no_wasteful_duplicates_in_current_shape():
+    """Sample 07's post-fix rule list is already one rule per real
+    decision (~9–10). Wasteful suppression must not delete distinct
+    ladders (DpdBucket CASE vs PenalInterest vs grace IF vs upsert).
+    """
+    from src.output.report_formatter import ReportFormatterAgent
+
+    fmt = ReportFormatterAgent()
+    rules = [
+        {"rule_id": "1", "rule_name": "Insert into #DpdStaging", "output_field": "AccountId, DpdBucket",
+         "fields_affected": ["AccountId", "DpdBucket"], "decision_context": ["Target: #DpdStaging"],
+         "decision_logic_rows": [{"condition": "BucketWorsened = 'Y'", "outcome": "insert"}],
+         "rule_type": "deterministic_decision_table"},
+        {"rule_id": "2", "rule_name": "Determine BucketWorsened, GracePeriodApplied",
+         "output_field": "BucketWorsened, GracePeriodApplied",
+         "fields_affected": ["BucketWorsened", "GracePeriodApplied"],
+         "decision_context": ["Target: PRO.LoanAccountCal"],
+         "rule_type": "deterministic_decision_table",
+         "decision_logic_rows": [
+             {"condition": "EXISTS (SELECT 1 FROM PRO.LoanAccountCal WHERE LastPaymentDueDate >= @GraceWindowStart)",
+              "outcome": "BucketWorsened := 'N'; GracePeriodApplied := 'Y'"},
+             {"condition": "ELSE", "outcome": "BucketWorsened := 'N'"},
+         ]},
+        {"rule_id": "3", "rule_name": "Classify DPD buckets", "output_field": "DpdBucket",
+         "fields_affected": ["DpdBucket"], "decision_context": ["Target: PRO.LoanAccountCal"],
+         "rule_type": "deterministic_decision_table", "decision_rows_grounded": True,
+         "decision_logic_rows": [
+             {"condition": "DpdDays IS NULL", "outcome": "'NOT_APPLICABLE'"},
+             {"condition": "DpdDays = 0", "outcome": "'CURRENT'"},
+             {"condition": "ELSE", "outcome": "'BUCKET_90_PLUS'"},
+         ]},
+        {"rule_id": "4", "rule_name": "Calculate PenalInterestAmount", "output_field": "PenalInterestAmount",
+         "fields_affected": ["PenalInterestAmount"], "decision_context": ["Target: PRO.LoanAccountCal"],
+         "rule_type": "deterministic_decision_table",
+         "decision_logic_rows": [
+             {"condition": "DpdBucket = 'BUCKET_1_30'", "outcome": "x"},
+             {"condition": "ELSE", "outcome": "0"},
+         ]},
+        {"rule_id": "5", "rule_name": "Upsert dpdbuckethistory",
+         "output_field": "DpdBucket, AdjustedPenalty",
+         "fields_affected": ["DpdBucket", "AdjustedPenalty"],
+         "decision_context": ["Target: PRO.DpdBucketHistory"],
+         "decision_logic_rows": [
+             {"condition": "WHEN MATCHED", "outcome": "Source.DpdBucket"},
+             {"condition": "WHEN NOT MATCHED BY TARGET", "outcome": "Source.AccountId"},
+         ]},
+    ]
+    out = fmt._suppress_wasteful_duplicate_rules(rules, {
+        "tables_written": [
+            {"table": "#DpdStaging"},
+            {"table": "PRO.LoanAccountCal"},
+            {"table": "PRO.DpdBucketHistory"},
+        ]
+    })
+    assert len(out) == 5
+    assert {r["rule_name"] for r in out} == {r["rule_name"] for r in rules}
+
+
+def test_collapse_merge_floors_after_alias_rewrite_strips_source_target():
+    """Deterministic MERGE floors keep `WHEN MATCHED` / `WHEN NOT MATCHED`
+    in the condition cell but lose `Source.`/`Target.` after alias rewrite.
+    Collapse must still recognize them as MERGE halves (sample 07 otherwise
+    left 8 per-column floors + a bad LLM upsert).
+    """
+    from src.parsing.alias_resolution import (
+        merge_branch_text_looks_like_merge,
+        resolve_aliases_in_business_rules,
+    )
+
+    floors = []
+    for branch, fields in (
+        ('WHEN MATCHED', ('DpdBucket', 'AdjustedPenalty', 'LastUpdatedDate')),
+        ('WHEN NOT MATCHED BY TARGET', ('AccountId', 'DpdBucket', 'AdjustedPenalty', 'FirstFlaggedDate', 'LastUpdatedDate')),
+    ):
+        for field in fields:
+            floors.append({
+                'rule_id': f'{branch}_{field}',
+                'rule_name': f'Determine {field}',
+                'output_field': field,
+                'fields_affected': [field],
+                'decision_context': ['Target: PRO.DpdBucketHistory'],
+                'decision_logic_rows': [{
+                    'condition': f'{branch}: AccountId = Source.AccountId',
+                    'outcome': (
+                        f'Source.{field}' if field not in ('LastUpdatedDate', 'FirstFlaggedDate')
+                        else '@ProcessDate'
+                    ),
+                }],
+                'source_evidence': [
+                    'MERGE PRO.DpdBucketHistory AS Target USING #DpdStaging AS Source '
+                    f'ON Target.AccountId = Source.AccountId {branch} THEN Source.{field}'
+                ],
+            })
+
+    merged = {
+        'table_operations': [{
+            'operation': 'MERGE',
+            'table': 'PRO.DpdBucketHistory',
+            'table_alias': 'Target',
+            'source_statement_text': (
+                'MERGE PRO.DpdBucketHistory AS Target USING #DpdStaging AS Source '
+                'ON Target.AccountId = Source.AccountId'
+            ),
+        }],
+        'decision_chains': [],
+    }
+    rewritten = resolve_aliases_in_business_rules(floors, merged)
+    for rule in rewritten:
+        blob = ' '.join([
+            str(rule.get('rule_name') or ''),
+            ' '.join(str(row.get('condition') or '') for row in (rule.get('decision_logic_rows') or [])),
+            ' '.join(str(row.get('outcome') or '') for row in (rule.get('decision_logic_rows') or [])),
+            ' '.join(str(x) for x in (rule.get('source_evidence') or [])),
+        ]).casefold()
+        assert merge_branch_text_looks_like_merge(blob), blob
+        # Outcomes should no longer carry Source./Target. markers.
+        outcomes = ' '.join(str(row.get('outcome') or '') for row in (rule.get('decision_logic_rows') or []))
+        assert 'Source.' not in outcomes and 'Target.' not in outcomes
+
+    kept = ReportFormatterAgent()._collapse_merge_upsert_halves(rewritten)
+    assert len(kept) == 1
+    assert kept[0]['rule_name'].startswith('Upsert')
+    assert [row['condition'] for row in kept[0]['decision_logic_rows']] == [
+        'WHEN MATCHED', 'WHEN NOT MATCHED BY TARGET',
+    ]
+
 
 def test_single_write_identity_collapses_competing_noncanonical_tables():
     """Two model paraphrases of the same single-write field (e.g. RiskScore)

@@ -231,8 +231,9 @@ def test_variable_assignment_branches_are_captured():
 
 
 # --------------------------------------------------------------------------
-# 6. A CASE-derived value inside a branch is left to the CASE extractor,
-#    not claimed here
+# 6. A CASE-derived value inside a branch attributes the field (so the
+#    IF/ELSE ladder still qualifies) but leaves the CASE body to the CASE
+#    extractor
 # --------------------------------------------------------------------------
 
 
@@ -250,11 +251,17 @@ def test_case_expression_value_inside_a_branch_is_not_claimed_by_this_extractor(
     END
     """
     chains = extract_tsql_if_elseif_chains(sql)
-    for chain in chains:
-        for branch in chain["branches"]:
-            for assignment in branch["assignments"]:
-                assert "CASE" not in assignment["value"].upper()
-
+    assert len(chains) == 1
+    then_assigns = chains[0]["branches"][0]["assignments"]
+    else_assigns = chains[0]["branches"][1]["assignments"]
+    assert then_assigns == [{
+        "field": "Tier",
+        "value": "(nested CASE — see separate decision table)",
+    }]
+    # Pointer must not embed the CASE body (GOLD/SILVER stay with the CASE extractor).
+    assert "GOLD" not in then_assigns[0]["value"].upper()
+    assert "SILVER" not in then_assigns[0]["value"].upper()
+    assert else_assigns == [{"field": "Tier", "value": "'INACTIVE'"}]
 
 # --------------------------------------------------------------------------
 # 7. A chain where two branches each assign a DIFFERENT field once is
@@ -492,6 +499,113 @@ def test_row_filter_is_captured_separately_from_branch_selection_condition():
     assert branches[1]["row_filter"] == ""
 
 
+def test_if_else_with_case_then_and_literal_else_still_emits_ladder():
+    """Sample 08 shape: IF scheme-open THEN SET col = CASE... ELSE SET col
+    = 'SCHEME_CLOSED'. Skipping CASE-valued SET left the field on only the
+    ELSE branch, so the ladder failed the 2-branch-per-field bar and the
+    SCHEME_CLOSED outcome disappeared from the report.
+    """
+    sql = """
+    IF @ProcessDate < @SchemeCutoffDate
+    BEGIN
+        UPDATE A
+        SET A.RestructureEligible =
+            CASE
+                WHEN A.AssetClass IN ('STANDARD', 'SMA') THEN 'Y'
+                ELSE 'N'
+            END
+        FROM PRO.LoanAccountCal A
+    END
+    ELSE
+    BEGIN
+        UPDATE A
+        SET A.RestructureEligible = 'SCHEME_CLOSED'
+        FROM PRO.LoanAccountCal A
+    END
+    """
+    chains = extract_tsql_if_elseif_chains(sql)
+    assert len(chains) == 1
+    branches = chains[0]["branches"]
+    assert len(branches) == 2
+    assert branches[0]["branch_condition"] == "@ProcessDate < @SchemeCutoffDate"
+    assert branches[0]["assignments"] == [{
+        "field": "RestructureEligible",
+        "value": "(nested CASE — see separate decision table)",
+    }]
+    assert branches[1]["branch_condition"] == "ELSE"
+    assert branches[1]["assignments"] == [{
+        "field": "RestructureEligible",
+        "value": "'SCHEME_CLOSED'",
+    }]
+    rules = RuleSynthesizerAgent.ensure_decision_chain_coverage([], chains)
+    assert any(
+        "SCHEME_CLOSED" in str(row.get("outcome") or "")
+        for rule in rules
+        for row in (rule.get("decision_logic_rows") or [])
+    )
+
+
+def test_merge_after_if_ladder_is_not_owned_by_overextended_if_span():
+    """Sample 09: IF quarter-end ReviewReason append ends, then comments,
+    then MERGE. The IF span must not swallow the MERGE comment lines, and
+    MERGE floors must still emit when only an insert-half LLM rule exists.
+    """
+    from src.synthesis.rule_synthesizer import RuleSynthesizerAgent
+
+    sql_path = Path(__file__).resolve().parents[1] / "samples" / "09_Provision_Coverage_Merge.sql"
+    raw = sql_path.read_text(encoding="utf-8")
+    chains = extract_tsql_if_elseif_chains(raw)
+    assert chains
+    review_if = next(c for c in chains if "ReviewReason" in str(c))
+    # Real ELSE END is on line 79; must not reach the MERGE comment/preamble.
+    assert review_if["source_line_end"] <= 79
+
+    merge_op = {
+        "operation": "MERGE",
+        "table": "PRO.ProvisionCoverageSummary",
+        "source_line_start": 81,
+        "source_statement_id": "merge_09",
+        "merge_on_predicate": "Target.AccountId = Source.AccountId",
+        "assigned_values": [
+            {"merge_branch": "MATCHED", "column": "OutstandingBalance", "expression": "Source.OutstandingBalance"},
+            {"merge_branch": "MATCHED", "column": "ProvisionAmount", "expression": "Source.ProvisionAmount"},
+            {"merge_branch": "MATCHED", "column": "CoverageRatio", "expression": "Source.CoverageRatio"},
+            {"merge_branch": "MATCHED", "column": "LastUpdatedDate", "expression": "@ProcessDate"},
+            {"merge_branch": "NOT_MATCHED_BY_TARGET", "column": "AccountId", "expression": "Source.AccountId"},
+            {"merge_branch": "NOT_MATCHED_BY_TARGET", "column": "OutstandingBalance", "expression": "Source.OutstandingBalance"},
+            {"merge_branch": "NOT_MATCHED_BY_TARGET", "column": "FirstSeenDate", "expression": "@ProcessDate"},
+            {"merge_branch": "NOT_MATCHED_BY_TARGET", "column": "LastUpdatedDate", "expression": "@ProcessDate"},
+        ],
+    }
+    insert_only = {
+        "rule_id": "llm_insert",
+        "rule_name": "Insert new records",
+        "output_field": "AccountId, OutstandingBalance, ProvisionAmount, CoverageRatio, FirstSeenDate, LastUpdatedDate",
+        "fields_affected": [
+            "AccountId", "OutstandingBalance", "ProvisionAmount",
+            "CoverageRatio", "FirstSeenDate", "LastUpdatedDate",
+        ],
+        "decision_context": ["Target: PRO.ProvisionCoverageSummary"],
+        "eligibility": ["No matching records exist in the Provision Coverage Summary table"],
+        "decision_logic_rows": [{
+            "condition": "No matching records exist in the Provision Coverage Summary table",
+            "outcome": "insert",
+        }],
+        "source_evidence": ["WHEN NOT MATCHED BY TARGET THEN INSERT"],
+    }
+    merged = {"table_operations": [merge_op], "decision_chains": chains}
+    floored = RuleSynthesizerAgent.ensure_statement_coverage([insert_only], merged)
+    matched_floors = [
+        rule for rule in floored
+        if any(
+            "WHEN MATCHED" in str(row.get("condition") or "").upper()
+            for row in (rule.get("decision_logic_rows") or [])
+        )
+    ]
+    assert matched_floors, "MATCHED MERGE floors must emit despite preceding IF span"
+    from src.output.report_formatter import ReportFormatterAgent
+    collapsed = ReportFormatterAgent()._collapse_merge_upsert_halves(floored)
+    assert any(str(r.get("rule_name") or "").startswith("Upsert") for r in collapsed)
 def test_row_filter_annotation_is_shown_distinctly_in_rendered_rows():
     sql = """
     IF EXISTS (SELECT 1 FROM dbo.Employee WHERE Overtime > 0)

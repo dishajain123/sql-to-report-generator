@@ -80,15 +80,22 @@ def test_coverage_is_order_sensitive_and_preserves_literal_case():
 def test_deterministic_rule_business_meaning_never_echoes_execution_semantics():
     # ensure_decision_chain_coverage's synthetic rule must not put procedural
     # commentary ("First matching row wins...") into business_meaning - that
-    # text belongs only in the separate execution_semantics field. Leaving
-    # business_meaning empty here lets the formatter's own "Not specified"
-    # fallback apply honestly instead of printing something that reads like
-    # an answered business question but isn't one.
+    # text belongs only in the separate execution_semantics field. The
+    # synthesized business_meaning is composed only from the rule's own
+    # fields/conditions/outcomes, so it must never contain that boilerplate,
+    # even though it's no longer left blank (a grounded one-line purpose
+    # beats an honest-but-empty "Not specified").
     sql = "SELECT ISNULL(a.label, CHOOSE(b.rank, 'A', 'B', 'C')) result FROM a LEFT JOIN b ON a.id=b.id"
     chain = _extract_deterministic_decision_chains(sql)[0]
     assert 'SQL type conversion' in chain['execution_semantics']
     rules = RuleSynthesizerAgent.ensure_decision_chain_coverage([], [chain])
-    assert rules[0]['business_meaning'] == ''
+    meaning = rules[0]['business_meaning'].casefold()
+    assert meaning
+    for marker in (
+        'first matching row wins', 'sql type conversion still applies',
+        'else includes false or null',
+    ):
+        assert marker not in meaning
     assert rules[0]['execution_semantics'] == chain['execution_semantics']
 
 

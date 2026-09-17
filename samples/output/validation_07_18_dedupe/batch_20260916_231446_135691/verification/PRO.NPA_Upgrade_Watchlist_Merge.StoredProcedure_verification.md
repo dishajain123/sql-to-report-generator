@@ -1,0 +1,265 @@
+# NPA Upgrade Watchlist Merge — Verification & Traceability
+
+> Companion artifact to `PRO.NPA_Upgrade_Watchlist_Merge.StoredProcedure_report.md`. Everything here is pipeline/source provenance for review and audit; none of it appears in the business report.
+
+| Item | Value |
+|---|---|
+| Object ID | `obj_487edfd00cd3` |
+| Raw technical object name (from source) | `NPA_Upgrade_Watchlist_Merge` |
+
+## Run Metadata
+
+| Item | Value |
+|---|---|
+| Pipeline Version | `2026-08-26-phase1` |
+| Prompt Version | `4f519f469b95300a` |
+| Knowledge Base Version | `2e6fc62902751973` |
+| Model | `amazon.nova-lite-v1:0` |
+| Provider | `bedrock` |
+| Dialect | `T-SQL` |
+| Dialect Confidence | `High` |
+| Source Hash | `e9da111153acb52b0740fcc4803ef165c0400a479e089385010a9437a8eba1a4` |
+| Configuration Version | `db93bfb59420a471` |
+| Run Timestamp | `2026-09-16T23:17:15.616005+00:00` |
+| Object ID | `obj_487edfd00cd3` |
+
+## LLM Telemetry
+
+| Item | Value |
+|---|---|
+| Run ID | `telemetry_bec5b86fdde3` |
+| Total LLM Calls | `8` |
+| Successful Calls | `8` |
+| Failed Calls | `0` |
+| Prompt Tokens | `70735` |
+| Completion Tokens | `6824` |
+| Total Tokens | `77559` |
+| Telemetry Availability | `available` |
+
+| Stage | Calls | Success | Failure | Tokens | Availability |
+|---|---:|---:|---:|---:|---|
+| extraction | 1 | 1 | 0 | 6726 | available |
+| synthesis | 5 | 5 | 0 | 38210 | available |
+| synthesis_revision | 2 | 2 | 0 | 32623 | available |
+
+## Business Rule Summary
+
+| Priority | Rule | Output | Business Purpose |
+|---|---|---|---|
+| 🟠 1 | Insert into #WatchlistStaging [MATCHED] (`deterministic_statement_00_batch3_main_body:chunk_text_11_accountid`) | `AccountId, AssetClass, DaysSinceLastOverdue, EligibleForUpgrade` | Not specified |
+| 🟠 2 | Determine UpgradeDate [MATCHED] (`deterministic_statement_04_batch3_main_body:chunk_text_01_upgradedate`) | `UpgradeDate` | Not specified |
+| 🟠 3 | Insert into AccountStatusAuditLog [MATCHED] (`deterministic_statement_04_batch3_main_body:chunk_text_02_accountid`) | `AccountId, TransitionDate, NewStatus, Reason` | Not specified |
+| 🟠 4 | Upsert npaupgradewatchlist [MATCHED] (`deterministic_statement_03_batch3_main_body:chunk_text_01:MATCHED_dayssincelastoverdue+upsert`) | `DaysSinceLastOverdue, EligibleForUpgrade, LastCheckedDate, AccountId, AssetClass, FirstWatchedDate` | Refresh existing rows and insert rows not already present. |
+| 🟠 5 | Determine EligibleForUpgrade [MATCHED] (`deterministic_tsql_if_0073_0084_eligibleforupgrade`) | `EligibleForUpgrade` | Not specified |
+| 🟠 6 | Calculate days since last overdue [LLM_ONLY] (`rule__1`) | `PRO.LoanAccountCal.DaysSinceLastOverdue` | Determine the number of days since the last overdue date for non-standard asset classes. |
+| 🟢 7 | Determine EligibleForUpgrade [MATCHED] (`rule__1__3`) | `EligibleForUpgrade` | Set the 'EligibleForUpgrade' field based on the days since last overdue and asset class. |
+| 🟠 8 | Upsert matched and new records [LLM_ONLY] (`rule__1__5+upsert`) | `DaysSinceLastOverdue, EligibleForUpgrade, LastCheckedDate, AccountId, AssetClass, FirstWatchedDate` | Update the DaysSinceLastOverdue, EligibleForUpgrade, and LastCheckedDate fields for existing records in the NPA Upgrade Watchlist with the… |
+| 🟠 9 | Delete overdue records [UNRESOLVED] (`rule__3`) | `Not specified` | Remove records from the NPA Upgrade Watchlist where the account ID is associated with overdue days greater than zero in the LoanAccountCal… |
+
+## Source Traceability
+
+<details>
+<summary><strong>Show rule-to-source mapping</strong></summary>
+
+| # | Rule | Source Evidence | Source Location | SQL Statements / Chunks | Technical References | Notes |
+|---|---|---|---|---|---|---|
+| 1 | Insert into #WatchlistStaging (deterministic_statement_00_batch3_main_body:chunk_text_11_accountid) | Not cited | source | 00_batch3_main_body | Not cited | Verified |
+| 2 | Determine UpgradeDate (deterministic_statement_04_batch3_main_body:chunk_text_01_upgradedate) | Not cited | source | 04_batch3_main_body | Not cited | Verified |
+| 3 | Insert into AccountStatusAuditLog (deterministic_statement_04_batch3_main_body:chunk_text_02_accountid) | Not cited | source | 04_batch3_main_body | Not cited | Verified |
+| 4 | Upsert npaupgradewatchlist (deterministic_statement_03_batch3_main_body:chunk_text_01:MATCHED_dayssincelastoverdue+upsert) | Not cited | source | 03_batch3_main_body | Not cited | Verified |
+| 5 | Determine EligibleForUpgrade (deterministic_tsql_if_0073_0084_eligibleforupgrade) | Not cited | source \| Lines 73-84 | Not cited | Not cited | Verified |
+| 6 | Calculate days since last overdue (rule__1) | UPDATE A SET PRO.LoanAccountCal.DaysSinceLastOverdue = DATEDIFF(DAY, PRO.LoanAccountCal.LastOverdueClearedDate, @ProcessDate) FROM PRO.LoanAccountCal A WHERE PRO.LoanAccountCal.AssetClass <> 'STANDARD' AND PRO.LoanAccountCal.OverdueDays = 0 AND PRO.LoanAccoun… | Not cited | Not cited | 00_batch3_main_body:embedded_01_12 | Needs Review |
+| 7 | Determine EligibleForUpgrade (rule__1__3) | WHEN #WatchlistStaging.DaysSinceLastOverdue IS NULL THEN 'N'; WHEN #WatchlistStaging.AssetClass = 'SUBSTANDARD' AND #WatchlistStaging.DaysSinceLastOverdue >= @StandardWatchPeriodDays THEN 'Y'; WHEN #WatchlistStaging.AssetClass IN ('DOUBTFUL', 'LOSS') AND #Wat… | Not cited | Not cited | Not cited | Verified |
+| 8 | Upsert matched and new records (rule__1__5+upsert) | MERGE PRO.NpaUpgradeWatchlist AS Target USING #WatchlistStaging AS Source ON PRO.NpaUpgradeWatchlist.AccountId = #WatchlistStaging.AccountId WHEN MATCHED THEN UPDATE SET PRO.NpaUpgradeWatchlist.DaysSinceLastOverdue = #WatchlistStaging.DaysSinceLastOverdue, PR… | Not cited | Not cited | MERGE statement | Needs Review |
+| 9 | Delete overdue records (rule__3) | DELETE FROM PRO.NpaUpgradeWatchlist WHERE AccountId IN (SELECT AccountId FROM PRO.LoanAccountCal WHERE OverdueDays > 0) | Not cited | Not cited | DELETE statement | Needs Review |
+
+### Decision-Chain Branch Provenance
+
+| Branch | Condition | Source Location |
+|---|---|---|
+| case_0061_0066_2296:branch_001 | #WatchlistStaging.DaysSinceLastOverdue IS NULL | source \| Lines 62-63 \| Statement 00_batch3_main_body:chunk_text_11 |
+| case_0061_0066_2296:branch_002 | #WatchlistStaging.AssetClass = 'SUBSTANDARD' AND #WatchlistStaging.DaysSinceLastOverdue >= @StandardWatchPeriodDays | source \| Lines 63-64 \| Statement 00_batch3_main_body:chunk_text_11 |
+| case_0061_0066_2296:branch_003 | #WatchlistStaging.AssetClass IN ('DOUBTFUL', 'LOSS') AND #WatchlistStaging.DaysSinceLastOverdue >= @DoubtfulWatchPeriodDays | source \| Lines 64-65 \| Statement 00_batch3_main_body:chunk_text_11 |
+| case_0061_0066_2296:branch_004 | ELSE | source \| Lines 65-66 |
+| tsql_if_0073_0084:branch_001 | DAY(@ProcessDate) = 1 | source \| Lines 74-79 |
+| tsql_if_0073_0084:branch_002 | ELSE | samples/15_NPA_Upgrade_Watchlist_Merge.sql \| Lines 81-84 \| Chunk 02_batch3_nested_block |
+
+_Source evidence is the literal technical text carried through the pipeline; Source Location is derived deterministically from chunk and statement provenance when available; SQL Statements / Chunks and Technical References point back to the extracted chunk ids and statement references used by the guardrails. Technical references that repeat the same table/operation/target-columns are shown once._
+</details>
+
+## Completeness Ledger
+
+- **Executable constructs:** 90
+- **Disposition:** covered_by_rule=57, technical_only=8, uncovered=25
+
+| Construct | Status | Source location | Statement / chunk | Evidence |
+|---|---|---|---|---|
+| STATEMENT | covered_by_rule | Lines 1-5 | 00_batch3_main_body:chunk_text_01, 00_batch3_main_body | USE [DEMO_MISDB] SET ANSI_NULLS ON SET QUOTED_IDENTIFIER ON |
+| STATEMENT | covered_by_rule | Lines 7-8 | 00_batch3_main_body:chunk_text_02, 00_batch3_main_body | BEGIN SET NOCOUNT ON |
+| STATEMENT | covered_by_rule | Lines 11-11 | 00_batch3_main_body:chunk_text_03, 00_batch3_main_body | BEGIN TRY |
+| SELECT | covered_by_rule | Lines 15-15 | 00_batch3_main_body:chunk_text_04, 00_batch3_main_body | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
+| STATEMENT | covered_by_rule | Lines 18-18 | 00_batch3_main_body:chunk_text_05, 00_batch3_main_body | DECLARE @StandardWatchPeriodDays INT = 365 |
+| STATEMENT | covered_by_rule | Lines 21-21 | 00_batch3_main_body:chunk_text_06, 00_batch3_main_body | DECLARE @DoubtfulWatchPeriodDays INT = 545 |
+| STATEMENT | covered_by_rule | Lines 25-25 | 00_batch3_main_body:chunk_text_07, 00_batch3_main_body | IF OBJECT_ID('tempdb..#WatchlistStaging') IS NOT NULL |
+| STATEMENT | covered_by_rule | Lines 28-28 | 00_batch3_main_body:chunk_text_08, 00_batch3_main_body | DROP TABLE #WatchlistStaging |
+| STATEMENT | covered_by_rule | Lines 32-42 | 00_batch3_main_body:chunk_text_09, 00_batch3_main_body | CREATE TABLE #WatchlistStaging ( AccountId VARCHAR(20), AssetClass VARCHAR(20), DaysSinceLastOverdue INT, EligibleForUpgrade VARCHAR(1) ) -- Rule 1: date comparison/derivation - recompute how many days -- have elapsed since the account l... |
+| UPDATE | covered_by_rule | Lines 45-54 | 00_batch3_main_body:chunk_text_10, 00_batch3_main_body | UPDATE A SET A.DaysSinceLastOverdue = DATEDIFF(DAY, A.LastOverdueClearedDate, @ProcessDate) FROM PRO.LoanAccountCal A WHERE A.AssetClass <> 'STANDARD' AND A.OverdueDays = 0 AND A.LastOverdueClearedDate IS NOT NULL AND A.LastOverdueCleare... |
+| INSERT | covered_by_rule | Lines 57-64 | 00_batch3_main_body:chunk_text_11, 00_batch3_main_body | INSERT INTO #WatchlistStaging (AccountId, AssetClass, DaysSinceLastOverdue, EligibleForUpgrade) SELECT A.AccountId, A.AssetClass, A.DaysSinceLastOverdue, 'N' FROM PRO.LoanAccountCal A WHERE A.AssetClass <> 'STANDARD' AND A.OverdueDays =... |
+| UPDATE | covered_by_rule | Lines 45-54 | 00_batch3_main_body:embedded_01_12, 00_batch3_main_body | UPDATE A SET A.DaysSinceLastOverdue = DATEDIFF(DAY, A.LastOverdueClearedDate, @ProcessDate) FROM PRO.LoanAccountCal A WHERE A.AssetClass <> 'STANDARD' AND A.OverdueDays = 0 AND A.LastOverdueClearedDate IS NOT NULL AND A.LastOverdueCleare... |
+| INSERT | covered_by_rule | Lines 57-64 | 00_batch3_main_body:embedded_02_13, 00_batch3_main_body | INSERT INTO #WatchlistStaging (AccountId, AssetClass, DaysSinceLastOverdue, EligibleForUpgrade) SELECT A.AccountId, A.AssetClass, A.DaysSinceLastOverdue, 'N' FROM PRO.LoanAccountCal A WHERE A.AssetClass <> 'STANDARD' AND A.OverdueDays =... |
+| UPDATE | uncovered | Lines 1-14 | 01_batch3_main_body+batch3_nested_block:chunk_text_01, 01_batch3_main_body+batch3_nested_block | UPDATE S SET S.EligibleForUpgrade = ( CASE WHEN S.DaysSinceLastOverdue IS NULL THEN 'N' WHEN S.AssetClass = 'SUBSTANDARD' AND S.DaysSinceLastOverdue >= @StandardWatchPeriodDays THEN 'Y' WHEN S.AssetClass IN ('DOUBTFUL', 'LOSS') AND S.Day... |
+| STATEMENT | uncovered | Lines 17-17 | 01_batch3_main_body+batch3_nested_block:chunk_text_02, 01_batch3_main_body+batch3_nested_block | IF DAY(@ProcessDate) = 1 |
+| STATEMENT | uncovered | Lines 19-19 | 01_batch3_main_body+batch3_nested_block:chunk_text_03, 01_batch3_main_body+batch3_nested_block | BEGIN |
+| UPDATE | uncovered | Lines 20-23 | 01_batch3_main_body+batch3_nested_block:chunk_text_04, 01_batch3_main_body+batch3_nested_block | UPDATE S SET S.EligibleForUpgrade = 'PENDING_APPROVAL' FROM #WatchlistStaging S WHERE S.EligibleForUpgrade = 'Y' |
+| STATEMENT | covered_by_rule | Lines 8-8 | 01_batch3_main_body+batch3_nested_block:chunk_text_05, 01_batch3_main_body+batch3_nested_block | END |
+| STATEMENT | covered_by_rule | Lines 7-7 | 01_batch3_main_body+batch3_nested_block:chunk_text_06, 01_batch3_main_body+batch3_nested_block | ELSE |
+| UPDATE | uncovered | Lines 1-14 | 01_batch3_main_body+batch3_nested_block:embedded_01_07, 01_batch3_main_body+batch3_nested_block | UPDATE S SET S.EligibleForUpgrade = ( CASE WHEN S.DaysSinceLastOverdue IS NULL THEN 'N' WHEN S.AssetClass = 'SUBSTANDARD' AND S.DaysSinceLastOverdue >= @StandardWatchPeriodDays THEN 'Y' WHEN S.AssetClass IN ('DOUBTFUL', 'LOSS') AND S.Day... |
+| UPDATE | uncovered | Lines 20-23 | 01_batch3_main_body+batch3_nested_block:embedded_02_08, 01_batch3_main_body+batch3_nested_block | UPDATE S SET S.EligibleForUpgrade = 'PENDING_APPROVAL' FROM #WatchlistStaging S WHERE S.EligibleForUpgrade = 'Y' |
+| STATEMENT | uncovered | Lines 1-1 | 02_batch3_nested_block:chunk_text_01, 02_batch3_nested_block | BEGIN |
+| UPDATE | uncovered | Lines 2-3 | 02_batch3_nested_block:chunk_text_02, 02_batch3_nested_block | UPDATE S SET S.EligibleForUpgrade = S.EligibleForUpgrade FROM #WatchlistStaging S |
+| STATEMENT | covered_by_rule | Lines 4-4 | 02_batch3_nested_block:chunk_text_03, 02_batch3_nested_block | END |
+| UPDATE | uncovered | Lines 2-3 | 02_batch3_nested_block:embedded_01_04, 02_batch3_nested_block | UPDATE S SET S.EligibleForUpgrade = S.EligibleForUpgrade FROM #WatchlistStaging S |
+| MERGE | covered_by_rule | Lines 1-16 | 03_batch3_main_body:chunk_text_01, 03_batch3_main_body | -- Rule 4: upsert every staged account into the watchlist table - -- refresh accounts already tracked, add accounts newly clear MERGE PRO.NpaUpgradeWatchlist AS Target USING #WatchlistStaging AS Source ON Target.AccountId = Source.Accoun... |
+| DELETE | covered_by_rule | Lines 19-30 | 03_batch3_main_body:chunk_text_02, 03_batch3_main_body | DELETE FROM PRO.NpaUpgradeWatchlist WHERE AccountId IN ( SELECT AccountId FROM PRO.LoanAccountCal WHERE OverdueDays > 0 ) -- Rule 6: status transition - promote every eligible watchlist -- account back to Standard, unless the account has... |
+| DELETE | covered_by_rule | Lines 19-30 | 03_batch3_main_body:embedded_01_03, 03_batch3_main_body | DELETE FROM PRO.NpaUpgradeWatchlist WHERE AccountId IN ( SELECT AccountId FROM PRO.LoanAccountCal WHERE OverdueDays > 0 ) -- Rule 6: status transition - promote every eligible watchlist -- account back to Standard, unless the account has... |
+| UPDATE | covered_by_rule | Lines 1-8 | 04_batch3_main_body:chunk_text_01, 04_batch3_main_body | UPDATE A SET A.AssetClass = 'STANDARD', A.UpgradeDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN PRO.NpaUpgradeWatchlist W ON W.AccountId = A.AccountId AND W.AssetClass = A.AssetClass WHERE W.EligibleForUpgrade = 'Y' -- Rule 7:... |
+| INSERT | covered_by_rule | Lines 11-17 | 04_batch3_main_body:chunk_text_02, 04_batch3_main_body | INSERT INTO PRO.AccountStatusAuditLog (AccountId, TransitionDate, NewStatus, Reason) SELECT A.AccountId, @ProcessDate, 'STANDARD', 'NPA_WATCH_PERIOD_COMPLETE' FROM PRO.LoanAccountCal A INNER JOIN PRO.NpaUpgradeWatchlist W ON W.AccountId... |
+| DELETE | covered_by_rule | Lines 21-22 | 04_batch3_main_body:chunk_text_03, 04_batch3_main_body | DELETE FROM PRO.NpaUpgradeWatchlist WHERE EligibleForUpgrade = 'Y' |
+| UPDATE | covered_by_rule | Lines 26-28 | 04_batch3_main_body:chunk_text_04, 04_batch3_main_body | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'NPA_Upgrade_Watchlist_Merge' |
+| STATEMENT | covered_by_rule | Lines 32-32 | 04_batch3_main_body:chunk_text_05, 04_batch3_main_body | END TRY |
+| UPDATE | covered_by_rule | Lines 1-8 | 04_batch3_main_body:embedded_01_06, 04_batch3_main_body | UPDATE A SET A.AssetClass = 'STANDARD', A.UpgradeDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN PRO.NpaUpgradeWatchlist W ON W.AccountId = A.AccountId AND W.AssetClass = A.AssetClass WHERE W.EligibleForUpgrade = 'Y' -- Rule 7:... |
+| INSERT | covered_by_rule | Lines 11-17 | 04_batch3_main_body:embedded_02_07, 04_batch3_main_body | INSERT INTO PRO.AccountStatusAuditLog (AccountId, TransitionDate, NewStatus, Reason) SELECT A.AccountId, @ProcessDate, 'STANDARD', 'NPA_WATCH_PERIOD_COMPLETE' FROM PRO.LoanAccountCal A INNER JOIN PRO.NpaUpgradeWatchlist W ON W.AccountId... |
+| DELETE | covered_by_rule | Lines 21-22 | 04_batch3_main_body:embedded_03_08, 04_batch3_main_body | DELETE FROM PRO.NpaUpgradeWatchlist WHERE EligibleForUpgrade = 'Y' |
+| UPDATE | covered_by_rule | Lines 26-28 | 04_batch3_main_body:embedded_04_09, 04_batch3_main_body | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'NPA_Upgrade_Watchlist_Merge' |
+| STATEMENT | uncovered | Lines 1-2 | 05_batch3_exception:chunk_text_01, 05_batch3_exception | BEGIN CATCH -- Exception handling: record the failure for operations to investigate |
+| UPDATE | uncovered | Lines 3-5 | 05_batch3_exception:chunk_text_02, 05_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'NPA_Upgrade_Watchlist_Merge' |
+| STATEMENT | uncovered | Lines 6-6 | 05_batch3_exception:chunk_text_03, 05_batch3_exception | END CATCH |
+| SET | uncovered | Lines 7-7 | 05_batch3_exception:chunk_text_04, 05_batch3_exception | SET NOCOUNT OFF |
+| STATEMENT | covered_by_rule | Lines 6-6 | 05_batch3_exception:chunk_text_05, 05_batch3_exception | END |
+| UPDATE | uncovered | Lines 3-5 | 05_batch3_exception:embedded_01_06, 05_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'NPA_Upgrade_Watchlist_Merge' |
+| SET | uncovered | Lines 7-7 | 05_batch3_exception:embedded_02_07, 05_batch3_exception | SET NOCOUNT OFF |
+| READ | covered_by_rule | unavailable | 00_batch3_main_body:chunk_text_04, 00_batch3_main_body:chunk_text_04, 00_batch3_main_body | DECLARE @ProcessDate DATE = (SELECT [Date] FROM SysDayMatrix WHERE TimeKey = @TimeKey) |
+| UPDATE | covered_by_rule | samples/15_NPA_Upgrade_Watchlist_Merge.sql | 00_batch3_main_body:chunk_text_10, 00_batch3_main_body:chunk_text_10, 00_batch3_main_body | UPDATE A SET A.DaysSinceLastOverdue = DATEDIFF(DAY, A.LastOverdueClearedDate, @ProcessDate) FROM PRO.LoanAccountCal A WHERE A.AssetClass <> 'STANDARD' AND A.OverdueDays = 0 AND A.LastOverdueClearedDate IS NOT NULL AND A.LastOverdueCleare... |
+| INSERT_TEMP | technical_only | samples/15_NPA_Upgrade_Watchlist_Merge.sql | 00_batch3_main_body:chunk_text_11, 00_batch3_main_body:chunk_text_11, 00_batch3_main_body | INSERT INTO #WatchlistStaging (AccountId, AssetClass, DaysSinceLastOverdue, EligibleForUpgrade) SELECT A.AccountId, A.AssetClass, A.DaysSinceLastOverdue, 'N' FROM PRO.LoanAccountCal A WHERE A.AssetClass <> 'STANDARD' AND A.OverdueDays =... |
+| UPDATE | covered_by_rule | unavailable | 00_batch3_main_body:embedded_01_12, 00_batch3_main_body:embedded_01_12, 00_batch3_main_body | UPDATE A SET A.DaysSinceLastOverdue = DATEDIFF(DAY, A.LastOverdueClearedDate, @ProcessDate) FROM PRO.LoanAccountCal A WHERE A.AssetClass <> 'STANDARD' AND A.OverdueDays = 0 AND A.LastOverdueClearedDate IS NOT NULL AND A.LastOverdueCleare... |
+| READ | covered_by_rule | unavailable | 00_batch3_main_body:embedded_02_13, 00_batch3_main_body:embedded_02_13, 00_batch3_main_body | INSERT INTO #WatchlistStaging (AccountId, AssetClass, DaysSinceLastOverdue, EligibleForUpgrade) SELECT A.AccountId, A.AssetClass, A.DaysSinceLastOverdue, 'N' FROM PRO.LoanAccountCal A WHERE A.AssetClass <> 'STANDARD' AND A.OverdueDays =... |
+| INSERT_TEMP | technical_only | unavailable | 00_batch3_main_body:embedded_02_13, 00_batch3_main_body:embedded_02_13, 00_batch3_main_body | INSERT INTO #WatchlistStaging (AccountId, AssetClass, DaysSinceLastOverdue, EligibleForUpgrade) SELECT A.AccountId, A.AssetClass, A.DaysSinceLastOverdue, 'N' FROM PRO.LoanAccountCal A WHERE A.AssetClass <> 'STANDARD' AND A.OverdueDays =... |
+| UPDATE_TEMP | technical_only | samples/15_NPA_Upgrade_Watchlist_Merge.sql | 01_batch3_main_body+batch3_nested_block:chunk_text_01, 01_batch3_main_body+batch3_nested_block:chunk_text_01, 01_batch3_main_body+batch3_nested_block | UPDATE S SET S.EligibleForUpgrade = ( CASE WHEN S.DaysSinceLastOverdue IS NULL THEN 'N' WHEN S.AssetClass = 'SUBSTANDARD' AND S.DaysSinceLastOverdue >= @StandardWatchPeriodDays THEN 'Y' WHEN S.AssetClass IN ('DOUBTFUL', 'LOSS') AND S.Day... |
+| UPDATE_TEMP | technical_only | samples/15_NPA_Upgrade_Watchlist_Merge.sql | 01_batch3_main_body+batch3_nested_block:chunk_text_04, 01_batch3_main_body+batch3_nested_block:chunk_text_04, 01_batch3_main_body+batch3_nested_block | UPDATE S SET S.EligibleForUpgrade = 'PENDING_APPROVAL' FROM #WatchlistStaging S WHERE S.EligibleForUpgrade = 'Y' |
+| UPDATE_TEMP | technical_only | unavailable | 01_batch3_main_body+batch3_nested_block:embedded_01_07, 01_batch3_main_body+batch3_nested_block:embedded_01_07, 01_batch3_main_body+batch3_nested_block | UPDATE S SET S.EligibleForUpgrade = ( CASE WHEN S.DaysSinceLastOverdue IS NULL THEN 'N' WHEN S.AssetClass = 'SUBSTANDARD' AND S.DaysSinceLastOverdue >= @StandardWatchPeriodDays THEN 'Y' WHEN S.AssetClass IN ('DOUBTFUL', 'LOSS') AND S.Day... |
+| UPDATE_TEMP | technical_only | unavailable | 01_batch3_main_body+batch3_nested_block:embedded_02_08, 01_batch3_main_body+batch3_nested_block:embedded_02_08, 01_batch3_main_body+batch3_nested_block | UPDATE S SET S.EligibleForUpgrade = 'PENDING_APPROVAL' FROM #WatchlistStaging S WHERE S.EligibleForUpgrade = 'Y' |
+| UPDATE_TEMP | technical_only | samples/15_NPA_Upgrade_Watchlist_Merge.sql / Lines 81-84 | 02_batch3_nested_block:chunk_text_02, 02_batch3_nested_block:chunk_text_02, 02_batch3_nested_block | UPDATE S SET S.EligibleForUpgrade = S.EligibleForUpgrade FROM #WatchlistStaging S |
+| UPDATE_TEMP | technical_only | unavailable | 02_batch3_nested_block:embedded_01_04, 02_batch3_nested_block:embedded_01_04, 02_batch3_nested_block | UPDATE S SET S.EligibleForUpgrade = S.EligibleForUpgrade FROM #WatchlistStaging S |
+| MERGE | covered_by_rule | samples/15_NPA_Upgrade_Watchlist_Merge.sql | 03_batch3_main_body:chunk_text_01, 03_batch3_main_body:chunk_text_01, 03_batch3_main_body | -- Rule 4: upsert every staged account into the watchlist table - -- refresh accounts already tracked, add accounts newly clear MERGE PRO.NpaUpgradeWatchlist AS Target USING #WatchlistStaging AS Source ON Target.AccountId = Source.Accoun... |
+| DELETE | covered_by_rule | samples/15_NPA_Upgrade_Watchlist_Merge.sql | 03_batch3_main_body:chunk_text_02, 03_batch3_main_body:chunk_text_02, 03_batch3_main_body | DELETE FROM PRO.NpaUpgradeWatchlist WHERE AccountId IN ( SELECT AccountId FROM PRO.LoanAccountCal WHERE OverdueDays > 0 ) -- Rule 6: status transition - promote every eligible watchlist -- account back to Standard, unless the account has... |
+| READ | covered_by_rule | unavailable | 03_batch3_main_body:embedded_01_03, 03_batch3_main_body:embedded_01_03, 03_batch3_main_body | DELETE FROM PRO.NpaUpgradeWatchlist WHERE AccountId IN ( SELECT AccountId FROM PRO.LoanAccountCal WHERE OverdueDays > 0 ) -- Rule 6: status transition - promote every eligible watchlist -- account back to Standard, unless the account has... |
+| DELETE | covered_by_rule | unavailable | 03_batch3_main_body:embedded_01_03, 03_batch3_main_body:embedded_01_03, 03_batch3_main_body | DELETE FROM PRO.NpaUpgradeWatchlist WHERE AccountId IN ( SELECT AccountId FROM PRO.LoanAccountCal WHERE OverdueDays > 0 ) -- Rule 6: status transition - promote every eligible watchlist -- account back to Standard, unless the account has... |
+| UPDATE | covered_by_rule | samples/15_NPA_Upgrade_Watchlist_Merge.sql | 04_batch3_main_body:chunk_text_01, 04_batch3_main_body:chunk_text_01, 04_batch3_main_body | UPDATE A SET A.AssetClass = 'STANDARD', A.UpgradeDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN PRO.NpaUpgradeWatchlist W ON W.AccountId = A.AccountId AND W.AssetClass = A.AssetClass WHERE W.EligibleForUpgrade = 'Y' -- Rule 7:... |
+| READ | covered_by_rule | samples/15_NPA_Upgrade_Watchlist_Merge.sql | 04_batch3_main_body:chunk_text_01, 04_batch3_main_body:chunk_text_01, 04_batch3_main_body | UPDATE A SET A.AssetClass = 'STANDARD', A.UpgradeDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN PRO.NpaUpgradeWatchlist W ON W.AccountId = A.AccountId AND W.AssetClass = A.AssetClass WHERE W.EligibleForUpgrade = 'Y' -- Rule 7:... |
+| INSERT | covered_by_rule | samples/15_NPA_Upgrade_Watchlist_Merge.sql | 04_batch3_main_body:chunk_text_02, 04_batch3_main_body:chunk_text_02, 04_batch3_main_body | INSERT INTO PRO.AccountStatusAuditLog (AccountId, TransitionDate, NewStatus, Reason) SELECT A.AccountId, @ProcessDate, 'STANDARD', 'NPA_WATCH_PERIOD_COMPLETE' FROM PRO.LoanAccountCal A INNER JOIN PRO.NpaUpgradeWatchlist W ON W.AccountId... |
+| DELETE | covered_by_rule | samples/15_NPA_Upgrade_Watchlist_Merge.sql | 04_batch3_main_body:chunk_text_03, 04_batch3_main_body:chunk_text_03, 04_batch3_main_body | DELETE FROM PRO.NpaUpgradeWatchlist WHERE EligibleForUpgrade = 'Y' |
+| UPDATE | covered_by_rule | samples/15_NPA_Upgrade_Watchlist_Merge.sql | 04_batch3_main_body:chunk_text_04, 04_batch3_main_body:chunk_text_04, 04_batch3_main_body | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'NPA_Upgrade_Watchlist_Merge' |
+| UPDATE | covered_by_rule | unavailable | 04_batch3_main_body:embedded_01_06, 04_batch3_main_body:embedded_01_06, 04_batch3_main_body | UPDATE A SET A.AssetClass = 'STANDARD', A.UpgradeDate = @ProcessDate FROM PRO.LoanAccountCal A INNER JOIN PRO.NpaUpgradeWatchlist W ON W.AccountId = A.AccountId AND W.AssetClass = A.AssetClass WHERE W.EligibleForUpgrade = 'Y' -- Rule 7:... |
+| READ | covered_by_rule | unavailable | 04_batch3_main_body:embedded_02_07, 04_batch3_main_body:embedded_02_07, 04_batch3_main_body | INSERT INTO PRO.AccountStatusAuditLog (AccountId, TransitionDate, NewStatus, Reason) SELECT A.AccountId, @ProcessDate, 'STANDARD', 'NPA_WATCH_PERIOD_COMPLETE' FROM PRO.LoanAccountCal A INNER JOIN PRO.NpaUpgradeWatchlist W ON W.AccountId... |
+| INSERT | covered_by_rule | unavailable | 04_batch3_main_body:embedded_02_07, 04_batch3_main_body:embedded_02_07, 04_batch3_main_body | INSERT INTO PRO.AccountStatusAuditLog (AccountId, TransitionDate, NewStatus, Reason) SELECT A.AccountId, @ProcessDate, 'STANDARD', 'NPA_WATCH_PERIOD_COMPLETE' FROM PRO.LoanAccountCal A INNER JOIN PRO.NpaUpgradeWatchlist W ON W.AccountId... |
+| DELETE | covered_by_rule | unavailable | 04_batch3_main_body:embedded_03_08, 04_batch3_main_body:embedded_03_08, 04_batch3_main_body | DELETE FROM PRO.NpaUpgradeWatchlist WHERE EligibleForUpgrade = 'Y' |
+| UPDATE | covered_by_rule | unavailable | 04_batch3_main_body:embedded_04_09, 04_batch3_main_body:embedded_04_09, 04_batch3_main_body | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'Y', ERRORDATE = NULL, ERRORDESCRIPTION = NULL, COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'NPA_Upgrade_Watchlist_Merge' |
+| UPDATE | uncovered | samples/15_NPA_Upgrade_Watchlist_Merge.sql / Lines 138-145 | 05_batch3_exception:chunk_text_02, 05_batch3_exception:chunk_text_02, 05_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'NPA_Upgrade_Watchlist_Merge' |
+| UPDATE | uncovered | unavailable | 05_batch3_exception:embedded_01_06, 05_batch3_exception:embedded_01_06, 05_batch3_exception | UPDATE PRO.ACLRUNNINGPROCESSSTATUS SET COMPLETED = 'N', ERRORDATE = GETDATE(), ERRORDESCRIPTION = ERROR_MESSAGE(), COUNT = ISNULL(COUNT, 0) + 1 WHERE RUNNINGPROCESSNAME = 'NPA_Upgrade_Watchlist_Merge' |
+| CASE | covered_by_rule | Lines 62-63 | 00_batch3_main_body:chunk_text_11 | #WatchlistStaging.DaysSinceLastOverdue IS NULL |
+| CASE | covered_by_rule | Lines 63-64 | 00_batch3_main_body:chunk_text_11 | #WatchlistStaging.AssetClass = 'SUBSTANDARD' AND #WatchlistStaging.DaysSinceLastOverdue >= @StandardWatchPeriodDays |
+| CASE | covered_by_rule | Lines 64-65 | 00_batch3_main_body:chunk_text_11 | #WatchlistStaging.AssetClass IN ('DOUBTFUL', 'LOSS') AND #WatchlistStaging.DaysSinceLastOverdue >= @DoubtfulWatchPeriodDays |
+| ELSE | covered_by_rule | Lines 65-66 | unavailable | ELSE |
+| IF_BRANCH | covered_by_rule | Lines 74-79 | unavailable | DAY(@ProcessDate) = 1 |
+| ELSE | covered_by_rule | samples/15_NPA_Upgrade_Watchlist_Merge.sql / Lines 81-84 | 02_batch3_nested_block | ELSE |
+| IF | uncovered | Lines 27-27 | unavailable | IF OBJECT_ID( ) IS NOT NULL |
+| CASE | uncovered | Lines 61-61 | unavailable | CASE |
+| CASE_BRANCH | uncovered | Lines 62-62 | unavailable | WHEN S.DaysSinceLastOverdue IS NULL THEN |
+| CASE_BRANCH | uncovered | Lines 63-63 | unavailable | WHEN S.AssetClass = AND S.DaysSinceLastOverdue >= @StandardWatchPeriodDays THEN |
+| CASE_BRANCH | uncovered | Lines 64-64 | unavailable | WHEN S.AssetClass IN ( , ) AND S.DaysSinceLastOverdue >= @DoubtfulWatchPeriodDays THEN |
+| ELSE | covered_by_rule | Lines 65-65 | unavailable | ELSE |
+| IF | covered_by_rule | Lines 73-73 | unavailable | IF DAY(@ProcessDate) = 1 |
+| ELSE | covered_by_rule | Lines 80-80 | unavailable | ELSE |
+| CASE_BRANCH | covered_by_rule | Lines 91-91 | unavailable | WHEN MATCHED THEN |
+| CASE_BRANCH | uncovered | Lines 96-96 | unavailable | WHEN NOT MATCHED BY TARGET THEN |
+| CATCH | uncovered | Lines 138-138 | unavailable | BEGIN CATCH |
+| CATCH | uncovered | Lines 143-143 | unavailable | END CATCH |
+
+## Confirmed Statement Dependencies
+
+The following dependencies are confirmed from exact table/field matches and source order:
+
+| Relationship | From | To | Confidence |
+|---|---|---|---|
+| later_update_overrides_field | 01_batch3_main_body+batch3_nested_block:embedded_01_07 / #WatchlistStaging | 02_batch3_nested_block:embedded_01_04 / #WatchlistStaging | high |
+| table_write_to_later_use | 01_batch3_main_body+batch3_nested_block:embedded_01_07 / #WatchlistStaging | 00_batch3_main_body:embedded_02_13 / #WatchlistStaging | high |
+| later_update_overrides_field | 01_batch3_main_body+batch3_nested_block:embedded_01_07 / #WatchlistStaging | 02_batch3_nested_block:chunk_text_02 / #WatchlistStaging | high |
+| table_write_to_later_use | 04_batch3_main_body:embedded_01_06 / PRO.LoanAccountCal | 04_batch3_main_body:embedded_02_07 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_main_body:embedded_01_06 / PRO.LoanAccountCal | 03_batch3_main_body:embedded_01_03 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 04_batch3_main_body:embedded_01_06 / PRO.LoanAccountCal | 00_batch3_main_body:embedded_02_13 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 02_batch3_nested_block:embedded_01_04 / #WatchlistStaging | 00_batch3_main_body:embedded_02_13 / #WatchlistStaging | high |
+| later_update_overrides_field | 02_batch3_nested_block:embedded_01_04 / #WatchlistStaging | 02_batch3_nested_block:chunk_text_02 / #WatchlistStaging | high |
+| table_write_to_later_use | 01_batch3_main_body+batch3_nested_block:embedded_02_08 / #WatchlistStaging | 00_batch3_main_body:embedded_02_13 / #WatchlistStaging | high |
+| table_write_to_later_use | 00_batch3_main_body:embedded_01_12 / PRO.LoanAccountCal | 03_batch3_main_body:embedded_01_03 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 00_batch3_main_body:embedded_01_12 / PRO.LoanAccountCal | 00_batch3_main_body:embedded_02_13 / PRO.LoanAccountCal | high |
+| table_write_to_later_use | 00_batch3_main_body:embedded_02_13 / #WatchlistStaging | 02_batch3_nested_block:chunk_text_02 / #WatchlistStaging | high |
+
+Unresolved dependency candidates: 36. They were not supplied as confirmed dependencies.
+
+## Rule Provenance Summary
+
+- **Total business rules:** 9
+- **By rule type:** deterministic_decision_table = 5, explicit = 4
+- **By validation status:** unverified = 3, verified = 6
+
+_This count reflects every individually traceable rule (one per source statement/field, for full auditability). The business report may show a smaller number, because closely related rules that apply the same pattern to several fields (e.g. "reset each of these six DPD fields to zero if negative") are presented there as one combined rule for readability. Every rule counted here is still individually traceable in the Source Traceability table below - none are dropped, only grouped for display._
+
+_Rules marked **unverified** could not be matched back to the technical extraction or source code - this specific claim remains unresolved and should not yet be treated as a confirmed business rule._
+
+## Reconciliation Summary
+
+- **Matched facts:** 13
+- **Deterministic-only facts:** 8
+- **LLM-only claims:** 4
+- **Conflicts:** 10
+- **Unresolved items:** 1
+- **Review required:** Yes
+
+### Review Items
+
+- `CONFLICT` tables_read (`recon_5ffb908a96fb`): full_source
+- `CONFLICT` tables_read (`recon_5ffb908a96fb`): full_source
+- `CONFLICT` tables_read (`recon_5ffb908a96fb`): full_source
+- `LLM_ONLY` tables_read (`recon_4871fc33f648`): full_source
+- `CONFLICT` tables_read (`recon_5ffb908a96fb`): full_source
+
+## Quality Summary
+
+- **Overall status:** REVIEW_REQUIRED
+- **Quality score:** 72.68934240362812/100
+- **Statement coverage:** 25 / 44 (56.8%)
+- **Rule grounding coverage:** 2 / 9 (22.2%)
+- **Decision-chain coverage:** 6 / 6 branches (100.0%)
+- **Conflicts:** 10
+- **Contradictions:** 14
+- **Review required items:** 29
+- **Review required:** Yes
+
+Statement parse success is below the preferred threshold.; Rule grounding coverage is below the preferred threshold.
+
+### Contradictions
+
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `HIGH` Condition Conflict on `source`: Synthesized condition conflicts with deterministic predicate evidence.
+- `MEDIUM` Field Conflict on `source`: Synthesized affected fields do not match deterministic SQL/AST evidence.
+
+_Quality is derived deterministically from parse success, grounding, conflicts, contradictions, and dialect support._
+
+## Pipeline Diagnostics
+
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: IF DAY(@ProcessDate) = 1
+- Could not trace the stated source evidence back to a successfully parsed technical extraction record: MERGE PRO.NpaUpgradeWatchlist AS Target USING #WatchlistStaging AS Source ON Target.AccountId = Source.AccountId WHEN NOT MATCHED BY TARGET THEN INSERT (AccountId, AssetClass, DaysSinceLastOverdue, EligibleForUpgrade, FirstWatchedDate, LastCheckedDate) VALUES (Source.AccountId, Source.AssetClass, Source.DaysSinceLastOverdue, Source.EligibleForUpgrade, @ProcessDate, @ProcessDate)
+- Synthesized in 5 section(s) aligned to extraction chunk boundaries because the object exceeded the single-call output-token ceiling; sections were merged into this report.
+- Automated style check flagged possible leftover technical jargon in the synthesized output: merge statement.

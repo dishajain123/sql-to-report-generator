@@ -55,6 +55,7 @@ from src.synthesis.rule_shape import finalize_business_rule_shape
 from src.output.report_formatter import ReportFormatterAgent
 from src.parsing.technical_sql_ops import extract_table_operations_from_chunks, split_table_operations
 from src.parsing.calculations import calculations_from_operations
+from src.parsing.process_gates import extract_process_gates, summarize_process_gates
 from src.parsing.alias_resolution import (
     resolve_aliases_in_business_rules,
     resolve_aliases_in_merged_extraction,
@@ -725,6 +726,16 @@ class LogicRulesExtractorPipeline:
             )
         merged_extraction["statement_provenance"] = statement_provenance
         _annotate_decision_chain_provenance(merged_extraction, ingestion)
+        # Orchestration checkpoint gates. Strictly additive: emits its own
+        # `process_gates` record type and never a `decision_chain`, so it
+        # cannot affect decision-table identity, merging, coverage floors,
+        # dedup or IR matching. Empty for non-orchestration objects.
+        process_gates = extract_process_gates(
+            ingestion.raw_code, dialect=analysis_dialect or ingestion.dialect
+        )
+        if process_gates:
+            merged_extraction["process_gates"] = process_gates
+            merged_extraction["process_gate_summary"] = summarize_process_gates(process_gates)
         if table_operations:
             merged_extraction["table_operations"] = table_operations
             merged_extraction["tables_read"], merged_extraction["tables_written"] = (

@@ -2931,6 +2931,60 @@ class RuleSynthesizerAgent:
         return f"{condition} — applies to all rows (no additional filter)"
 
     @staticmethod
+    def _synthesize_business_meaning(
+        display_fields: List[str],
+        rows: List[Dict[str, Any]],
+        *,
+        table: str = "",
+    ) -> str:
+        """Compose a grounded one-sentence purpose for a deterministically
+        synthesized rule, so the report never has to fall back to "Not
+        specified" just because no LLM authored this rule.
+
+        Deliberately built only from data already present in `rows`
+        (condition/outcome pairs parsed straight from the SQL) and the
+        target table - never invented, and never the chain's own
+        execution_semantics text - so it stays exactly as trustworthy as
+        the rest of a deterministic coverage rule and never echoes
+        procedural/evaluation-order commentary as if it were a business
+        purpose.
+        """
+        fields = [str(f).strip() for f in display_fields if str(f).strip()]
+        if not fields:
+            return ""
+        if len(fields) == 1:
+            fields_text = fields[0]
+        elif len(fields) == 2:
+            fields_text = f"{fields[0]} and {fields[1]}"
+        else:
+            fields_text = ", ".join(fields[:-1]) + f", and {fields[-1]}"
+        target = f" on {table.split('.')[-1].strip('#')}" if table else ""
+        clean_rows = [row for row in rows if isinstance(row, dict)]
+        non_else = [
+            row for row in clean_rows
+            if str(row.get("condition") or "").strip().upper() != "ELSE"
+        ]
+        example = non_else[0] if non_else else (clean_rows[0] if clean_rows else None)
+        condition = str(example.get("condition") or "").strip() if example else ""
+        outcome = str(example.get("outcome") or "").strip() if example else ""
+        if len(clean_rows) > 1:
+            if condition and condition.upper() != "ELSE" and outcome:
+                example_text = f" (e.g., {outcome} when {condition})"
+            elif outcome:
+                example_text = f" (e.g., {outcome})"
+            else:
+                example_text = ""
+            return (
+                f"Sets {fields_text}{target} depending on which of the "
+                f"{len(clean_rows)} conditions below applies{example_text}."
+            )
+        if condition and outcome:
+            return f"Sets {fields_text}{target} to {outcome} when {condition}."
+        if outcome:
+            return f"Sets {fields_text}{target} to {outcome}."
+        return f"Sets {fields_text}{target} based on the condition below."
+
+    @staticmethod
     def _backfill_decision_logic_rows(
         rule: Dict[str, Any], decision_chains: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
@@ -3088,6 +3142,34 @@ class RuleSynthesizerAgent:
                 for row in rows if isinstance(row, dict)
             ]
 
+        def _cover_is_grounded(rule: Dict[str, Any], chain: Dict[str, Any]) -> bool:
+            """Only a grounded cover may suppress the deterministic twin.
+
+            A bare LLM table that happens to list the same rows is not enough
+            *by itself*: claim-level CONFLICT exclusion later can drop that
+            sole cover and erase the ladder from the business report
+            (observed: DpdBucket CASE on sample 07). Grounded covers survive
+            CONFLICT cleanup. Callers that find an exact row match on a bare
+            LLM rule must promote it (set `decision_rows_grounded` /
+            `source_chain_id`) before treating it as covered.
+            """
+            if rule.get("rule_type") == "deterministic_decision_table":
+                return True
+            if rule.get("decision_rows_grounded"):
+                return True
+            source_chain = str(rule.get("source_chain_id") or "")
+            chain_id = str(chain.get("chain_id") or "")
+            return bool(source_chain and chain_id and source_chain == chain_id)
+
+        def _promote_cover(rule: Dict[str, Any], chain: Dict[str, Any]) -> None:
+            """Bind an exact row-match cover to the deterministic chain so
+            CONFLICT exclusion cannot discard the only representation of
+            the ladder.
+            """
+            rule["decision_rows_grounded"] = True
+            if not str(rule.get("source_chain_id") or "").strip():
+                rule["source_chain_id"] = str(chain.get("chain_id") or "")
+
         def _field_is_covered(chain: Dict[str, Any], field_key: str, rows: List[Dict[str, Any]]) -> bool:
             expected = _rows_key(rows)
             for rule in rules:
@@ -3097,6 +3179,8 @@ class RuleSynthesizerAgent:
                 if source_chain and source_chain != chain.get("chain_id"):
                     continue
                 if expected and expected == _rows_key(rule.get("decision_logic_rows") or []):
+                    if not _cover_is_grounded(rule, chain):
+                        _promote_cover(rule, chain)
                     return True
             return False
 
@@ -3108,6 +3192,9 @@ class RuleSynthesizerAgent:
             miss. Filling those blanks from the chain (never inventing a new
             ladder) and treating the rule as covered avoids synthesizing a
             second, duplicate table for the same field.
+
+            Rows filled from the chain are marked grounded so a later
+            CONFLICT exclusion cannot erase the only cover for the ladder.
             """
             expected_conditions = [_normalized_condition(row.get("condition")) for row in rows]
             if not expected_conditions:
@@ -3138,6 +3225,7 @@ class RuleSynthesizerAgent:
                         rule_row["outcome"] = replacement
                         repaired = True
                 if repaired or _rows_key(rule_rows) == _rows_key(rows):
+                    _promote_cover(rule, chain)
                     return True
             return repaired
 
@@ -3322,7 +3410,9 @@ class RuleSynthesizerAgent:
                         if multi_field
                         else f"Determine {primary_field}"
                     ),
-                    "business_meaning": "",
+                    "business_meaning": RuleSynthesizerAgent._synthesize_business_meaning(
+                        display_fields, coverage_rows
+                    ),
                     "condition": "",
                     "action": (
                         f"Sets {', '.join(display_fields)} based on the decision logic below, "
@@ -3418,6 +3508,7 @@ class RuleSynthesizerAgent:
                         text, branch, chain.get("chain_type")
                     )
 
+                undecorated_rows = rows
                 rows = [
                     {**row, "condition": _display_condition(row, branch)}
                     for row, branch in zip(rows, row_branches)
@@ -3435,7 +3526,10 @@ class RuleSynthesizerAgent:
                     "business_meaning": (
                         f"The decision rows show per-row inputs to {chain['aggregation']}; "
                         f"{display_field} is the aggregate of those inputs over the SQL grouping."
-                        if chain.get("aggregation") else ""
+                        if chain.get("aggregation")
+                        else RuleSynthesizerAgent._synthesize_business_meaning(
+                            [display_field], undecorated_rows
+                        )
                     ),
                     "condition": "",
                     "action": (
@@ -3540,6 +3634,12 @@ class RuleSynthesizerAgent:
         ]
         rule["fields_affected"] = list(display_fields)
         rule["output_field"] = ", ".join(display_fields)
+        if not str(rule.get("business_meaning") or "").strip():
+            rule["business_meaning"] = RuleSynthesizerAgent._synthesize_business_meaning(
+                display_fields,
+                [{"condition": where_predicate, "outcome": outcome}],
+                table=table,
+            )
         if table and not any(
             str(item).lower().startswith("target:")
             for item in (rule.get("decision_context") or [])
@@ -3644,6 +3744,14 @@ class RuleSynthesizerAgent:
             tsql_if_spans.append((start, end, fields))
 
         def _owned_by_tsql_if_ladder(row: Dict[str, Any]) -> bool:
+            # MERGE statements are never owned by a TSQL_IF_ELSE decision
+            # chain - those ladders only emit IF-branch assignment tables,
+            # never MATCHED/NOT MATCHED upsert floors. Treating a MERGE as
+            # IF-owned (when its comment preamble line falls inside an
+            # over-extended IF span) silently skipped every MERGE floor on
+            # sample 09, leaving only an LLM insert half in the report.
+            if str(row.get("operation") or "").strip().upper() == "MERGE":
+                return False
             line = row.get("source_line_start")
             if not isinstance(line, int) or line < 0:
                 return False
@@ -3727,7 +3835,11 @@ class RuleSynthesizerAgent:
                 }],
                 "decision_role": "assignment",
                 "rule_name": rule_name,
-                "business_meaning": "",
+                "business_meaning": RuleSynthesizerAgent._synthesize_business_meaning(
+                    display_fields,
+                    [{"condition": where_predicate, "outcome": outcome}],
+                    table=str(row.get("table") or ""),
+                ),
                 "condition": "",
                 "action": (
                     f"Sets {', '.join(display_fields)} based on the condition below, "
